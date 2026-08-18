@@ -3,17 +3,28 @@
 const fs = require('fs');
 const path = require('path');
 
+const { DEFAULT_PROVIDER } = require('./providers');
+
 const DEFAULTS = {
-  provider: 'mock',
-  symbols: ['DEMO', 'TEST', 'ACME', 'NOVA'],
+  provider: DEFAULT_PROVIDER,
+  symbols: ['600519', '000001', '300750', '601318'],
   refreshSeconds: 5,
   colorScheme: 'cn', // cn = 红涨绿跌，us = 绿涨红跌
   opacity: 0.95,
   alwaysOnTop: true,
   showSparkline: true,
+  showDarkTrade: true, // 显示东方财富暗盘资金
   compact: false,
+  layout: 'multi', // multi = 多行列表，single = 单行滚动
+  visibleRows: 4, // 多行模式下不用滚动就能看到的行数，窗口高度随它自适应
+  fontFamily: '', // 留空表示跟随系统字体
+  fontSize: 13,
   bounds: null,
 };
+
+const LAYOUTS = ['multi', 'single'];
+// 字体名允许中英文、数字、空格、引号、逗号和连字符，挡掉任何可能破坏样式声明的字符。
+const FONT_FAMILY_RE = /^[\w \-,'"\u4e00-\u9fff]{0,120}$/;
 
 const clamp = (n, lo, hi) => Math.min(hi, Math.max(lo, n));
 
@@ -38,6 +49,14 @@ function sanitize(input) {
   if (Number.isFinite(raw.opacity)) out.opacity = clamp(raw.opacity, 0.2, 1);
   if (typeof raw.alwaysOnTop === 'boolean') out.alwaysOnTop = raw.alwaysOnTop;
   if (typeof raw.showSparkline === 'boolean') out.showSparkline = raw.showSparkline;
+  if (typeof raw.showDarkTrade === 'boolean') out.showDarkTrade = raw.showDarkTrade;
+  if (LAYOUTS.includes(raw.layout)) out.layout = raw.layout;
+  if (Number.isFinite(raw.visibleRows)) out.visibleRows = clamp(Math.round(raw.visibleRows), 1, 30);
+  if (Number.isFinite(raw.fontSize)) out.fontSize = clamp(Math.round(raw.fontSize), 9, 28);
+  if (typeof raw.fontFamily === 'string') {
+    const font = raw.fontFamily.trim();
+    if (FONT_FAMILY_RE.test(font)) out.fontFamily = font;
+  }
   if (typeof raw.compact === 'boolean') out.compact = raw.compact;
 
   const b = raw.bounds;

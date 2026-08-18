@@ -17,7 +17,13 @@
           <button id="btn-quit" class="icon-btn danger" title="退出" aria-label="退出">✕</button>
         </div>
       </header>
+
+      <!-- 多行模式：可滚动的行情列表 -->
       <ul class="quotes" id="quotes"></ul>
+
+      <!-- 单行模式：横向滚动跑马灯 -->
+      <div class="marquee" id="marquee"><div class="marquee-track" id="marquee-track"></div></div>
+
       <footer class="footer"><span id="updated">—</span></footer>
     </div>
     <script src="renderer.js"></script>

@@ -41,10 +41,21 @@ check('配置为空时回落到默认值', () => {
 });
 
 check('越界配置被夹到合法区间', () => {
-  const c = sanitize({ refreshSeconds: 1e9, opacity: 42, colorScheme: 'nope' });
+  const c = sanitize({
+    refreshSeconds: 1e9, opacity: 42, colorScheme: 'nope',
+    visibleRows: 999, fontSize: 2, layout: 'diagonal',
+  });
   assert(c.refreshSeconds === 3600, `refreshSeconds=${c.refreshSeconds}`);
   assert(c.opacity === 1, `opacity=${c.opacity}`);
   assert(c.colorScheme === 'cn', `colorScheme=${c.colorScheme}`);
+  assert(c.visibleRows === 30, `visibleRows=${c.visibleRows}`);
+  assert(c.fontSize === 9, `fontSize=${c.fontSize}`);
+  assert(c.layout === 'multi', `layout=${c.layout}`);
+});
+
+check('字体名只接受安全字符', () => {
+  assert(sanitize({ fontFamily: '微软雅黑, PingFang SC' }).fontFamily === '微软雅黑, PingFang SC');
+  assert(sanitize({ fontFamily: 'x;} body{display:none}' }).fontFamily === '', '样式注入未被拒绝');
 });
 
 check('自选代码去重并去空白', () => {
@@ -52,9 +63,62 @@ check('自选代码去重并去空白', () => {
   assert(JSON.stringify(c.symbols) === JSON.stringify(['AAPL', 'MSFT']), c.symbols.join(','));
 });
 
-check('未知数据源回落到 mock', () => {
-  assert(providers.resolve('does-not-exist').id === 'mock', '未回落到 mock');
-  assert(providers.list().length >= 3, '数据源少于 3 个');
+check('未知数据源回落到默认的东财', () => {
+  assert(providers.resolve('does-not-exist').id === 'eastmoney', '未回落到 eastmoney');
+  assert(providers.DEFAULT_PROVIDER === 'eastmoney', '默认数据源不是东财');
+  const ids = providers.list().map((p) => p.id);
+  assert(!ids.includes('yahoo'), '美股数据源应已移除');
+  for (const id of ['eastmoney', 'tencent', 'sina', 'mock']) {
+    assert(ids.includes(id), `缺少数据源 ${id}`);
+  }
+});
+
+check('A 股代码归一化覆盖沪深北与各种写法', () => {
+  const { classify } = require(path.join(root, 'src/main/providers/symbols'));
+  const cases = [
+    ['600519', 'sh'],
+    ['688981', 'sh'],
+    ['000001', 'sz'],
+    ['300750', 'sz'],
+    ['830799', 'bj'],
+    ['sh600000', 'sh'],
+    ['SZ000001', 'sz'],
+    ['600519.SH', 'sh'],
+  ];
+  for (const [input, market] of cases) {
+    const got = classify(input);
+    assert(got && got.market === market, `${input} -> ${JSON.stringify(got)}`);
+  }
+  assert(classify('不是代码') === null, '非法代码应返回 null');
+});
+
+check('新浪/腾讯解析停牌与缺字段', () => {
+  const tencent = require(path.join(root, 'src/main/providers/tencent'));
+  const sina = require(path.join(root, 'src/main/providers/sina'));
+  const t = tencent.parse('v_sh600000="1~浦发银行~600000~0.00~10.00~9.9~1~2~3";');
+  assert(t.get('sh600000').halted === true, '腾讯停牌未识别');
+  assert(t.get('sh600000').price === 10, '腾讯停牌未回退昨收');
+  const s = sina.parse('var hq_str_sh600000="浦发银行,9.9,10.00,10.20,";');
+  assert(Math.abs(s.get('sh600000').changePercent - 2) < 1e-9, '新浪涨跌幅算错');
+  assert(sina.parse('var hq_str_sh600001="";').get('sh600001') === null, '空数据未置空');
+});
+
+check('东财价格缩放自动识别', () => {
+  const eastmoney = require(path.join(root, 'src/main/providers/eastmoney'));
+  assert(eastmoney.detectScale([{ f2: 10.2, f18: 10, f3: 2 }]) === 1, '正常数据被误判为缩放');
+  assert(eastmoney.detectScale([{ f2: 1020, f18: 1000, f3: 200 }]) === 100, '缩放数据未识别');
+});
+
+check('暗盘资金字段映射与价格还原', () => {
+  const darktrade = require(path.join(root, 'src/main/darktrade'));
+  const row = darktrade.normalizeRow({
+    3: 1, 4: '600519', 16: '贵州茅台', 6: 123456789, 8: -5000, 13: 1680000, 14: 2.35, 21: 7,
+  });
+  assert(row.code === '600519' && row.market === 'sh', `代码/市场解析错误: ${JSON.stringify(row)}`);
+  assert(row.darkFund === 123456789, '暗盘资金未取到');
+  assert(row.price === 1680, `价格未按 1000 还原: ${row.price}`);
+  assert(darktrade.normalizeRow({ 4: '' }) === null, '无代码的行未被剔除');
+  assert(darktrade.formatDate('20260817') === '2026-08-17', '日期格式化错误');
 });
 
 check('mock 数据源返回完整行情结构', () => {
@@ -68,11 +132,6 @@ check('mock 数据源返回完整行情结构', () => {
     assert(quote[key] !== undefined, `缺少字段 ${key}`);
   }
   assert(Number.isFinite(quote.price) && quote.price > 0, `价格异常: ${quote.price}`);
-});
-
-check('网络数据源失败时逐个代码降级而不是抛异常', async () => {
-  const yahoo = require(path.join(root, 'src/main/providers/yahoo'));
-  assert(typeof yahoo.fetchQuotes === 'function', 'fetchQuotes 不存在');
 });
 
 check('渲染层资源齐全', () => {

@@ -5,6 +5,8 @@ const { app, BrowserWindow, Tray, Menu, ipcMain, screen, shell, nativeImage } = 
 
 const { Store } = require('./store');
 const providers = require('./providers');
+const { classify } = require('./providers/symbols');
+const darktrade = require('./darktrade');
 
 const TRAY_ICON = path.join(__dirname, '..', '..', 'assets', 'tray.png');
 const RENDERER = path.join(__dirname, '..', 'renderer');
@@ -54,7 +56,7 @@ function createWidget() {
   widget = new BrowserWindow({
     ...bounds,
     minWidth: 220,
-    minHeight: 120,
+    minHeight: 56, // 单行模式只有一行高
     frame: false,
     transparent: true,
     backgroundColor: '#00000000',
@@ -105,8 +107,8 @@ function openSettings() {
     return;
   }
   settingsWindow = new BrowserWindow({
-    width: 460,
-    height: 620,
+    width: 470,
+    height: 760,
     title: '行情组件设置',
     resizable: true,
     minimizable: false,
@@ -142,14 +144,32 @@ function publish(payload) {
   broadcast('quotes:update', payload);
 }
 
+/**
+ * 把东财暗盘资金并到行情里。暗盘是日频数据，模块内部有缓存，
+ * 拉不到只让这部分留空，不影响行情本身。
+ */
+async function attachDarkTrade(quotes) {
+  const codes = quotes.map((q) => classify(q.symbol)?.code).filter(Boolean);
+  if (!codes.length) return null;
+  const { date, byCode, error } = await darktrade.getDarkTrade([...new Set(codes)]);
+  for (const quote of quotes) {
+    const code = classify(quote.symbol)?.code;
+    const row = code ? byCode.get(code) : null;
+    quote.darkFund = row ? row.darkFund : null;
+    quote.darkMainNetInflow = row ? row.mainNetInflow : null;
+  }
+  return { date, error };
+}
+
 async function poll() {
   if (polling) return; // 上一轮还没回来就跳过，避免请求叠加
   polling = true;
-  const { provider: id, symbols } = store.get();
+  const { provider: id, symbols, showDarkTrade } = store.get();
   const provider = providers.resolve(id);
   try {
     const quotes = await provider.fetchQuotes(symbols);
-    publish({ provider: provider.id, quotes, time: Date.now() });
+    const darkTrade = showDarkTrade ? await attachDarkTrade(quotes) : null;
+    publish({ provider: provider.id, quotes, darkTrade, time: Date.now() });
   } catch (err) {
     // 单个数据源整体挂掉时也要出一屏，让用户看到原因而不是空白。
     publish({
@@ -239,6 +259,14 @@ if (!gotLock) {
     ipcMain.handle('config:set', (_e, patch) => applyConfig(store.set(patch)));
     ipcMain.handle('providers:list', () => providers.list());
     ipcMain.handle('quotes:refresh', () => poll());
+    // 高度由内容决定：渲染层按「行数 × 字号」算出需要多高，主进程照着调窗口。
+    ipcMain.handle('window:autosize', (_e, height) => {
+      if (!widget || widget.isDestroyed() || !Number.isFinite(height)) return;
+      const bounds = widget.getBounds();
+      const next = Math.round(Math.min(Math.max(height, 56), 2000));
+      if (Math.abs(next - bounds.height) <= 1) return;
+      widget.setBounds({ ...bounds, height: next });
+    });
     ipcMain.handle('settings:open', () => openSettings());
     ipcMain.handle('app:quit', () => {
       quitting = true;

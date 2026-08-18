@@ -1,32 +1,32 @@
 'use strict';
 
 /**
- * 新浪财经行情（hq.sinajs.cn 公开接口，免密钥）。
+ * 腾讯行情（qt.gtimg.cn 公开接口，免密钥）。
  * 一次请求批量拉取，返回 GBK 编码的 JS 片段：
- *   var hq_str_sh600000="浦发银行,10.00,10.01,10.20,...";
+ *   v_sh600000="1~浦发银行~600000~10.20~10.00~...";
  */
 
 const { classify } = require('./symbols');
 const { decodeGbk } = require('./gbk');
 
-const ENDPOINT = 'https://hq.sinajs.cn/list=';
+const ENDPOINT = 'https://qt.gtimg.cn/q=';
 const REQUEST_TIMEOUT_MS = 8000;
 
-// 新浪字段按位置排列，只取用得上的几个。
-const F_NAME = 0;
-const F_PREV_CLOSE = 2;
+// 腾讯字段是按位置排列的，只取用得上的几个。
+const F_NAME = 1;
 const F_PRICE = 3;
+const F_PREV_CLOSE = 4;
 
 const keyOf = ({ market, code }) => `${market}${code}`;
 
 function parse(text) {
   const quotes = new Map();
-  const re = /var hq_str_(\w+)="([^"]*)"/g;
+  const re = /v_(\w+)="([^"]*)"/g;
   let m;
   while ((m = re.exec(text)) !== null) {
     const [, key, payload] = m;
-    const f = payload.split(',');
-    if (f.length < 4) {
+    const f = payload.split('~');
+    if (f.length < 5) {
       quotes.set(key, null);
       continue;
     }
@@ -36,7 +36,7 @@ function parse(text) {
       quotes.set(key, null);
       continue;
     }
-    // 停牌时现价为 0，退回昨收，避免显示成跌停 -100%。
+    // 停牌时现价为 0，退回昨收。
     const price = raw > 0 ? raw : prevClose;
     const change = price - prevClose;
     quotes.set(key, {
@@ -62,8 +62,7 @@ async function fetchQuotes(symbols) {
     const url = ENDPOINT + encodeURIComponent(valid.map(keyOf).join(','));
     try {
       const res = await fetch(url, {
-        // 新浪要求带 Referer，否则返回 403。
-        headers: { Referer: 'https://finance.sina.com.cn/', 'User-Agent': 'Mozilla/5.0' },
+        headers: { 'User-Agent': 'Mozilla/5.0', Referer: 'https://gu.qq.com/' },
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -93,9 +92,9 @@ async function fetchQuotes(symbols) {
 }
 
 module.exports = {
-  id: 'sina',
-  label: 'A 股 · 新浪财经（免密钥）',
-  placeholder: '600519, 000001, 300750, sh600000',
+  id: 'tencent',
+  label: 'A 股 · 腾讯行情（免密钥）',
+  placeholder: '600519, 000001, 300750, sz002594',
   fetchQuotes,
   parse, // 供测试使用
 };

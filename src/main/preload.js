@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('api', {
   listProviders: () => ipcRenderer.invoke('providers:list'),
   refresh: () => ipcRenderer.invoke('quotes:refresh'),
   openSettings: () => ipcRenderer.invoke('settings:open'),
+  autosize: (height) => ipcRenderer.invoke('window:autosize', height),
   quit: () => ipcRenderer.invoke('app:quit'),
   onQuotes: (cb) => {
     const handler = (_e, payload) => cb(payload);
