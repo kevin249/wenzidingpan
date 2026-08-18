@@ -1,0 +1,393 @@
+:root {
+  --bg: rgba(17, 20, 28, 0.82);
+  --border: rgba(255, 255, 255, 0.1);
+  --text: #e8eaf0;
+  --muted: #8b93a7;
+  --flat: #9aa3b8;
+  --row-hover: rgba(255, 255, 255, 0.05);
+  /* 红涨绿跌（默认，A 股习惯） */
+  --up: #f04f5a;
+  --down: #22c55e;
+  /* 字体由设置注入，留空时回落到系统字体栈 */
+  --font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei',
+    'Noto Sans SC', Roboto, sans-serif;
+  --font-size: 13px;
+}
+
+body[data-scheme='us'] {
+  /* 绿涨红跌（欧美习惯） */
+  --up: #22c55e;
+  --down: #f04f5a;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+  color: var(--text);
+  font-family: var(--font-family);
+  font-size: var(--font-size);
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  cursor: default;
+}
+
+.widget {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--bg);
+  backdrop-filter: blur(18px) saturate(140%);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+/* ---------------------------------------------------------- 标题栏 */
+
+.titlebar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px 6px 12px;
+  border-bottom: 1px solid var(--border);
+  /* 整条标题栏都能拖动窗口 */
+  -webkit-app-region: drag;
+  flex: none;
+}
+
+.brand {
+  font-size: 0.92em;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.status {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.84em;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.status.error {
+  color: var(--up);
+}
+
+.actions {
+  display: flex;
+  gap: 2px;
+  -webkit-app-region: no-drag;
+}
+
+.icon-btn {
+  width: 1.7em;
+  height: 1.7em;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 1em;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.icon-btn:hover {
+  background: var(--row-hover);
+  color: var(--text);
+}
+
+.icon-btn.danger:hover {
+  background: rgba(240, 79, 90, 0.18);
+  color: #f04f5a;
+}
+
+.icon-btn.spinning {
+  animation: spin 0.6s linear;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ---------------------------------------------------------- 行情列表 */
+
+.quotes {
+  flex: 1;
+  list-style: none;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 3px 0;
+}
+
+.quotes::-webkit-scrollbar {
+  width: 6px;
+}
+
+.quotes::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 3px;
+}
+
+.quote {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    'id price'
+    'spark change'
+    'dark dark';
+  align-items: center;
+  column-gap: 10px;
+  padding: 5px 12px;
+}
+
+.quote:hover {
+  background: var(--row-hover);
+}
+
+.quote .id {
+  grid-area: id;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.quote .symbol {
+  font-size: 0.92em;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.quote .name {
+  font-size: 0.8em;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.quote .price {
+  grid-area: price;
+  font-size: 1.08em;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.quote .change {
+  grid-area: change;
+  font-size: 0.85em;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.quote .spark {
+  grid-area: spark;
+  height: 1.25em;
+  align-self: center;
+}
+
+.quote .dark {
+  grid-area: dark;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 0.8em;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  padding-top: 1px;
+}
+
+.quote .dark:empty {
+  display: none;
+}
+
+.quote .dark .dark-value.positive {
+  color: var(--up);
+}
+
+.quote .dark .dark-value.negative {
+  color: var(--down);
+}
+
+.quote.up .price,
+.quote.up .change {
+  color: var(--up);
+}
+
+.quote.down .price,
+.quote.down .change {
+  color: var(--down);
+}
+
+.quote.flat .price,
+.quote.flat .change {
+  color: var(--flat);
+}
+
+.quote.error .price {
+  color: var(--muted);
+  font-size: 0.9em;
+  font-weight: 400;
+}
+
+/* 价格跳动时的短暂高亮 */
+.quote .price.tick-up {
+  animation: flash-up 0.6s ease-out;
+}
+
+.quote .price.tick-down {
+  animation: flash-down 0.6s ease-out;
+}
+
+@keyframes flash-up {
+  0% {
+    background: color-mix(in srgb, var(--up) 32%, transparent);
+    border-radius: 4px;
+  }
+}
+
+@keyframes flash-down {
+  0% {
+    background: color-mix(in srgb, var(--down) 32%, transparent);
+    border-radius: 4px;
+  }
+}
+
+/* ---------------------------------------------------------- 紧凑模式 */
+
+body[data-compact='true'] .quote {
+  grid-template-areas:
+    'id price'
+    'id change';
+  padding: 2px 12px;
+  row-gap: 0;
+}
+
+body[data-compact='true'] .quote .name,
+body[data-compact='true'] .quote .spark,
+body[data-compact='true'] .quote .dark,
+body[data-compact='true'] .footer {
+  display: none;
+}
+
+body[data-compact='true'] .quote .price {
+  font-size: 1em;
+}
+
+/* ---------------------------------------------------------- 单行模式 */
+
+.marquee {
+  display: none;
+  flex: 1;
+  overflow: hidden;
+  align-items: center;
+  min-height: 0;
+}
+
+.marquee-track {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  white-space: nowrap;
+  will-change: transform;
+  animation: marquee var(--marquee-duration, 30s) linear infinite;
+}
+
+.marquee:hover .marquee-track {
+  /* 悬停暂停，方便看清某一只 */
+  animation-play-state: paused;
+}
+
+@keyframes marquee {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    /* 轨道里放了两份内容，滚完一份正好无缝接上 */
+    transform: translateX(-50%);
+  }
+}
+
+.tick {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 0 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+.tick .tick-name {
+  font-weight: 600;
+}
+
+.tick .tick-dark {
+  font-size: 0.85em;
+  color: var(--muted);
+}
+
+.tick.up .tick-price,
+.tick.up .tick-change {
+  color: var(--up);
+}
+
+.tick.down .tick-price,
+.tick.down .tick-change {
+  color: var(--down);
+}
+
+.tick.flat .tick-price,
+.tick.flat .tick-change {
+  color: var(--flat);
+}
+
+.tick.error {
+  color: var(--muted);
+}
+
+body[data-layout='single'] .quotes,
+body[data-layout='single'] .footer {
+  display: none;
+}
+
+body[data-layout='single'] .marquee {
+  display: flex;
+}
+
+/* ---------------------------------------------------------- 页脚/空态 */
+
+.footer {
+  flex: none;
+  padding: 4px 12px 6px;
+  border-top: 1px solid var(--border);
+  font-size: 0.78em;
+  color: var(--muted);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.empty {
+  padding: 24px 16px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.9em;
+  line-height: 1.7;
+}

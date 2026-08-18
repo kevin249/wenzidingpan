@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self' data:" />
+    <title>股票行情组件</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="widget">
+      <header class="titlebar">
+        <span class="brand">行情</span>
+        <span class="status" id="status">连接中…</span>
+        <div class="actions">
+          <button id="btn-refresh" class="icon-btn" title="立即刷新" aria-label="立即刷新">⟳</button>
+          <button id="btn-settings" class="icon-btn" title="设置" aria-label="设置">⚙</button>
+          <button id="btn-quit" class="icon-btn danger" title="退出" aria-label="退出">✕</button>
+        </div>
+      </header>
+
+      <!-- 多行模式：可滚动的行情列表 -->
+      <ul class="quotes" id="quotes"></ul>
+
+      <!-- 单行模式：横向滚动跑马灯 -->
+      <div class="marquee" id="marquee"><div class="marquee-track" id="marquee-track"></div></div>
+
+      <footer class="footer"><span id="updated">—</span></footer>
+    </div>
+    <script src="renderer.js"></script>
+  </body>
+</html>
