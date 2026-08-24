@@ -9,12 +9,14 @@ from __future__ import annotations
 from collections import deque
 
 from PySide6.QtCore import QPointF, Qt
-from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QWidget
 
 SAMPLE_LEN = 40  # 回退模式下保留的采样点数
 FILL_ALPHA = 38  # 面积填充的透明度，压得比曲线淡很多
 BASELINE_ALPHA = 110
+BUY_COLOR = QColor(240, 79, 90)
+SELL_COLOR = QColor(59, 130, 246)
 
 
 class Sparkline(QWidget):
@@ -23,6 +25,12 @@ class Sparkline(QWidget):
         self._samples: deque[float] = deque(maxlen=SAMPLE_LEN)
         self._series: list[float] = []  # 当日分时，空则用采样点
         self._prev_close: float | None = None
+        self._open_price: float | None = None
+        self._signals: list[tuple[int, str]] = []
+        self._show_signals = True
+        self._show_open_line = True
+        self._show_high_low = True
+        self._grayscale = False
         self._color = QColor(154, 163, 184)
         self.setAttribute(Qt.WA_TransparentForMouseEvents)
 
@@ -50,9 +58,47 @@ class Sparkline(QWidget):
             self._color = color
             self.update()
 
+    def set_annotations(
+        self,
+        open_price: float | None,
+        signals: list[tuple[int, str]],
+        *,
+        show_signals: bool,
+        show_open_line: bool,
+        show_high_low: bool,
+        grayscale: bool,
+    ) -> None:
+        state = (open_price, signals, show_signals, show_open_line, show_high_low, grayscale)
+        old = (self._open_price, self._signals, self._show_signals, self._show_open_line,
+               self._show_high_low, self._grayscale)
+        if state != old:
+            self._open_price = open_price
+            self._signals = list(signals)
+            self._show_signals = show_signals
+            self._show_open_line = show_open_line
+            self._show_high_low = show_high_low
+            self._grayscale = grayscale
+            self.update()
+
+    def set_annotation_options(
+        self, *, show_signals: bool, show_open_line: bool, show_high_low: bool, grayscale: bool
+    ) -> None:
+        """只更新显示开关，供 WebUI 配置即时生效，不必等待下一次行情。"""
+        self.set_annotations(
+            self._open_price,
+            self._signals,
+            show_signals=show_signals,
+            show_open_line=show_open_line,
+            show_high_low=show_high_low,
+            grayscale=grayscale,
+        )
+
     def clear(self) -> None:
         self._samples.clear()
         self._series = []
+        self._signals = []
+        self._open_price = None
+        self._prev_close = None
         self.update()
 
     @property
@@ -70,9 +116,12 @@ class Sparkline(QWidget):
         height = self.height() or 1
 
         # 纵向范围要把昨收算进去，基准线才不会跑到图外。
-        low, high = min(points), max(points)
+        price_low, price_high = min(points), max(points)
+        low, high = price_low, price_high
         if self._prev_close is not None:
             low, high = min(low, self._prev_close), max(high, self._prev_close)
+        if self._show_open_line and self._open_price is not None:
+            low, high = min(low, self._open_price), max(high, self._open_price)
         span = (high - low) or max(abs(high) * 0.01, 0.01)
 
         def y_of(value: float) -> float:
@@ -83,6 +132,17 @@ class Sparkline(QWidget):
 
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
+
+        # B/S 波动转折：B 红线、S 蓝线。先画标记，再让曲线覆盖在线条之上。
+        if self._show_signals:
+            for index, kind in self._signals:
+                if 0 <= index < len(points):
+                    color = QColor(145, 145, 145) if self._grayscale else (
+                        BUY_COLOR if kind == "B" else SELL_COLOR
+                    )
+                    painter.setPen(QPen(color, 1.2))
+                    x = x_of(index)
+                    painter.drawLine(QPointF(x, 1), QPointF(x, height - 1))
 
         curve = QPainterPath()
         curve.moveTo(QPointF(x_of(0), y_of(points[0])))
@@ -108,8 +168,22 @@ class Sparkline(QWidget):
             y = y_of(self._prev_close)
             painter.drawLine(QPointF(0, y), QPointF(width, y))
 
+        # 开盘价使用区别于昨收的点虚线。
+        if self._show_open_line and self._open_price is not None:
+            opening = QColor(145, 145, 145) if self._grayscale else QColor(245, 158, 11)
+            opening.setAlpha(BASELINE_ALPHA)
+            painter.setPen(QPen(opening, 1, Qt.DotLine))
+            y = y_of(self._open_price)
+            painter.drawLine(QPointF(0, y), QPointF(width, y))
+
         pen = QPen(self._color, 1.4)
         pen.setJoinStyle(Qt.RoundJoin)
         pen.setCapStyle(Qt.RoundCap)
         painter.setPen(pen)
         painter.drawPath(curve)
+
+        if self._show_high_low:
+            painter.setFont(QFont(painter.font().family(), max(7, round(height * 0.17))))
+            painter.setPen(QColor(150, 150, 150) if self._grayscale else self._color)
+            painter.drawText(2, painter.fontMetrics().ascent() + 1, f"{price_high:.2f}")
+            painter.drawText(2, height - 2, f"{price_low:.2f}")

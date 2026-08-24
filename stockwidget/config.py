@@ -74,6 +74,12 @@ class Config:
     click_through: bool = False  # 鼠标穿透，只留左上角把手可拖动
     always_on_top: bool = True
     show_sparkline: bool = True
+    show_bs_points: bool = True
+    show_open_line: bool = True
+    show_high_low: bool = True
+    show_stock_name: bool = True
+    show_stock_price: bool = True
+    grayscale: bool = False
     # 走势图画当日分时曲线（联网取分钟数据）；关掉则只画组件运行期间的采样点
     intraday_chart: bool = True
     show_dark_trade: bool = True
@@ -147,6 +153,12 @@ def sanitize(raw: Any) -> Config:
     for key in (
         "always_on_top",
         "show_sparkline",
+        "show_bs_points",
+        "show_open_line",
+        "show_high_low",
+        "show_stock_name",
+        "show_stock_price",
+        "grayscale",
         "intraday_chart",
         "show_dark_trade",
         "compact",

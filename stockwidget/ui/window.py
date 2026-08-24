@@ -46,6 +46,7 @@ class TitleBar(QWidget):
     refresh_requested = Signal()
     settings_requested = Signal()
     quit_requested = Signal()
+    grayscale_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -58,6 +59,7 @@ class TitleBar(QWidget):
 
         self.refresh_button = self._button("⟳", "立即刷新", self.refresh_requested)
         self.settings_button = self._button("⚙", "在浏览器中打开设置", self.settings_requested)
+        self.grayscale_button = self._button("灰", "切换彩色 / 灰度显示", self.grayscale_requested)
         self.quit_button = self._button("✕", "退出", self.quit_requested, QUIT_BUTTON_STYLE)
 
         layout = QHBoxLayout(self)
@@ -67,6 +69,7 @@ class TitleBar(QWidget):
         layout.addWidget(self.status, 1)
         layout.addWidget(self.refresh_button)
         layout.addWidget(self.settings_button)
+        layout.addWidget(self.grayscale_button)
         layout.addWidget(self.quit_button)
 
     def _button(self, text: str, tip: str, signal: Signal, style: str = BUTTON_STYLE) -> QPushButton:
@@ -80,7 +83,8 @@ class TitleBar(QWidget):
     def apply_config(self, config: Config) -> None:
         self.brand.setFont(make_font(config, 0.9, bold=True))
         self.status.setFont(make_font(config, 0.82))
-        for button in (self.refresh_button, self.settings_button, self.quit_button):
+        self.grayscale_button.setText("彩" if config.grayscale else "灰")
+        for button in (self.refresh_button, self.settings_button, self.grayscale_button, self.quit_button):
             button.setFont(make_font(config, 0.95))
             button.setFixedSize(round(config.font_size * 1.7), round(config.font_size * 1.7))
 
@@ -202,6 +206,7 @@ class TickerWindow(QWidget):
     settings_requested = Signal()
     quit_requested = Signal()
     bounds_changed = Signal(object)
+    grayscale_requested = Signal()
 
     def __init__(self, config: Config) -> None:
         super().__init__()
@@ -219,6 +224,7 @@ class TickerWindow(QWidget):
         self.title_bar.refresh_requested.connect(self.refresh_requested.emit)
         self.title_bar.settings_requested.connect(self.settings_requested.emit)
         self.title_bar.quit_requested.connect(self.quit_requested.emit)
+        self.title_bar.grayscale_requested.connect(self.grayscale_requested.emit)
 
         # 自选按「设置里的行数」铺成网格：1 行就全部横向排开，2 行就铺两行。
         self.rows_host = QWidget()
@@ -311,6 +317,9 @@ class TickerWindow(QWidget):
         self.empty_label.setFont(make_font(scaled, 0.9))
         for row in self._rows.values():
             row.apply_config(scaled)
+        if self._rows:
+            # 字号会改变每个行情格的 minimumSizeHint，随配置一起刷新内容宽度。
+            self._lay_out_grid(list(self._rows))
 
         single = config.layout == "single"
         self.marquee.setVisible(single)
@@ -401,6 +410,14 @@ class TickerWindow(QWidget):
     def _lay_out_grid(self, order: list[str]) -> None:
         """按自选顺序从左到右填，填满一行再换下一行。"""
         rows, columns = self._grid_size(len(order))
+        # QScrollArea 开启 widgetResizable 后会默认把内容压到视口宽度。单行平铺时
+        # 这会让每格一起缩水，最先被挤掉的正是中间的 mini K 线。明确保留每格的
+        # 最小宽度，超过屏幕的部分交给横向滚动条，而不是裁图。
+        cell_width = max(
+            (self._rows[s].minimumSizeHint().width() for s in order if s in self._rows),
+            default=0,
+        )
+        self.rows_host.setMinimumWidth(cell_width * columns)
         if (rows, columns) == self._grid_shape and all(
             self.rows_layout.indexOf(self._rows[s]) >= 0 for s in order if s in self._rows
         ):
@@ -414,6 +431,9 @@ class TickerWindow(QWidget):
             row = self._rows.get(symbol)
             if row is not None:
                 self.rows_layout.addWidget(row, index // columns, index % columns)
+        old_columns = self._grid_shape[1]
+        for column in range(columns, old_columns):
+            self.rows_layout.setColumnStretch(column, 0)
         for column in range(columns):
             self.rows_layout.setColumnStretch(column, 1)
         self._grid_shape = (rows, columns)
@@ -450,6 +470,9 @@ class TickerWindow(QWidget):
         screen = self.screen()
         if screen is not None:  # 列太多时别撑出屏幕，剩下的交给横向滚动
             width = min(width, screen.availableGeometry().width())
+        if self.rows_host.minimumWidth() > width:
+            # 横向滚动条占用视口高度；把它预留出来，避免 mini K 线底部被遮住。
+            height += self.scroll.horizontalScrollBar().sizeHint().height()
         self.resize(width, height)
 
     def restore_bounds(self, bounds: Bounds | None, available: list) -> None:

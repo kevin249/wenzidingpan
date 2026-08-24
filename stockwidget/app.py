@@ -43,6 +43,9 @@ class WidgetApp:
         self.window.settings_requested.connect(self.open_settings)
         self.window.quit_requested.connect(self.quit)
         self.window.bounds_changed.connect(self._save_bounds)
+        self.window.grayscale_requested.connect(
+            lambda: self._apply_config(self.store.update({"grayscale": not self.store.get().grayscale}))
+        )
 
         self.bridge = ConfigBridge()
         self.bridge.changed.connect(self._apply_config, Qt.QueuedConnection)

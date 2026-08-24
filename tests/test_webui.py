@@ -38,6 +38,8 @@ def test_settings_page_renders(server):
     body = response.get_data(as_text=True)
     assert "行情组件设置" in body
     assert "东方财富" in body
+    assert "显示 B/S 波动点" in body
+    assert "显示左侧股票名称" in body
 
 
 def test_read_config_returns_providers(server):

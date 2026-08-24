@@ -99,3 +99,14 @@ def test_background_alpha_allows_fully_transparent():
 def test_click_through_defaults_off():
     assert sanitize({}).click_through is False
     assert sanitize({"click_through": True}).click_through is True
+
+
+def test_chart_annotation_and_label_switches_are_sanitized():
+    keys = (
+        "show_bs_points", "show_open_line", "show_high_low",
+        "show_stock_name", "show_stock_price", "grayscale",
+    )
+    config = sanitize({key: False for key in keys})
+    assert all(getattr(config, key) is False for key in keys)
+    # 字符串 "false" 不能冒充布尔值。
+    assert sanitize({"show_bs_points": "false"}).show_bs_points is True
