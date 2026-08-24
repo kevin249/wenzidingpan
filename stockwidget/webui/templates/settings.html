@@ -70,12 +70,95 @@
             </datalist>
           </div>
           <div class="field">
-            <label for="font_size">字号（px）</label>
+            <label for="font_size">基础 / 控件字号（px）</label>
             <input id="font_size" name="font_size" type="number" min="9" max="28" step="1"
                    value="{{ config.font_size }}" />
           </div>
         </div>
-        <p class="hint">字体留空表示跟随系统；填系统里已安装的字体名即可。</p>
+        <p class="hint">字体留空表示跟随系统；以下字号会按各自设置的比例随窗口拖拽统一缩放。</p>
+
+        <div class="grid">
+          <div class="field">
+            <label for="stock_name_font_size">股票名称字号（px）</label>
+            <input id="stock_name_font_size" name="stock_name_font_size" type="number"
+                   min="7" max="48" step="1" value="{{ config.stock_name_font_size }}" />
+          </div>
+          <div class="field">
+            <label for="stock_price_font_size">现价字号（px）</label>
+            <input id="stock_price_font_size" name="stock_price_font_size" type="number"
+                   min="7" max="48" step="1" value="{{ config.stock_price_font_size }}" />
+          </div>
+        </div>
+
+        <div class="grid">
+          <div class="field">
+            <label for="stock_percent_font_size">涨跌幅字号（px）</label>
+            <input id="stock_percent_font_size" name="stock_percent_font_size" type="number"
+                   min="7" max="48" step="1" value="{{ config.stock_percent_font_size }}" />
+          </div>
+          <div class="field">
+            <label for="dark_trade_font_size">暗盘字号（px）</label>
+            <input id="dark_trade_font_size" name="dark_trade_font_size" type="number"
+                   min="7" max="48" step="1" value="{{ config.dark_trade_font_size }}" />
+          </div>
+        </div>
+
+        <div class="grid">
+          <div class="field">
+            <label for="chart_label_font_size">走势图高低价字号（px）</label>
+            <input id="chart_label_font_size" name="chart_label_font_size" type="number"
+                   min="7" max="48" step="1" value="{{ config.chart_label_font_size }}" />
+          </div>
+        </div>
+
+        <h2>字体颜色与字重</h2>
+        <p class="hint">取消“跟随涨跌”后可选择固定颜色；颜色和加粗设置会同时应用到网格及单行模式。</p>
+        <div class="grid font-style-grid">
+          <div class="font-style-field">
+            <label class="font-style-title" for="stock_name_color">股票名称</label>
+            <div class="font-style-controls">
+              <input id="stock_name_color" type="color" aria-label="股票名称颜色"
+                     value="{{ config.stock_name_color if config.stock_name_color != 'auto' else '#000000' }}" />
+              <label><input id="stock_name_color_auto" type="checkbox"
+                            {% if config.stock_name_color == 'auto' %}checked{% endif %} /> 跟随涨跌</label>
+              <label><input id="stock_name_bold" type="checkbox"
+                            {% if config.stock_name_bold %}checked{% endif %} /> 加粗</label>
+            </div>
+          </div>
+          <div class="font-style-field">
+            <label class="font-style-title" for="stock_price_color">股价</label>
+            <div class="font-style-controls">
+              <input id="stock_price_color" type="color" aria-label="股价颜色"
+                     value="{{ config.stock_price_color if config.stock_price_color != 'auto' else '#f04f5a' }}" />
+              <label><input id="stock_price_color_auto" type="checkbox"
+                            {% if config.stock_price_color == 'auto' %}checked{% endif %} /> 跟随涨跌</label>
+              <label><input id="stock_price_bold" type="checkbox"
+                            {% if config.stock_price_bold %}checked{% endif %} /> 加粗</label>
+            </div>
+          </div>
+          <div class="font-style-field">
+            <label class="font-style-title" for="stock_percent_color">涨跌幅</label>
+            <div class="font-style-controls">
+              <input id="stock_percent_color" type="color" aria-label="涨跌幅颜色"
+                     value="{{ config.stock_percent_color if config.stock_percent_color != 'auto' else '#f04f5a' }}" />
+              <label><input id="stock_percent_color_auto" type="checkbox"
+                            {% if config.stock_percent_color == 'auto' %}checked{% endif %} /> 跟随涨跌</label>
+              <label><input id="stock_percent_bold" type="checkbox"
+                            {% if config.stock_percent_bold %}checked{% endif %} /> 加粗</label>
+            </div>
+          </div>
+          <div class="font-style-field">
+            <label class="font-style-title" for="dark_trade_color">暗盘</label>
+            <div class="font-style-controls">
+              <input id="dark_trade_color" type="color" aria-label="暗盘颜色"
+                     value="{{ config.dark_trade_color if config.dark_trade_color != 'auto' else '#000000' }}" />
+              <label><input id="dark_trade_color_auto" type="checkbox"
+                            {% if config.dark_trade_color == 'auto' %}checked{% endif %} /> 跟随涨跌</label>
+              <label><input id="dark_trade_bold" type="checkbox"
+                            {% if config.dark_trade_bold %}checked{% endif %} /> 加粗</label>
+            </div>
+          </div>
+        </div>
 
         <div class="grid">
           <div class="field">
@@ -123,6 +206,8 @@
                         {% if config.show_dark_trade %}checked{% endif %} /> 显示东方财富暗盘资金</label>
           <label><input id="show_sparkline" name="show_sparkline" type="checkbox"
                         {% if config.show_sparkline %}checked{% endif %} /> 显示走势图</label>
+          <label><input id="show_sparkline_fill" name="show_sparkline_fill" type="checkbox"
+                        {% if config.show_sparkline_fill %}checked{% endif %} /> 填充走势图下方颜色</label>
           <label><input id="show_bs_points" name="show_bs_points" type="checkbox"
                         {% if config.show_bs_points %}checked{% endif %} /> 显示 B/S 波动点（B 红线、S 蓝线）</label>
           <label><input id="show_open_line" name="show_open_line" type="checkbox"

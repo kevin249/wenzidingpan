@@ -45,6 +45,15 @@ def test_pagination_stops_once_watchlist_is_covered():
     assert pages.calls == 2  # 第 3 页没有必要再拉
 
 
+def test_pagination_covers_watchlist_beyond_page_50():
+    """榜单超过 5000 条时，尾部股票也必须能取到。"""
+    pages = _paged_session(total=5340, codes_by_page={54: ["603986"]})
+    client = DarkTradeClient(session=pages)
+    result = client.fetch({"603986"})
+    assert set(result.by_code) == {"603986"}
+    assert pages.calls == 54
+
+
 def test_cache_avoids_refetching_within_ttl():
     pages = _paged_session(total=100, codes_by_page={1: ["600519"]})
     client = DarkTradeClient(session=pages)

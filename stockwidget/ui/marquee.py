@@ -10,7 +10,7 @@ from PySide6.QtWidgets import QWidget
 
 from ..config import Config
 from ..providers.base import Quote
-from .theme import MUTED, direction_color, fmt_change, fmt_money, fmt_price, make_font
+from .theme import MUTED, configured_text_color, direction_color, fmt_money, fmt_price, make_font
 
 SPEED_PX_PER_SEC = 40
 GAP_PX = 28
@@ -20,7 +20,9 @@ GAP_PX = 28
 class Segment:
     text: str
     color: QColor
+    font_size: int
     bold: bool
+    starts_quote: bool = False
 
 
 class Marquee(QWidget):
@@ -43,7 +45,14 @@ class Marquee(QWidget):
     def apply_config(self, config: Config) -> None:
         self._config = config
         self.setFont(make_font(config))
-        self.setFixedHeight(round(config.font_size * 1.9))
+        sizes = [config.font_size]
+        if config.show_stock_name:
+            sizes.append(config.stock_name_font_size)
+        if config.show_stock_price:
+            sizes.extend((config.stock_price_font_size, config.stock_percent_font_size))
+        if config.show_dark_trade:
+            sizes.append(config.dark_trade_font_size)
+        self.setFixedHeight(round(max(sizes) * 1.9))
         self.set_quotes(self._quotes)
 
     def set_quotes(self, quotes: list[Quote]) -> None:
@@ -53,31 +62,78 @@ class Marquee(QWidget):
             return
         segments: list[Segment] = []
         for quote in quotes:
+            first_segment = len(segments)
             color = direction_color(config, quote.change)
             if config.show_stock_name:
-                segments.append(Segment(quote.name or quote.symbol, MUTED if quote.error else color, True))
+                segments.append(
+                    Segment(
+                        quote.name or quote.symbol,
+                        configured_text_color(config.stock_name_color, color),
+                        config.stock_name_font_size,
+                        config.stock_name_bold,
+                    )
+                )
             if quote.error:
-                segments.append(Segment(quote.error, MUTED, False))
+                segments.append(
+                    Segment(quote.error, MUTED, config.stock_price_font_size, False)
+                )
             else:
                 if config.show_stock_price:
-                    segments.append(Segment(fmt_price(quote.price), color, False))
-                    segments.append(Segment(fmt_change(quote.change, quote.change_percent), color, False))
+                    segments.append(
+                        Segment(
+                            fmt_price(quote.price),
+                            configured_text_color(config.stock_price_color, color),
+                            config.stock_price_font_size,
+                            config.stock_price_bold,
+                        )
+                    )
+                    percent_sign = "+" if quote.change_percent and quote.change_percent > 0 else ""
+                    percent = (
+                        f"{percent_sign}{quote.change_percent:.2f}%"
+                        if quote.change_percent is not None
+                        else ""
+                    )
+                    segments.append(
+                        Segment(
+                            percent,
+                            configured_text_color(config.stock_percent_color, color),
+                            config.stock_percent_font_size,
+                            config.stock_percent_bold,
+                        )
+                    )
                 if config.show_dark_trade and (text := fmt_money(quote.dark_fund)):
-                    segments.append(Segment(f"暗盘 {text}", MUTED, False))
+                    dark_color = configured_text_color(
+                        config.dark_trade_color,
+                        direction_color(config, quote.dark_fund),
+                    )
+                    segments.append(
+                        Segment(
+                            f"暗 {text}",
+                            dark_color,
+                            config.dark_trade_font_size,
+                            config.dark_trade_bold,
+                        )
+                    )
+            if len(segments) > first_segment:
+                segments[first_segment].starts_quote = True
         self._segments = segments
         self._measure()
 
     def _measure(self) -> None:
         if self._config is None:
             return
-        metrics_normal = QFontMetrics(make_font(self._config))
-        metrics_bold = QFontMetrics(make_font(self._config, bold=True))
         width = 0
         for index, segment in enumerate(self._segments):
-            metrics = metrics_bold if segment.bold else metrics_normal
+            metrics = QFontMetrics(
+                make_font(
+                    self._config,
+                    bold=segment.bold,
+                    pixel_size=segment.font_size,
+                )
+            )
             # 每只股票之间留空，段内只留一个空格的间距
             width += metrics.horizontalAdvance(segment.text)
-            width += GAP_PX if segment.bold and index else 8
+            width += GAP_PX if segment.starts_quote and index else 8
         self._content_width = width
         # 内容比窗口窄就没必要滚动
         if self._content_width <= self.width():
@@ -118,8 +174,14 @@ class Marquee(QWidget):
         for _ in range(2):
             x = start
             for index, segment in enumerate(self._segments):
-                painter.setFont(make_font(self._config, bold=segment.bold))
-                if segment.bold and index:
+                painter.setFont(
+                    make_font(
+                        self._config,
+                        bold=segment.bold,
+                        pixel_size=segment.font_size,
+                    )
+                )
+                if segment.starts_quote and index:
                     x += GAP_PX
                 elif index:
                     x += 8

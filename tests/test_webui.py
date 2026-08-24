@@ -40,6 +40,11 @@ def test_settings_page_renders(server):
     assert "东方财富" in body
     assert "显示 B/S 波动点" in body
     assert "显示左侧股票名称" in body
+    assert "股票名称字号" in body
+    assert "暗盘字号" in body
+    assert "填充走势图下方颜色" in body
+    assert "字体颜色与字重" in body
+    assert "跟随涨跌" in body
 
 
 def test_read_config_returns_providers(server):
@@ -55,6 +60,16 @@ def test_write_config_validates_persists_and_notifies(server):
             "provider": "tencent",
             "symbols": "600519\n000001",
             "visible_rows": 999,  # 越界，应被夹到 30
+            "opacity": 0.4,
+            "show_sparkline_fill": True,
+            "stock_name_color": "#123456",
+            "stock_price_color": "auto",
+            "stock_percent_color": "#654321",
+            "dark_trade_color": "#111111",
+            "stock_name_bold": True,
+            "stock_price_bold": False,
+            "stock_percent_bold": True,
+            "dark_trade_bold": True,
             "font_family": "x;} body{display:none}",  # 注入，应被拒绝
         },
     )
@@ -62,6 +77,16 @@ def test_write_config_validates_persists_and_notifies(server):
     assert config["provider"] == "tencent"
     assert config["symbols"] == ["600519", "000001"]
     assert config["visible_rows"] == 30
+    assert config["opacity"] == 0.4
+    assert config["show_sparkline_fill"] is True
+    assert config["stock_name_color"] == "#123456"
+    assert config["stock_price_color"] == "auto"
+    assert config["stock_percent_color"] == "#654321"
+    assert config["dark_trade_color"] == "#111111"
+    assert config["stock_name_bold"] is True
+    assert config["stock_price_bold"] is False
+    assert config["stock_percent_bold"] is True
+    assert config["dark_trade_bold"] is True
     assert config["font_family"] == ""
 
     # 写盘

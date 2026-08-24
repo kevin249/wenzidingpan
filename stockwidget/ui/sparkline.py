@@ -1,4 +1,4 @@
-"""行内走势图：当日分时曲线 + 昨收虚线基准 + 面积填充。
+"""行内走势图：当日分时曲线 + 昨收虚线基准 + 可选面积填充。
 
 优先画当日分时（联网取分钟数据），拿不到时回退成组件运行期间的采样点，
 两种数据画法一致，区别只是点的来源。
@@ -30,8 +30,11 @@ class Sparkline(QWidget):
         self._show_signals = True
         self._show_open_line = True
         self._show_high_low = True
+        self._show_fill = False
         self._grayscale = False
         self._color = QColor(154, 163, 184)
+        self._annotation_font = QFont()
+        self._annotation_font.setPixelSize(9)
         self.setAttribute(Qt.WA_TransparentForMouseEvents)
 
     # ------------------------------------------------------------ 数据
@@ -58,6 +61,12 @@ class Sparkline(QWidget):
             self._color = color
             self.update()
 
+    def set_annotation_font(self, font: QFont) -> None:
+        """设置最高价/最低价字体，窗口缩放时由外层按比例更新。"""
+        if font != self._annotation_font:
+            self._annotation_font = QFont(font)
+            self.update()
+
     def set_annotations(
         self,
         open_price: float | None,
@@ -66,22 +75,38 @@ class Sparkline(QWidget):
         show_signals: bool,
         show_open_line: bool,
         show_high_low: bool,
+        show_fill: bool,
         grayscale: bool,
     ) -> None:
-        state = (open_price, signals, show_signals, show_open_line, show_high_low, grayscale)
+        state = (
+            open_price,
+            signals,
+            show_signals,
+            show_open_line,
+            show_high_low,
+            show_fill,
+            grayscale,
+        )
         old = (self._open_price, self._signals, self._show_signals, self._show_open_line,
-               self._show_high_low, self._grayscale)
+               self._show_high_low, self._show_fill, self._grayscale)
         if state != old:
             self._open_price = open_price
             self._signals = list(signals)
             self._show_signals = show_signals
             self._show_open_line = show_open_line
             self._show_high_low = show_high_low
+            self._show_fill = show_fill
             self._grayscale = grayscale
             self.update()
 
     def set_annotation_options(
-        self, *, show_signals: bool, show_open_line: bool, show_high_low: bool, grayscale: bool
+        self,
+        *,
+        show_signals: bool,
+        show_open_line: bool,
+        show_high_low: bool,
+        show_fill: bool,
+        grayscale: bool,
     ) -> None:
         """只更新显示开关，供 WebUI 配置即时生效，不必等待下一次行情。"""
         self.set_annotations(
@@ -90,6 +115,7 @@ class Sparkline(QWidget):
             show_signals=show_signals,
             show_open_line=show_open_line,
             show_high_low=show_high_low,
+            show_fill=show_fill,
             grayscale=grayscale,
         )
 
@@ -149,14 +175,15 @@ class Sparkline(QWidget):
         for index, value in enumerate(points[1:], 1):
             curve.lineTo(QPointF(x_of(index), y_of(value)))
 
-        # 面积：曲线以下填到底，颜色跟涨跌走但压得很淡。
-        area = QPainterPath(curve)
-        area.lineTo(QPointF(x_of(len(points) - 1), height))
-        area.lineTo(QPointF(x_of(0), height))
-        area.closeSubpath()
-        fill = QColor(self._color)
-        fill.setAlpha(FILL_ALPHA)
-        painter.fillPath(area, fill)
+        if self._show_fill:
+            # 面积：曲线以下填到底，颜色跟涨跌走但压得很淡。
+            area = QPainterPath(curve)
+            area.lineTo(QPointF(x_of(len(points) - 1), height))
+            area.lineTo(QPointF(x_of(0), height))
+            area.closeSubpath()
+            fill = QColor(self._color)
+            fill.setAlpha(FILL_ALPHA)
+            painter.fillPath(area, fill)
 
         # 昨收基准线
         if self._prev_close is not None:
@@ -183,7 +210,7 @@ class Sparkline(QWidget):
         painter.drawPath(curve)
 
         if self._show_high_low:
-            painter.setFont(QFont(painter.font().family(), max(7, round(height * 0.17))))
+            painter.setFont(self._annotation_font)
             painter.setPen(QColor(150, 150, 150) if self._grayscale else self._color)
             painter.drawText(2, painter.fontMetrics().ascent() + 1, f"{price_high:.2f}")
             painter.drawText(2, height - 2, f"{price_low:.2f}")

@@ -1,6 +1,6 @@
 """网格里的一格行情。
 
-版式：左边名称压暗盘资金，中间当日分时图，右边现价压涨跌。
+版式：左边名称压暗盘资金，中间当日分时图，右边依次显示现价、涨跌幅。
 """
 
 from __future__ import annotations
@@ -12,7 +12,15 @@ from ..config import Config
 from ..intraday import Trend, calculate_bs_points
 from ..providers.base import Quote
 from .sparkline import Sparkline
-from .theme import MUTED, direction_color, fmt_change, fmt_money, fmt_price, make_font
+from .theme import (
+    BLACK,
+    MUTED,
+    configured_text_color,
+    direction_color,
+    fmt_money,
+    fmt_price,
+    make_font,
+)
 
 
 def _color_style(color) -> str:
@@ -28,15 +36,21 @@ class QuoteRow(QWidget):
 
         self.name_label = QLabel()
         self.price_label = QLabel()
-        self.change_label = QLabel()
-        self.dark_label = QLabel("暗盘")
+        self.percent_label = QLabel()
+        self.dark_label = QLabel("暗")
         self.dark_value = QLabel()
         self.sparkline = Sparkline()
+        self._config = Config()
+        self._narrow = False
+        self._layout_state: tuple[bool, bool, bool, bool] | None = None
 
         self.price_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.change_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.dark_label.setStyleSheet(_color_style(MUTED))
+        self.percent_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.dark_label.setStyleSheet(_color_style(BLACK))
         self.sparkline.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        # 父网格必须能把每只股票压进外框，内部再切换成窄卡片布局。
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
+        self.setMinimumSize(0, 0)
 
         self.dark_box = QWidget()
         dark_layout = QHBoxLayout(self.dark_box)
@@ -54,38 +68,181 @@ class QuoteRow(QWidget):
         layout.addWidget(self.dark_box, 1, 0)
         layout.addWidget(self.sparkline, 0, 1, 2, 1)  # 走势图纵向占满整格
         layout.addWidget(self.price_label, 0, 2)
-        layout.addWidget(self.change_label, 1, 2)
+        layout.addWidget(self.percent_label, 1, 2)
         layout.setColumnStretch(1, 1)  # 多出来的宽度都给走势图
         self._layout = layout
+        self._dark_layout = dark_layout
 
     # ------------------------------------------------------------ 外观
 
     def apply_config(self, config: Config) -> None:
-        self.name_label.setFont(make_font(config, 0.95, bold=True))
-        self.price_label.setFont(make_font(config, 1.15, bold=True))
-        self.change_label.setFont(make_font(config, 0.85))
-        self.dark_label.setFont(make_font(config, 0.75))
-        self.dark_value.setFont(make_font(config, 0.75))
-
+        self._config = config
         compact = config.compact
         # 紧凑模式只省掉暗盘和页脚，走势图照画——只是压扁一点。
         self.sparkline.setVisible(config.show_sparkline)
         self.name_label.setVisible(config.show_stock_name)
         self.price_label.setVisible(config.show_stock_price)
-        self.change_label.setVisible(config.show_stock_price)
+        self.percent_label.setVisible(config.show_stock_price)
         self.sparkline.set_annotation_options(
             show_signals=config.show_bs_points,
             show_open_line=config.show_open_line,
             show_high_low=config.show_high_low,
+            show_fill=config.show_sparkline_fill,
             grayscale=config.grayscale,
         )
-        self.sparkline.setMinimumHeight(
-            round(config.font_size * (1.6 if compact else 2.6)) if config.show_sparkline else 0
+        self.sparkline.set_annotation_font(
+            make_font(config, pixel_size=config.chart_label_font_size)
         )
-        self.sparkline.setMinimumWidth(round(config.font_size * 4) if config.show_sparkline else 0)
-        self._layout.setContentsMargins(12, 2 if compact else 5, 12, 2 if compact else 5)
+        self._update_layout_mode()
         if self._last_quote is not None:
             self.update_quote(self._last_quote, config, self._last_trend)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt 命名
+        super().resizeEvent(event)
+        self._update_layout_mode()
+
+    def _update_layout_mode(self) -> None:
+        """格子较窄时改成纵向卡片；各类字体保持用户设置的比例。"""
+        config = self._config
+        side_font = max(config.stock_name_font_size, config.stock_price_font_size)
+        narrow = self.width() < max(120, round(side_font * 12))
+        self.name_label.setFont(
+            make_font(
+                config,
+                bold=config.stock_name_bold,
+                pixel_size=config.stock_name_font_size,
+            )
+        )
+        self.price_label.setFont(
+            make_font(
+                config,
+                bold=config.stock_price_bold,
+                pixel_size=config.stock_price_font_size,
+            )
+        )
+        self.percent_label.setFont(
+            make_font(
+                config,
+                bold=config.stock_percent_bold,
+                pixel_size=config.stock_percent_font_size,
+            )
+        )
+        self.dark_label.setFont(
+            make_font(
+                config,
+                bold=config.dark_trade_bold,
+                pixel_size=config.dark_trade_font_size,
+            )
+        )
+        self.dark_value.setFont(
+            make_font(
+                config,
+                bold=config.dark_trade_bold,
+                pixel_size=config.dark_trade_font_size,
+            )
+        )
+        show_chart = config.show_sparkline
+        compact_padding = max(2, round(config.font_size * 0.35))
+        compact_gap = max(2, round(config.font_size * 0.25))
+        stacked_sides = (
+            narrow
+            and self.width() < 180
+            and config.show_stock_name
+            and config.show_stock_price
+            and self.name_label.minimumSizeHint().width()
+            + self.price_label.minimumSizeHint().width()
+            + compact_padding * 2
+            + compact_gap
+            > self.width() - max(8, compact_gap * 2)
+        )
+        stacked_secondary = (
+            narrow
+            and self.width() < 180
+            and not self.dark_box.isHidden()
+            and config.show_stock_price
+            and self.dark_label.minimumSizeHint().width()
+            + self.dark_value.minimumSizeHint().width()
+            + self._dark_layout.spacing()
+            + self.percent_label.minimumSizeHint().width()
+            + compact_padding * 2
+            + compact_gap
+            > self.width() - max(8, compact_gap * 2)
+        )
+        layout_state = (narrow, show_chart, stacked_sides, stacked_secondary)
+        if layout_state != self._layout_state:
+            for widget in (
+                self.name_label,
+                self.price_label,
+                self.percent_label,
+                self.dark_box,
+                self.sparkline,
+            ):
+                self._layout.removeWidget(widget)
+            if narrow:
+                if stacked_sides:
+                    self._layout.addWidget(self.name_label, 0, 0, 1, 2)
+                    self._layout.addWidget(self.price_label, 1, 0, 1, 2)
+                    chart_row = 2
+                else:
+                    self._layout.addWidget(self.name_label, 0, 0)
+                    self._layout.addWidget(self.price_label, 0, 1)
+                    chart_row = 1
+                if show_chart:
+                    self._layout.addWidget(self.sparkline, chart_row, 0, 1, 2)
+                    details_row = chart_row + 1
+                else:
+                    details_row = chart_row
+                if stacked_secondary:
+                    self._layout.addWidget(
+                        self.dark_box, details_row, 0, 1, 2, Qt.AlignLeft | Qt.AlignVCenter
+                    )
+                    self._layout.addWidget(self.percent_label, details_row + 1, 0, 1, 2)
+                else:
+                    self._layout.addWidget(
+                        self.dark_box, details_row, 0, Qt.AlignLeft | Qt.AlignVCenter
+                    )
+                    self._layout.addWidget(self.percent_label, details_row, 1)
+                self._layout.setColumnStretch(0, 1)
+                # 右列按现价/涨跌幅的自然宽度分配，避免等分后文字被裁切。
+                self._layout.setColumnStretch(1, 0 if not stacked_sides else 1)
+                self._layout.setColumnStretch(2, 0)
+            else:
+                self._layout.addWidget(self.name_label, 0, 0)
+                self._layout.addWidget(self.dark_box, 1, 0, Qt.AlignLeft | Qt.AlignVCenter)
+                if show_chart:
+                    self._layout.addWidget(self.sparkline, 0, 1, 2, 1)
+                    self._layout.addWidget(self.price_label, 0, 2)
+                    self._layout.addWidget(self.percent_label, 1, 2)
+                    self._layout.setColumnStretch(0, 0)
+                    self._layout.setColumnStretch(1, 1)
+                    self._layout.setColumnStretch(2, 0)
+                else:
+                    self._layout.addWidget(self.price_label, 0, 1)
+                    self._layout.addWidget(self.percent_label, 1, 1)
+                    # 多余宽度放在内容右侧，中间不再保留走势图空位。
+                    self._layout.setColumnStretch(0, 0)
+                    self._layout.setColumnStretch(1, 0)
+                    self._layout.setColumnStretch(2, 1)
+            self._narrow = narrow
+            self._layout_state = layout_state
+
+        compact = config.compact
+        if narrow:
+            padding = max(2, round(config.font_size * 0.35))
+            gap = max(2, round(config.font_size * 0.25))
+            chart_height = round(config.font_size * (1.1 if compact else 1.5))
+            chart_width = 0
+        else:
+            padding = max(4, round(config.font_size * 0.65))
+            gap = max(4, round(config.font_size * 0.6))
+            chart_height = round(config.font_size * (1.6 if compact else 2.6))
+            chart_width = round(config.font_size * 4)
+        self._layout.setContentsMargins(padding, padding, padding, padding)
+        self._layout.setHorizontalSpacing(gap)
+        self._layout.setVerticalSpacing(1)
+        self._dark_layout.setSpacing(max(2, gap // 2))
+        self.sparkline.setMinimumHeight(chart_height if config.show_sparkline else 0)
+        self.sparkline.setMinimumWidth(chart_width if config.show_sparkline else 0)
 
     # ------------------------------------------------------------ 数据
 
@@ -94,19 +251,31 @@ class QuoteRow(QWidget):
         self._last_trend = trend
         color = direction_color(config, quote.change)
         self.name_label.setText(quote.name or quote.symbol)
+        self.name_label.setStyleSheet(
+            _color_style(configured_text_color(config.stock_name_color, color))
+        )
 
         if quote.error:
             self.price_label.setText(quote.error)
             self.price_label.setStyleSheet(_color_style(MUTED))
-            self.change_label.setText("")
+            self.percent_label.setText("")
             self.sparkline.clear()
             self._set_dark(None, config)
             return
 
         self.price_label.setText(fmt_price(quote.price))
-        self.price_label.setStyleSheet(_color_style(color))
-        self.change_label.setText(fmt_change(quote.change, quote.change_percent))
-        self.change_label.setStyleSheet(_color_style(color))
+        self.price_label.setStyleSheet(
+            _color_style(configured_text_color(config.stock_price_color, color))
+        )
+        percent_sign = "+" if quote.change_percent is not None and quote.change_percent > 0 else ""
+        self.percent_label.setText(
+            f"{percent_sign}{quote.change_percent:.2f}%"
+            if quote.change_percent is not None
+            else ""
+        )
+        self.percent_label.setStyleSheet(
+            _color_style(configured_text_color(config.stock_percent_color, color))
+        )
 
         self.sparkline.set_color(color)
         self.sparkline.push_sample(quote.price)
@@ -122,15 +291,24 @@ class QuoteRow(QWidget):
             show_signals=config.show_bs_points,
             show_open_line=config.show_open_line,
             show_high_low=config.show_high_low,
+            show_fill=config.show_sparkline_fill,
             grayscale=config.grayscale,
         )
 
         self._set_dark(quote.dark_fund, config)
+        # 文本写入后 minimumSizeHint 才准确；必要时切到更窄的堆叠布局。
+        self._update_layout_mode()
 
     def _set_dark(self, dark_fund: float | None, config: Config) -> None:
         text = fmt_money(dark_fund) if config.show_dark_trade and not config.compact else None
+        dark_color = configured_text_color(
+            config.dark_trade_color,
+            direction_color(config, dark_fund),
+        )
+        style = _color_style(dark_color)
+        self.dark_label.setStyleSheet(style)
+        self.dark_value.setStyleSheet(style)
         self.dark_box.setVisible(text is not None)
         if text is None:
             return
         self.dark_value.setText(text)
-        self.dark_value.setStyleSheet(_color_style(direction_color(config, dark_fund)))

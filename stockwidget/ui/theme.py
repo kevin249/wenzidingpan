@@ -9,6 +9,7 @@ from ..config import Config
 BACKGROUND = QColor(17, 20, 28, 209)  # 约 82% 不透明
 BORDER = QColor(255, 255, 255, 26)
 TEXT = QColor(232, 234, 240)
+BLACK = QColor(0, 0, 0)
 MUTED = QColor(139, 147, 167)
 FLAT = QColor(154, 163, 184)
 HOVER = QColor(255, 255, 255, 13)
@@ -37,12 +38,23 @@ def direction_color(config: Config, change: float | None) -> QColor:
     return FLAT
 
 
-def make_font(config: Config, scale: float = 1.0, bold: bool = False) -> QFont:
-    """所有字号都由配置里的基准字号按比例推出来，改字号时整体等比缩放。"""
+def configured_text_color(setting: str, automatic: QColor) -> QColor:
+    """解析字体颜色设置；auto 保留行情原有的涨跌色。"""
+    return QColor(automatic) if setting == "auto" else QColor(setting)
+
+
+def make_font(
+    config: Config,
+    scale: float = 1.0,
+    bold: bool = False,
+    pixel_size: int | None = None,
+) -> QFont:
+    """创建界面字体；可指定独立字号，否则使用基础字号。"""
     font = QFont()
     if config.font_family:
         font.setFamilies([f.strip() for f in config.font_family.split(",") if f.strip()])
-    font.setPixelSize(max(7, round(config.font_size * scale)))
+    base_size = config.font_size if pixel_size is None else pixel_size
+    font.setPixelSize(max(7, round(base_size * scale)))
     font.setBold(bold)
     return font
 

@@ -23,7 +23,9 @@ from .providers.base import USER_AGENT, describe_error
 
 ENDPOINT = "https://quotederivates.eastmoney.com/datacenter/darktrade"
 PAGE_SIZE = 100
-MAX_PAGES = 50  # 5000 条，足够覆盖一天有暗盘成交的个股
+# 东方财富的榜单已经可能超过 5000 条，50 页会漏掉尾部个股。
+# 仍保留一个宽松的安全上限，避免接口总数异常时无限翻页。
+MAX_PAGES = 100
 PRICE_DIVISOR = 1000  # 接口里的价格放大了 1000 倍
 CACHE_TTL_SECONDS = 10 * 60  # 日频数据，不必跟行情同频刷新
 REQUEST_TIMEOUT = 10

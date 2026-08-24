@@ -60,6 +60,10 @@ class Bounds:
     y: int
     width: int
     height: int
+    # 缩放不能从窗口绝对宽度反推：多列网格本身就可能很宽。
+    scale: float = 1.0
+    # 只有用户拖过右下角把手，才把保存的宽高视为用户指定尺寸。
+    manual_size: bool = False
 
 
 @dataclass
@@ -74,6 +78,7 @@ class Config:
     click_through: bool = False  # 鼠标穿透，只留左上角把手可拖动
     always_on_top: bool = True
     show_sparkline: bool = True
+    show_sparkline_fill: bool = False
     show_bs_points: bool = True
     show_open_line: bool = True
     show_high_low: bool = True
@@ -87,7 +92,21 @@ class Config:
     layout: str = "multi"  # multi = 多行列表，single = 单行滚动
     visible_rows: int = 4
     font_family: str = ""  # 留空表示跟随系统字体
-    font_size: int = 13
+    font_size: int = 13  # 按钮与间距的基础字号
+    stock_name_font_size: int = 12
+    stock_price_font_size: int = 15
+    stock_percent_font_size: int = 11
+    dark_trade_font_size: int = 10
+    chart_label_font_size: int = 9
+    # ``auto`` 表示沿用该数据原有的涨跌色；十六进制颜色表示固定色。
+    stock_name_color: str = "#000000"
+    stock_price_color: str = "auto"
+    stock_percent_color: str = "auto"
+    dark_trade_color: str = "#000000"
+    stock_name_bold: bool = False
+    stock_price_bold: bool = True
+    stock_percent_bold: bool = False
+    dark_trade_bold: bool = False
     bounds: Bounds | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -146,6 +165,37 @@ def sanitize(raw: Any) -> Config:
     if size is not None:
         out.font_size = int(_clamp(round(size), 9, 28))
 
+    font_defaults = {
+        "stock_name_font_size": round(out.font_size * 0.95),
+        "stock_price_font_size": round(out.font_size * 1.15),
+        "stock_percent_font_size": round(out.font_size * 0.85),
+        "dark_trade_font_size": round(out.font_size * 0.75),
+        "chart_label_font_size": round(out.font_size * 0.7),
+    }
+    for key, legacy_default in font_defaults.items():
+        size = _as_number(raw.get(key))
+        if size is not None:
+            setattr(out, key, int(_clamp(round(size), 7, 48)))
+        elif key not in raw:
+            # 旧配置只有 font_size，首次升级时沿用之前各类文字的倍率。
+            setattr(out, key, int(_clamp(legacy_default, 7, 48)))
+
+    for key in (
+        "stock_name_color",
+        "stock_price_color",
+        "stock_percent_color",
+        "dark_trade_color",
+    ):
+        color = raw.get(key)
+        if isinstance(color, str):
+            color = color.strip().lower()
+            if color == "auto":
+                setattr(out, key, color)
+            elif HEX_COLOR_RE.match(color):
+                # HTML color 控件只接受 #rrggbb，简写 #rgb 在这里展开。
+                normalized = color if len(color) == 7 else "#" + "".join(c * 2 for c in color[1:])
+                setattr(out, key, normalized)
+
     font = raw.get("font_family")
     if isinstance(font, str) and FONT_FAMILY_RE.match(font.strip()):
         out.font_family = font.strip()
@@ -153,6 +203,7 @@ def sanitize(raw: Any) -> Config:
     for key in (
         "always_on_top",
         "show_sparkline",
+        "show_sparkline_fill",
         "show_bs_points",
         "show_open_line",
         "show_high_low",
@@ -163,6 +214,10 @@ def sanitize(raw: Any) -> Config:
         "show_dark_trade",
         "compact",
         "click_through",
+        "stock_name_bold",
+        "stock_price_bold",
+        "stock_percent_bold",
+        "dark_trade_bold",
     ):
         if isinstance(raw.get(key), bool):
             setattr(out, key, raw[key])
@@ -171,11 +226,14 @@ def sanitize(raw: Any) -> Config:
     if isinstance(bounds, dict):
         values = {k: _as_number(bounds.get(k)) for k in ("x", "y", "width", "height")}
         if all(v is not None for v in values.values()):
+            scale = _as_number(bounds.get("scale"))
             out.bounds = Bounds(
                 x=int(values["x"]),
                 y=int(values["y"]),
                 width=int(_clamp(round(values["width"]), 200, 4000)),
                 height=int(_clamp(round(values["height"]), 56, 4000)),
+                scale=round(_clamp(scale if scale is not None else 1.0, 0.6, 3.0), 3),
+                manual_size=bounds.get("manual_size") is True,
             )
 
     return out

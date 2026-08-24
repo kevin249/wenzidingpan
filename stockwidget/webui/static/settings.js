@@ -9,6 +9,7 @@ const CHECKBOXES = [
   'click_through',
   'show_dark_trade',
   'show_sparkline',
+  'show_sparkline_fill',
   'show_bs_points',
   'show_open_line',
   'show_high_low',
@@ -17,9 +18,33 @@ const CHECKBOXES = [
   'grayscale',
   'intraday_chart',
   'compact',
+  'stock_name_bold',
+  'stock_price_bold',
+  'stock_percent_bold',
+  'dark_trade_bold',
 ];
-const NUMBERS = ['visible_rows', 'font_size', 'refresh_seconds', 'opacity', 'background_alpha'];
+const FONT_SIZES = [
+  'font_size',
+  'stock_name_font_size',
+  'stock_price_font_size',
+  'stock_percent_font_size',
+  'dark_trade_font_size',
+  'chart_label_font_size',
+];
+const NUMBERS = ['visible_rows', ...FONT_SIZES, 'refresh_seconds', 'opacity', 'background_alpha'];
 const TEXTS = ['provider', 'layout', 'color_scheme', 'font_family', 'background_color'];
+const FONT_COLORS = [
+  'stock_name_color',
+  'stock_price_color',
+  'stock_percent_color',
+  'dark_trade_color',
+];
+const FONT_COLOR_FALLBACKS = {
+  stock_name_color: '#000000',
+  stock_price_color: '#f04f5a',
+  stock_percent_color: '#f04f5a',
+  dark_trade_color: '#000000',
+};
 const MAX_SYMBOLS = 50;
 
 let providers = [];
@@ -161,6 +186,9 @@ function collect() {
   for (const id of TEXTS) patch[id] = el(id).value;
   for (const id of NUMBERS) patch[id] = Number(el(id).value);
   for (const id of CHECKBOXES) patch[id] = el(id).checked;
+  for (const id of FONT_COLORS) {
+    patch[id] = el(`${id}_auto`).checked ? 'auto' : el(id).value;
+  }
   return patch;
 }
 
@@ -169,6 +197,12 @@ function fill(config) {
   for (const id of TEXTS) el(id).value = config[id];
   for (const id of NUMBERS) el(id).value = config[id];
   for (const id of CHECKBOXES) el(id).checked = config[id];
+  for (const id of FONT_COLORS) {
+    const automatic = config[id] === 'auto';
+    el(`${id}_auto`).checked = automatic;
+    el(id).value = automatic ? FONT_COLOR_FALLBACKS[id] : config[id];
+    el(id).disabled = automatic;
+  }
   el('opacity-value').textContent = `${Math.round(config.opacity * 100)}%`;
   el('background_alpha-value').textContent = `${Math.round(config.background_alpha * 100)}%`;
   refreshHints();
@@ -221,13 +255,20 @@ async function apply(label = '已保存') {
 for (const id of [...CHECKBOXES, 'provider', 'layout', 'color_scheme', 'background_color']) {
   el(id).addEventListener('change', () => apply('已应用'));
 }
+for (const id of FONT_COLORS) {
+  el(id).addEventListener('change', () => apply('已应用'));
+  el(`${id}_auto`).addEventListener('change', () => {
+    el(id).disabled = el(`${id}_auto`).checked;
+    apply('已应用');
+  });
+}
 for (const [id, valueId] of [['opacity', 'opacity-value'], ['background_alpha', 'background_alpha-value']]) {
   el(id).addEventListener('input', () => {
     el(valueId).textContent = `${Math.round(Number(el(id).value) * 100)}%`;
   });
   el(id).addEventListener('change', () => apply('已应用'));
 }
-for (const id of ['visible_rows', 'font_family', 'font_size', 'refresh_seconds']) {
+for (const id of ['visible_rows', 'font_family', ...FONT_SIZES, 'refresh_seconds']) {
   el(id).addEventListener('blur', () => apply('已应用'));
 }
 el('apply').addEventListener('click', () => apply());

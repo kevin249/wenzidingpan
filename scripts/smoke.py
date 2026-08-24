@@ -151,6 +151,12 @@ def main() -> int:
             args.shots.mkdir(parents=True, exist_ok=True)
             app.window.grab().save(str(args.shots / f"{name}.png"))
 
+    def drag_to(size: QSize) -> None:
+        """按真实把手手势的开始/移动/结束顺序模拟缩放。"""
+        app.window._on_grip_drag_started(app.window.size())
+        app.window._on_grip_dragged(size)
+        app.window._on_grip_drag_finished()
+
     def step_multi() -> None:
         check("窗口已显示", app.window.isVisible())
         check("行情已渲染到窗口", len(app.window._rows) == 4, f"行数={len(app.window._rows)}")
@@ -206,14 +212,17 @@ def main() -> int:
         ))
 
     def step_scale() -> None:
-        """拖宽窗口时字号要跟着放大。"""
+        """只拖宽外框时，高度仍是限制轴；内容应留在框内且不出现滚动条。"""
         app._apply_config(store.update({"compact": False}))
-        before = app.window.scaled_config().font_size
-        app.window._on_grip_dragged(QSize(560, app.window.height()))  # 模拟拖动右下角把手
+        before = app.window.size()
+        drag_to(QSize(560, app.window.height()))  # 模拟拖动右下角把手
         QTimer.singleShot(700, lambda: (
-            check("拉宽后字号等比放大",
-                  app.window.scaled_config().font_size > before,
-                  f"{before} -> {app.window.scaled_config().font_size}"),
+            check("拉宽后外框尺寸已改变",
+                  app.window.width() > before.width(),
+                  f"{before.width()} -> {app.window.width()}"),
+            check("拉宽后内部仍无滚动条",
+                  not app.window.scroll.horizontalScrollBar().isVisible()
+                  and not app.window.scroll.verticalScrollBar().isVisible()),
             shot("shot-scaled"),
         ))
 
@@ -241,7 +250,7 @@ def main() -> int:
         ))
 
     def step_single() -> None:
-        app.window._on_grip_dragged(QSize(300, app.window.height()))  # 先把缩放拖回基准
+        drag_to(QSize(300, app.window.height()))  # 先把缩放拖回基准
         app._apply_config(store.update({"layout": "single", "font_size": 13}))
         QTimer.singleShot(900, lambda: (
             check("单行模式只占一行高", app.window.height() < 90, str(app.window.height())),

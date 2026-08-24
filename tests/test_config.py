@@ -35,6 +35,68 @@ def test_out_of_range_values_are_clamped():
     assert config.color_scheme == "cn"
 
 
+def test_independent_font_sizes_are_clamped_and_preserved():
+    config = sanitize(
+        {
+            "stock_name_font_size": 14,
+            "stock_price_font_size": 20,
+            "stock_percent_font_size": 12,
+            "dark_trade_font_size": 2,
+            "chart_label_font_size": 99,
+        }
+    )
+    assert config.stock_name_font_size == 14
+    assert config.stock_price_font_size == 20
+    assert config.stock_percent_font_size == 12
+    assert config.dark_trade_font_size == 7
+    assert config.chart_label_font_size == 48
+
+
+def test_independent_font_colors_and_weights_are_sanitized():
+    config = sanitize(
+        {
+            "stock_name_color": "#112233",
+            "stock_price_color": "AUTO",
+            "stock_percent_color": "not-a-color",
+            "dark_trade_color": "#ABC",
+            "stock_name_bold": True,
+            "stock_price_bold": False,
+            "stock_percent_bold": True,
+            "dark_trade_bold": True,
+        }
+    )
+
+    assert config.stock_name_color == "#112233"
+    assert config.stock_price_color == "auto"
+    assert config.stock_percent_color == "auto"
+    assert config.dark_trade_color == "#aabbcc"
+    assert config.stock_name_bold is True
+    assert config.stock_price_bold is False
+    assert config.stock_percent_bold is True
+    assert config.dark_trade_bold is True
+
+
+def test_font_style_defaults_preserve_existing_appearance():
+    config = sanitize({})
+    assert config.stock_name_color == "#000000"
+    assert config.stock_price_color == "auto"
+    assert config.stock_percent_color == "auto"
+    assert config.dark_trade_color == "#000000"
+    assert config.stock_name_bold is False
+    assert config.stock_price_bold is True
+    assert config.stock_percent_bold is False
+    assert config.dark_trade_bold is False
+
+
+def test_legacy_base_font_size_initializes_independent_sizes_by_old_ratios():
+    config = sanitize({"font_size": 10})
+    assert config.stock_name_font_size == 10
+    assert config.stock_price_font_size == 12
+    assert config.stock_percent_font_size == 8
+    assert config.dark_trade_font_size == 8
+    assert config.chart_label_font_size == 7
+
+
 def test_booleans_are_not_accepted_as_numbers():
     # Python 里 bool 是 int 的子类，不加防护 True 会被当成 1 秒刷新
     assert sanitize({"refresh_seconds": True}).refresh_seconds == 5
@@ -65,13 +127,53 @@ def test_bounds_require_all_four_numbers():
     assert sanitize({"bounds": {"x": 1, "y": 2}}).bounds is None
 
 
+def test_bounds_preserve_explicit_scale_and_manual_size():
+    bounds = sanitize(
+        {
+            "bounds": {
+                "x": 1,
+                "y": 2,
+                "width": 700,
+                "height": 260,
+                "scale": 1.25,
+                "manual_size": True,
+            }
+        }
+    ).bounds
+
+    assert bounds is not None
+    assert bounds.scale == 1.25
+    assert bounds.manual_size is True
+
+
 def test_store_round_trips_json(tmp_path):
     path = tmp_path / "config.json"
     store = Store(path)
-    store.update({"provider": "tencent", "visible_rows": 7})
+    store.update(
+        {
+            "provider": "tencent",
+            "visible_rows": 7,
+            "bounds": {
+                "x": 321,
+                "y": 234,
+                "width": 876,
+                "height": 198,
+                "scale": 1.4,
+                "manual_size": True,
+            },
+        }
+    )
 
     assert json.loads(path.read_text(encoding="utf-8"))["provider"] == "tencent"
-    assert Store(path).get().visible_rows == 7
+    restored = Store(path).get()
+    assert restored.visible_rows == 7
+    assert restored.bounds is not None
+    assert restored.bounds.x == 321
+    assert restored.bounds.y == 234
+    assert restored.bounds.width == 876
+    assert restored.bounds.height == 198
+    assert restored.bounds.scale == 1.4
+    assert restored.bounds.manual_size is True
 
 
 def test_store_survives_corrupt_file(tmp_path):
@@ -103,10 +205,12 @@ def test_click_through_defaults_off():
 
 def test_chart_annotation_and_label_switches_are_sanitized():
     keys = (
-        "show_bs_points", "show_open_line", "show_high_low",
+        "show_sparkline_fill", "show_bs_points", "show_open_line", "show_high_low",
         "show_stock_name", "show_stock_price", "grayscale",
     )
     config = sanitize({key: False for key in keys})
     assert all(getattr(config, key) is False for key in keys)
     # 字符串 "false" 不能冒充布尔值。
     assert sanitize({"show_bs_points": "false"}).show_bs_points is True
+    assert sanitize({}).show_sparkline_fill is False
+    assert sanitize({"show_sparkline_fill": True}).show_sparkline_fill is True

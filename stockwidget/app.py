@@ -43,6 +43,7 @@ class WidgetApp:
         self.window.settings_requested.connect(self.open_settings)
         self.window.quit_requested.connect(self.quit)
         self.window.bounds_changed.connect(self._save_bounds)
+        self.qt.aboutToQuit.connect(self._flush_bounds)
         self.window.grayscale_requested.connect(
             lambda: self._apply_config(self.store.update({"grayscale": not self.store.get().grayscale}))
         )
@@ -85,6 +86,7 @@ class WidgetApp:
         self.window.hide() if self.window.isVisible() else self.window.show()
 
     def quit(self) -> None:
+        self._flush_bounds()
         self.poller.stop()
         self.poller.wait(2000)
         self.server.stop()
@@ -100,6 +102,9 @@ class WidgetApp:
 
     def _save_bounds(self, bounds: dict) -> None:
         self.store.update({"bounds": bounds})
+
+    def _flush_bounds(self) -> None:
+        self.window.flush_bounds()
 
     def _on_snapshot(self, snapshot: Snapshot) -> None:
         listing = {p["id"]: p["label"] for p in providers.listing()}

@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import datetime
-
-from PySide6.QtCore import QPoint, QPointF, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
+from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QPalette, QPen
 from PySide6.QtWidgets import (
+    QAbstractButton,
+    QAbstractSlider,
+    QApplication,
+    QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
+    QLayout,
     QPushButton,
     QGridLayout,
     QScrollArea,
@@ -23,8 +26,6 @@ from .marquee import Marquee
 from .quote_row import QuoteRow
 from .theme import BORDER, MUTED, TEXT, make_font
 
-# 缩放基准：窗口宽度相对它的比例，就是字号与图高的放大倍数。
-REFERENCE_WIDTH = 300
 HANDLE_SIZE = 20
 
 
@@ -52,11 +53,6 @@ class TitleBar(QWidget):
         super().__init__(parent)
         self._drag_offset: QPoint | None = None
 
-        self.brand = QLabel("行情")
-        self.status = QLabel("连接中…")
-        self.brand.setStyleSheet("color: #8b93a7;")
-        self.status.setStyleSheet("color: #8b93a7;")
-
         self.refresh_button = self._button("⟳", "立即刷新", self.refresh_requested)
         self.settings_button = self._button("⚙", "在浏览器中打开设置", self.settings_requested)
         self.grayscale_button = self._button("灰", "切换彩色 / 灰度显示", self.grayscale_requested)
@@ -65,8 +61,7 @@ class TitleBar(QWidget):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(12, 5, 8, 5)
         layout.setSpacing(8)
-        layout.addWidget(self.brand)
-        layout.addWidget(self.status, 1)
+        layout.addStretch(1)
         layout.addWidget(self.refresh_button)
         layout.addWidget(self.settings_button)
         layout.addWidget(self.grayscale_button)
@@ -81,17 +76,10 @@ class TitleBar(QWidget):
         return button
 
     def apply_config(self, config: Config) -> None:
-        self.brand.setFont(make_font(config, 0.9, bold=True))
-        self.status.setFont(make_font(config, 0.82))
         self.grayscale_button.setText("彩" if config.grayscale else "灰")
         for button in (self.refresh_button, self.settings_button, self.grayscale_button, self.quit_button):
             button.setFont(make_font(config, 0.95))
             button.setFixedSize(round(config.font_size * 1.7), round(config.font_size * 1.7))
-
-    def set_status(self, text: str, error: bool = False) -> None:
-        color = "#f04f5a" if error else "#8b93a7"
-        self.status.setStyleSheet(f"color: {color};")
-        self.status.setText(text)
 
     # 无边框窗口没有系统标题栏，拖拽要自己实现。
     def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt 命名
@@ -114,7 +102,9 @@ class ResizeGrip(QWidget):
     自己接管拖拽，就能只在「用户真的在拖」的时候改缩放。
     """
 
+    drag_started = Signal(QSize)
     dragged = Signal(QSize)  # 拖出来的新窗口尺寸
+    drag_finished = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -134,6 +124,7 @@ class ResizeGrip(QWidget):
         if event.button() == Qt.LeftButton:
             self._origin = event.globalPosition().toPoint()
             self._start_size = self.window().size()
+            self.drag_started.emit(self._start_size)
             event.accept()
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802 - Qt 命名
@@ -150,6 +141,7 @@ class ResizeGrip(QWidget):
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802 - Qt 命名
         self._origin = None
+        self.drag_finished.emit()
         event.accept()
 
 
@@ -169,10 +161,17 @@ class DragHandle(QWidget):
         self.setCursor(Qt.SizeAllCursor)
         self.setToolTip("拖动移动组件（鼠标穿透已开启）")
         self._offset: QPoint | None = None
+        self._opacity = 1.0
+
+    def set_opacity(self, opacity: float) -> None:
+        """独立窗口不在主窗口的合成树里，需要单独同步透明度。"""
+        self._opacity = opacity
+        self.update()
 
     def paintEvent(self, event) -> None:  # noqa: N802 - Qt 命名
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
+        painter.setOpacity(self._opacity)
         painter.setPen(Qt.NoPen)
         painter.setBrush(QColor(17, 20, 28, 200))
         painter.drawRoundedRect(QRectF(0, 0, HANDLE_SIZE, HANDLE_SIZE), 6, 6)
@@ -221,6 +220,14 @@ class TickerWindow(QWidget):
         self._config = config
         self._rows: dict[str, QuoteRow] = {}
         self._scale = 1.0
+        self._manual_size = False
+        self._drag_start_size = QSize()
+        self._drag_start_scale = 1.0
+        self._drag_reference_height = 0
+        self._restore_scale_from_height = False
+        self._move_drag_offset: QPoint | None = None
+        self._move_drag_origin: QPoint | None = None
+        self._move_drag_active = False
 
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setWindowTitle("股票行情组件")
@@ -245,31 +252,39 @@ class TickerWindow(QWidget):
         self.scroll.setWidget(self.rows_host)
         self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QScrollArea.NoFrame)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.scroll.setStyleSheet(
-            "QScrollArea, QWidget { background: transparent; }"
-            "QScrollBar:vertical { width: 6px; background: transparent; }"
-            "QScrollBar:horizontal { height: 6px; background: transparent; }"
-            "QScrollBar::handle { background: rgba(255,255,255,0.14); border-radius: 3px; }"
-            "QScrollBar::add-line, QScrollBar::sub-line { height: 0; width: 0; }"
+            "QScrollArea, QScrollArea QWidget { background: transparent; border: none; }"
         )
+        # QScrollArea.setWidget() 会把内容控件的 autoFillBackground 自动打开，
+        # 从系统调色板刷出一块不透明灰底。挂载后必须对三层表面全部清掉。
+        for surface in (self.scroll, self.scroll.viewport(), self.rows_host):
+            surface.setAutoFillBackground(False)
+            palette = surface.palette()
+            palette.setColor(QPalette.Window, QColor(0, 0, 0, 0))
+            palette.setColor(QPalette.Base, QColor(0, 0, 0, 0))
+            surface.setPalette(palette)
 
         self.marquee = Marquee()
         self.empty_label = QLabel("自选列表为空\n点击 ⚙ 在浏览器里添加代码")
         self.empty_label.setAlignment(Qt.AlignCenter)
         self.empty_label.setStyleSheet("color: #8b93a7;")
 
-        self.updated_label = QLabel("—")
-        self.updated_label.setStyleSheet("color: #8b93a7;")
-        self.updated_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.footer = QWidget()
         footer_layout = QHBoxLayout(self.footer)
         footer_layout.setContentsMargins(12, 2, 4, 2)
-        footer_layout.addWidget(self.updated_label, 1)
+        footer_layout.addStretch(1)
         self.grip = ResizeGrip(self.footer)
+        self.grip.drag_started.connect(self._on_grip_drag_started)
         self.grip.dragged.connect(self._on_grip_dragged)
+        self.grip.drag_finished.connect(self._on_grip_drag_finished)
         footer_layout.addWidget(self.grip, 0, Qt.AlignBottom | Qt.AlignRight)
 
         layout = QVBoxLayout(self)
+        # 顶层布局不能用默认的 sizeConstraint 自动撑大窗口，否则启动恢复保存高度后，
+        # 首批行情控件加入布局时会再次改写外框尺寸。
+        layout.setSizeConstraint(QLayout.SetNoConstraint)
         layout.setContentsMargins(1, 1, 1, 1)
         layout.setSpacing(0)
         layout.addWidget(self.title_bar)
@@ -277,6 +292,18 @@ class TickerWindow(QWidget):
         layout.addWidget(self.scroll, 1)
         layout.addWidget(self.marquee)
         layout.addWidget(self.footer)
+
+        # 顶层透明特效在 Windows 上可能漏掉使用系统调色板的 QLabel。
+        # 按主要内容层分别合成，既完整覆盖子控件，又不会重复叠加透明度。
+        self._opacity_effects: list[QGraphicsOpacityEffect] = []
+        for surface in (self.title_bar, self.empty_label, self.rows_host, self.marquee, self.footer):
+            effect = QGraphicsOpacityEffect(surface)
+            surface.setGraphicsEffect(effect)
+            self._opacity_effects.append(effect)
+
+        # 未开启鼠标穿透时，窗口里的行情文字、走势图、空白区和按钮都可按住拖动。
+        # 滚动条及右下角缩放柄保留各自原本的交互。
+        self._install_move_filters(self)
 
         # 移动和缩放都很频繁，攒一下再写盘。
         self._save_timer = QTimer(self)
@@ -295,11 +322,22 @@ class TickerWindow(QWidget):
     # ------------------------------------------------------------ 外观
 
     def scaled_config(self) -> Config:
-        """把配置里的基准字号乘上窗口缩放系数，界面所有尺寸都由它推出来。"""
+        """所有独立字号统一乘窗口缩放系数，保持用户设置的相对比例。"""
         if abs(self._scale - 1.0) < 0.01:
             return self._config
-        size = int(round(_clamp(self._config.font_size * self._scale, 8, 48)))
-        return replace(self._config, font_size=size)
+
+        def scaled(value: int, low: int = 7, high: int = 96) -> int:
+            return int(round(_clamp(value * self._scale, low, high)))
+
+        return replace(
+            self._config,
+            font_size=scaled(self._config.font_size, 8, 48),
+            stock_name_font_size=scaled(self._config.stock_name_font_size),
+            stock_price_font_size=scaled(self._config.stock_price_font_size),
+            stock_percent_font_size=scaled(self._config.stock_percent_font_size),
+            dark_trade_font_size=scaled(self._config.dark_trade_font_size),
+            chart_label_font_size=scaled(self._config.chart_label_font_size),
+        )
 
     def apply_config(self, config: Config) -> None:
         previous = self._config
@@ -311,6 +349,7 @@ class TickerWindow(QWidget):
         if config.click_through:
             # 让整窗不吃鼠标事件，点击直接落到下面的程序上。
             flags |= Qt.WindowTransparentForInput
+            self._cancel_window_drag()
         if flags != self.windowFlags():
             visible = self.isVisible()
             self.setWindowFlags(flags)
@@ -318,10 +357,12 @@ class TickerWindow(QWidget):
                 self.show()  # 改 flag 会隐藏窗口，需要重新显示
 
         scaled = self.scaled_config()
-        self.setWindowOpacity(config.opacity)
+        self.setWindowOpacity(1.0)
+        for effect in self._opacity_effects:
+            effect.setOpacity(config.opacity)
+        self.handle.set_opacity(config.opacity)
         self.title_bar.apply_config(scaled)
         self.marquee.apply_config(scaled)
-        self.updated_label.setFont(make_font(scaled, 0.78))
         self.empty_label.setFont(make_font(scaled, 0.9))
         for row in self._rows.values():
             row.apply_config(scaled)
@@ -339,8 +380,14 @@ class TickerWindow(QWidget):
         self.handle.setVisible(config.click_through and self.isVisible())
         self._move_handle()
 
-        if (previous.color_scheme, previous.background_color, previous.background_alpha) != (
+        if (
+            previous.color_scheme,
+            previous.opacity,
+            previous.background_color,
+            previous.background_alpha,
+        ) != (
             config.color_scheme,
+            config.opacity,
             config.background_color,
             config.background_alpha,
         ):
@@ -354,35 +401,22 @@ class TickerWindow(QWidget):
         path.addRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 12, 12)
 
         background = QColor(self._config.background_color)
-        background.setAlphaF(self._config.background_alpha)
+        background.setAlphaF(self._config.background_alpha * self._config.opacity)
         painter.fillPath(path, background)
         if self._config.background_alpha > 0.02:  # 全透明时连边框也不该留
-            painter.setPen(QPen(BORDER, 1))
+            border = QColor(BORDER)
+            border.setAlphaF(BORDER.alphaF() * self._config.opacity)
+            painter.setPen(QPen(border, 1))
             painter.drawPath(path)
 
     # ------------------------------------------------------------ 数据
 
-    def update_snapshot(self, snapshot: Snapshot, provider_label: str) -> None:
+    def update_snapshot(self, snapshot: Snapshot, _provider_label: str) -> None:
         quotes = snapshot.quotes
         if self._config.layout == "single":
             self.marquee.set_quotes(quotes)
         else:
             self._sync_rows(quotes, snapshot.trends)
-
-        failed = sum(1 for q in quotes if q.error)
-        parts = [provider_label]
-        if failed:
-            parts.append(f"{failed} 个代码取数失败")
-        if snapshot.dark_enabled:
-            if snapshot.dark_error:
-                parts.append(f"暗盘取数失败：{snapshot.dark_error}")
-            elif snapshot.dark_date:
-                parts.append(f"暗盘 {snapshot.dark_date}")
-        self.title_bar.set_status(" · ".join(parts), error=bool(failed))
-
-        self.updated_label.setText(
-            f"更新于 {datetime.fromtimestamp(snapshot.at):%H:%M:%S} · 每 {self._config.refresh_seconds} 秒"
-        )
 
     def _sync_rows(self, quotes, trends: dict | None = None) -> None:
         trends = trends or {}
@@ -392,6 +426,7 @@ class TickerWindow(QWidget):
             if row is None:
                 row = QuoteRow(quote.symbol)
                 row.apply_config(scaled)
+                self._install_move_filters(row)
                 self._rows[quote.symbol] = row
             row.update_quote(quote, scaled, trends.get(quote.symbol))
 
@@ -408,6 +443,7 @@ class TickerWindow(QWidget):
         self.scroll.setVisible(not single and bool(self._rows))
         self.empty_label.setVisible(not single and not self._rows)
         self._resize_to_grid()
+        self._sync_restored_scale_from_height()
 
     def _grid_size(self, count: int) -> tuple[int, int]:
         """设置里的行数决定网格有几行，列数由自选数量摊出来。"""
@@ -418,14 +454,9 @@ class TickerWindow(QWidget):
     def _lay_out_grid(self, order: list[str]) -> None:
         """按自选顺序从左到右填，填满一行再换下一行。"""
         rows, columns = self._grid_size(len(order))
-        # QScrollArea 开启 widgetResizable 后会默认把内容压到视口宽度。单行平铺时
-        # 这会让每格一起缩水，最先被挤掉的正是中间的 mini K 线。明确保留每格的
-        # 最小宽度，超过屏幕的部分交给横向滚动条，而不是裁图。
-        cell_width = max(
-            (self._rows[s].minimumSizeHint().width() for s in order if s in self._rows),
-            default=0,
-        )
-        self.rows_host.setMinimumWidth(cell_width * columns)
+        # 禁止滚动条：内容宿主始终跟随视口宽度，每个 QuoteRow 再按实际格宽
+        # 在横向版与窄卡片版之间自适应。
+        self.rows_host.setMinimumWidth(0)
         if (rows, columns) == self._grid_shape and all(
             self.rows_layout.indexOf(self._rows[s]) >= 0 for s in order if s in self._rows
         ):
@@ -460,7 +491,9 @@ class TickerWindow(QWidget):
         self.setMinimumHeight(0)
         self.setMaximumHeight(16777215)
         if not self._rows:
-            self.resize(self.width(), chrome + 90)
+            if not self._manual_size:
+                self.resize(self.width(), chrome + 90)
+                self._keep_on_screen()
             return
 
         sample = next(iter(self._rows.values()))
@@ -478,29 +511,36 @@ class TickerWindow(QWidget):
         screen = self.screen()
         if screen is not None:  # 列太多时别撑出屏幕，剩下的交给横向滚动
             width = min(width, screen.availableGeometry().width())
-        if self.rows_host.minimumWidth() > width:
-            # 横向滚动条占用视口高度；把它预留出来，避免 mini K 线底部被遮住。
-            height += self.scroll.horizontalScrollBar().sizeHint().height()
-        self.resize(width, height)
+        if not self._manual_size:
+            self.resize(width, height)
+        self._keep_on_screen()
 
     def restore_bounds(self, bounds: Bounds | None, available: list) -> None:
         """恢复上次位置前先确认它仍落在某块屏幕上（外接显示器可能已拔掉）。"""
         if bounds is None:
             self.resize(300, 260)
             return
-        rect = (bounds.x, bounds.y, bounds.width, bounds.height)
-        visible = any(
-            rect[0] + rect[2] > geo.x()
-            and rect[1] + rect[3] > geo.y()
-            and rect[0] < geo.x() + geo.width()
-            and rect[1] < geo.y() + geo.height()
-            for geo in available
+        self._scale = _clamp(bounds.scale, 0.6, 3.0)
+        self._manual_size = bounds.manual_size
+        self._restore_scale_from_height = (
+            bounds.manual_size and bounds.height >= 160 and bounds.scale < 0.9
         )
-        self.resize(bounds.width, bounds.height)
-        # 上次拖成多宽，字号就该按同样比例恢复。
-        self._scale = _clamp(bounds.width / REFERENCE_WIDTH, 0.6, 3.0)
-        if visible:
+        if not available:
+            self.resize(bounds.width, bounds.height)
             self.move(bounds.x, bounds.y)
+            return
+
+        saved = QRect(bounds.x, bounds.y, bounds.width, bounds.height)
+        target = max(available, key=lambda geo: _intersection_area(saved, geo))
+        if _intersection_area(saved, target) == 0:
+            target = available[0]
+        width = min(bounds.width, target.width())
+        height = min(bounds.height, target.height())
+        x = round(_clamp(bounds.x, target.left(), target.right() - width + 1))
+        y = round(_clamp(bounds.y, target.top(), target.bottom() - height + 1))
+        self.setGeometry(x, y, width, height)
+        # restore_bounds 在构造后的 apply_config 之后调用，恢复比例后需立即刷新字体。
+        self._apply_scale()
 
     def moveEvent(self, event) -> None:  # noqa: N802 - Qt 命名
         self._save_timer.start()
@@ -510,13 +550,170 @@ class TickerWindow(QWidget):
         self._save_timer.start()
         self._move_handle()
 
+    # ------------------------------------------------------------ 整窗拖动
+
+    def _install_move_filters(self, widget: QWidget) -> None:
+        """监听整棵控件树，让行情内容区也能发起窗口移动。"""
+        widget.installEventFilter(self)
+        for child in widget.findChildren(QWidget):
+            child.installEventFilter(self)
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802 - Qt 命名
+        event_type = event.type()
+        mouse_event = event_type in (
+            QEvent.MouseButtonPress,
+            QEvent.MouseMove,
+            QEvent.MouseButtonRelease,
+        )
+        if not mouse_event:
+            return super().eventFilter(watched, event)
+
+        # 标题栏已有等价的原生处理；滚动条和缩放柄不能被移动手势抢占。
+        if watched is self.title_bar or isinstance(watched, (QAbstractSlider, ResizeGrip)):
+            return super().eventFilter(watched, event)
+
+        if self._config.click_through:
+            self._cancel_window_drag()
+            return False
+
+        if event_type == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
+            position = event.globalPosition().toPoint()
+            self._move_drag_origin = position
+            self._move_drag_offset = position - self.frameGeometry().topLeft()
+            self._move_drag_active = False
+            return False  # 未达到拖动阈值时，按钮仍可正常单击。
+
+        if (
+            event_type == QEvent.MouseMove
+            and self._move_drag_origin is not None
+            and self._move_drag_offset is not None
+            and event.buttons() & Qt.LeftButton
+        ):
+            position = event.globalPosition().toPoint()
+            if not self._move_drag_active:
+                distance = (position - self._move_drag_origin).manhattanLength()
+                if distance < QApplication.startDragDistance():
+                    return False
+                self._move_drag_active = True
+                if isinstance(watched, QAbstractButton):
+                    watched.setDown(False)
+            self.move(position - self._move_drag_offset)
+            event.accept()
+            return True
+
+        if event_type == QEvent.MouseButtonRelease and event.button() == Qt.LeftButton:
+            was_dragging = self._move_drag_active
+            if was_dragging and isinstance(watched, QAbstractButton):
+                watched.setDown(False)
+            self._cancel_window_drag()
+            if was_dragging:
+                event.accept()
+                return True
+
+        return False
+
+    def _cancel_window_drag(self) -> None:
+        self._move_drag_offset = None
+        self._move_drag_origin = None
+        self._move_drag_active = False
+
+    def _on_grip_drag_started(self, size: QSize) -> None:
+        """记录本次手势，并以当前列宽下的基准高度校准内容缩放。"""
+        self._drag_start_size = QSize(size)
+        self._drag_start_scale = self._scale
+        self._drag_reference_height = self._base_frame_height(size.width())
+        self._manual_size = True
+
     def _on_grip_dragged(self, size: QSize) -> None:
-        """只有用户真的在拖把手时才改缩放，避免布局回弹造成正反馈。"""
+        """按外框的限制轴缩放内容，并阻止右、下边缘越出屏幕。"""
+        if not self._drag_start_size.isValid():
+            self._on_grip_drag_started(self.size())
+        size = self._bounded_drag_size(size)
         self.resize(size)
-        scale = _clamp(size.width() / REFERENCE_WIDTH, 0.6, 3.0)
+        start_height = max(1, self._drag_start_size.height())
+        # 字体由高度决定；宽度只负责给走势图更多或更少的横向空间。
+        # 有行情行时使用绝对基准，避免历史上的错误 scale 一直累积。
+        if self._drag_reference_height > 0:
+            scale = _clamp(size.height() / self._drag_reference_height, 0.6, 3.0)
+        else:
+            scale = _clamp(
+                self._drag_start_scale * size.height() / start_height,
+                0.6,
+                3.0,
+            )
         if abs(scale - self._scale) > 0.02:
             self._scale = scale
             self._scale_timer.start()
+
+    def _on_grip_drag_finished(self) -> None:
+        self._drag_start_size = QSize()
+        self._drag_reference_height = 0
+
+    def _base_frame_height(self, frame_width: int) -> int:
+        """计算当前列宽下、缩放为 1 时窗口内容所需的自然高度。"""
+        if not self._rows:
+            return 0
+
+        base = self._config
+        title_probe = TitleBar()
+        title_probe.apply_config(base)
+        chrome = title_probe.sizeHint().height() + 2
+
+        if base.layout == "single":
+            marquee_probe = Marquee()
+            marquee_probe.apply_config(base)
+            return chrome + marquee_probe.height() + 4
+
+        rows, columns = self._grid_size(len(self._rows))
+        cell_width = max(1, (frame_width - 2) // columns)
+        row_probe = QuoteRow("__scale_probe__")
+        row_probe.name_label.setText("示例股票")
+        row_probe.price_label.setText("9999.99")
+        row_probe.percent_label.setText("+99.99%")
+        row_probe.dark_value.setText("+99.99亿")
+        row_probe.resize(cell_width, 100)
+        row_probe.apply_config(base)
+
+        footer = self.footer.sizeHint().height() if not base.compact else 0
+        return chrome + row_probe.sizeHint().height() * rows + footer + 8
+
+    def _sync_restored_scale_from_height(self) -> None:
+        """旧配置可能保存了错误比例；首批行情出现后按实际窗口高度修正。"""
+        if not self._restore_scale_from_height or not self._rows:
+            return
+        self._restore_scale_from_height = False
+        reference_height = self._base_frame_height(self.width())
+        if reference_height <= 0:
+            return
+        self._scale = _clamp(self.height() / reference_height, 0.6, 3.0)
+        self._apply_scale()
+
+    def _bounded_drag_size(self, size: QSize) -> QSize:
+        screen = self.screen()
+        if screen is None:
+            return QSize(max(180, size.width()), max(80, size.height()))
+        geo = screen.availableGeometry()
+        max_width = max(1, geo.right() - max(self.x(), geo.left()) + 1)
+        max_height = max(1, geo.bottom() - max(self.y(), geo.top()) + 1)
+        min_width = min(180, max_width)
+        min_height = min(80, max_height)
+        return QSize(
+            round(_clamp(size.width(), min_width, max_width)),
+            round(_clamp(size.height(), min_height, max_height)),
+        )
+
+    def _keep_on_screen(self) -> None:
+        """自动布局可能改变窗口尺寸；完成后保证整个窗口仍在当前屏幕内。"""
+        screen = self.screen()
+        if screen is None:
+            return
+        geo = screen.availableGeometry()
+        width = min(self.width(), geo.width())
+        height = min(self.height(), geo.height())
+        x = round(_clamp(self.x(), geo.left(), geo.right() - width + 1))
+        y = round(_clamp(self.y(), geo.top(), geo.bottom() - height + 1))
+        if (x, y, width, height) != (self.x(), self.y(), self.width(), self.height()):
+            self.setGeometry(x, y, width, height)
 
     def showEvent(self, event) -> None:  # noqa: N802 - Qt 命名
         self.handle.setVisible(self._config.click_through)
@@ -549,5 +746,17 @@ class TickerWindow(QWidget):
                 "y": geometry.y(),
                 "width": geometry.width(),
                 "height": geometry.height(),
+                "scale": round(self._scale, 3),
+                "manual_size": self._manual_size,
             }
         )
+
+    def flush_bounds(self) -> None:
+        """退出前立即保存最后一次位置与比例，不等待防抖定时器。"""
+        self._save_timer.stop()
+        self._emit_bounds()
+
+
+def _intersection_area(first: QRect, second: QRect) -> int:
+    intersection = first.intersected(second)
+    return max(0, intersection.width()) * max(0, intersection.height())
