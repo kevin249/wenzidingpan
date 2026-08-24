@@ -26,6 +26,8 @@ def down_color(config: Config) -> QColor:
 
 
 def direction_color(config: Config, change: float | None) -> QColor:
+    if config.grayscale:
+        return FLAT if change else MUTED
     if change is None:
         return MUTED
     if change > 0:

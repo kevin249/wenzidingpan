@@ -123,6 +123,18 @@
                         {% if config.show_dark_trade %}checked{% endif %} /> 显示东方财富暗盘资金</label>
           <label><input id="show_sparkline" name="show_sparkline" type="checkbox"
                         {% if config.show_sparkline %}checked{% endif %} /> 显示走势图</label>
+          <label><input id="show_bs_points" name="show_bs_points" type="checkbox"
+                        {% if config.show_bs_points %}checked{% endif %} /> 显示 B/S 波动点（B 红线、S 蓝线）</label>
+          <label><input id="show_open_line" name="show_open_line" type="checkbox"
+                        {% if config.show_open_line %}checked{% endif %} /> 显示开盘价横向虚线</label>
+          <label><input id="show_high_low" name="show_high_low" type="checkbox"
+                        {% if config.show_high_low %}checked{% endif %} /> 显示 mini K 最高价 / 最低价</label>
+          <label><input id="show_stock_name" name="show_stock_name" type="checkbox"
+                        {% if config.show_stock_name %}checked{% endif %} /> 显示左侧股票名称</label>
+          <label><input id="show_stock_price" name="show_stock_price" type="checkbox"
+                        {% if config.show_stock_price %}checked{% endif %} /> 显示右侧股价与涨跌</label>
+          <label><input id="grayscale" name="grayscale" type="checkbox"
+                        {% if config.grayscale %}checked{% endif %} /> 灰度显示</label>
           <label><input id="intraday_chart" name="intraday_chart" type="checkbox"
                         {% if config.intraday_chart %}checked{% endif %} /> 走势图使用当日分时数据</label>
           <label><input id="compact" name="compact" type="checkbox"

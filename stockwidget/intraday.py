@@ -51,6 +51,7 @@ class Trend:
 
     prices: list[float] = field(default_factory=list)
     prev_close: float | None = None
+    open_price: float | None = None
     error: str | None = None
 
     def __bool__(self) -> bool:
@@ -62,6 +63,49 @@ def _secid(symbol: Symbol) -> str:
     return f"{1 if symbol.market == 'sh' else 0}.{symbol.code}"
 
 
+def calculate_bs_points(prices: list[float], reversal_percent: float = 0.005) -> list[tuple[int, str]]:
+    """按波动页的反转确认法标记 B/S 点。
+
+    从当前波段极值反向运行达到 0.5% 才确认转折：谷底为 B，峰顶为 S。
+    未确认的最后一段不标记，避免实时价格小幅抖动反复产生信号。
+    """
+    if len(prices) < 3:
+        return []
+    direction = 0  # 1 上行、-1 下行；先等第一次有效波动确认方向
+    extreme_index = 0
+    extreme = prices[0]
+    low = high = prices[0]
+    low_index = high_index = 0
+    signals: list[tuple[int, str]] = []
+    for index, price in enumerate(prices[1:], 1):
+        if direction == 0:
+            if price < low:
+                low, low_index = price, index
+            if price > high:
+                high, high_index = price, index
+            if low and (price - low) / low >= reversal_percent:
+                signals.append((low_index, "B"))
+                direction, extreme, extreme_index = 1, price, index
+            elif high and (high - price) / high >= reversal_percent:
+                signals.append((high_index, "S"))
+                direction, extreme, extreme_index = -1, price, index
+        elif direction > 0:
+            if price >= extreme:
+                extreme, extreme_index = price, index
+            elif extreme and (extreme - price) / extreme >= reversal_percent:
+                signals.append((extreme_index, "S"))
+                direction = -1
+                extreme, extreme_index = price, index
+        else:
+            if price <= extreme:
+                extreme, extreme_index = price, index
+            elif extreme and (price - extreme) / extreme >= reversal_percent:
+                signals.append((extreme_index, "B"))
+                direction = 1
+                extreme, extreme_index = price, index
+    return signals
+
+
 def parse_eastmoney(payload: object) -> Trend:
     """``trends`` 每行是逗号分隔的「时间,开,收,高,低,量,额,均价」，取收盘价。"""
     data = payload.get("data") if isinstance(payload, dict) else None
@@ -69,6 +113,7 @@ def parse_eastmoney(payload: object) -> Trend:
         return Trend(error="返回格式异常")
 
     prices: list[float] = []
+    open_price: float | None = None
     for item in data.get("trends") or []:
         parts = str(item or "").split(",")
         if len(parts) < 3:
@@ -77,9 +122,12 @@ def parse_eastmoney(payload: object) -> Trend:
         minute = parts[0].strip().split(" ")[-1][:5]
         close = _number(parts[2])
         if close is not None and close > 0 and _is_trading_minute(minute):
+            if open_price is None:
+                candidate = _number(parts[1])
+                open_price = candidate if candidate is not None and candidate > 0 else close
             prices.append(close)
 
-    return Trend(prices=prices, prev_close=_number(data.get("preClose")))
+    return Trend(prices=prices, prev_close=_number(data.get("preClose")), open_price=open_price)
 
 
 def parse_tencent(payload: object, key: str) -> Trend:
@@ -99,7 +147,7 @@ def parse_tencent(payload: object, key: str) -> Trend:
             prices.append(price)
 
     # 腾讯这个接口没有稳定的昨收字段，留空由调用方用行情里的昨收补上。
-    return Trend(prices=prices)
+    return Trend(prices=prices, open_price=prices[0] if prices else None)
 
 
 class IntradayClient:

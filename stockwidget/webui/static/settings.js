@@ -9,6 +9,12 @@ const CHECKBOXES = [
   'click_through',
   'show_dark_trade',
   'show_sparkline',
+  'show_bs_points',
+  'show_open_line',
+  'show_high_low',
+  'show_stock_name',
+  'show_stock_price',
+  'grayscale',
   'intraday_chart',
   'compact',
 ];

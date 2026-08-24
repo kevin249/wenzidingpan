@@ -31,6 +31,7 @@ class Marquee(QWidget):
         self._content_width = 0
         self._paused = False
         self._config: Config | None = None
+        self._quotes: list[Quote] = []
         self.setMouseTracking(True)
 
         self._timer = QTimer(self)
@@ -43,21 +44,24 @@ class Marquee(QWidget):
         self._config = config
         self.setFont(make_font(config))
         self.setFixedHeight(round(config.font_size * 1.9))
-        self._measure()
+        self.set_quotes(self._quotes)
 
     def set_quotes(self, quotes: list[Quote]) -> None:
+        self._quotes = list(quotes)
         config = self._config
         if config is None:
             return
         segments: list[Segment] = []
         for quote in quotes:
             color = direction_color(config, quote.change)
-            segments.append(Segment(quote.name or quote.symbol, MUTED if quote.error else color, True))
+            if config.show_stock_name:
+                segments.append(Segment(quote.name or quote.symbol, MUTED if quote.error else color, True))
             if quote.error:
                 segments.append(Segment(quote.error, MUTED, False))
             else:
-                segments.append(Segment(fmt_price(quote.price), color, False))
-                segments.append(Segment(fmt_change(quote.change, quote.change_percent), color, False))
+                if config.show_stock_price:
+                    segments.append(Segment(fmt_price(quote.price), color, False))
+                    segments.append(Segment(fmt_change(quote.change, quote.change_percent), color, False))
                 if config.show_dark_trade and (text := fmt_money(quote.dark_fund)):
                     segments.append(Segment(f"暗盘 {text}", MUTED, False))
         self._segments = segments

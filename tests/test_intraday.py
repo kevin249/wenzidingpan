@@ -8,7 +8,13 @@ from __future__ import annotations
 import pytest
 import requests
 
-from stockwidget.intraday import IntradayClient, Trend, parse_eastmoney, parse_tencent
+from stockwidget.intraday import (
+    IntradayClient,
+    Trend,
+    calculate_bs_points,
+    parse_eastmoney,
+    parse_tencent,
+)
 
 
 def _em(trends: list[str], prev_close: float | None = 10.0) -> dict:
@@ -24,6 +30,7 @@ def test_eastmoney_takes_close_price_and_prev_close():
     )
     assert trend.prices == [10.10, 10.30]  # 取的是收盘价（第 3 个字段）
     assert trend.prev_close == 10.0
+    assert trend.open_price == 10.0
     assert bool(trend) is True
 
 
@@ -71,6 +78,15 @@ def test_trend_is_falsy_without_enough_points():
     assert not Trend(prices=[10.0])
     assert not Trend()
     assert Trend(prices=[10.0, 10.1])
+
+
+def test_bs_points_require_confirmed_half_percent_reversal():
+    prices = [10.00, 10.06, 10.12, 10.05, 9.98, 10.04]
+    assert calculate_bs_points(prices) == [(0, "B"), (2, "S"), (4, "B")]
+
+
+def test_bs_points_ignore_noise_and_unconfirmed_last_wave():
+    assert calculate_bs_points([10.00, 10.01, 9.99, 10.02]) == []
 
 
 def test_tencent_fallback_parses_minutes():

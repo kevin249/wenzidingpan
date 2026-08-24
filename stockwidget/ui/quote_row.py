@@ -9,7 +9,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QGridLayout, QHBoxLayout, QLabel, QSizePolicy, QWidget
 
 from ..config import Config
-from ..intraday import Trend
+from ..intraday import Trend, calculate_bs_points
 from ..providers.base import Quote
 from .sparkline import Sparkline
 from .theme import MUTED, direction_color, fmt_change, fmt_money, fmt_price, make_font
@@ -23,6 +23,8 @@ class QuoteRow(QWidget):
     def __init__(self, symbol: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.symbol = symbol
+        self._last_quote: Quote | None = None
+        self._last_trend: Trend | None = None
 
         self.name_label = QLabel()
         self.price_label = QLabel()
@@ -68,15 +70,28 @@ class QuoteRow(QWidget):
         compact = config.compact
         # 紧凑模式只省掉暗盘和页脚，走势图照画——只是压扁一点。
         self.sparkline.setVisible(config.show_sparkline)
+        self.name_label.setVisible(config.show_stock_name)
+        self.price_label.setVisible(config.show_stock_price)
+        self.change_label.setVisible(config.show_stock_price)
+        self.sparkline.set_annotation_options(
+            show_signals=config.show_bs_points,
+            show_open_line=config.show_open_line,
+            show_high_low=config.show_high_low,
+            grayscale=config.grayscale,
+        )
         self.sparkline.setMinimumHeight(
             round(config.font_size * (1.6 if compact else 2.6)) if config.show_sparkline else 0
         )
         self.sparkline.setMinimumWidth(round(config.font_size * 4) if config.show_sparkline else 0)
         self._layout.setContentsMargins(12, 2 if compact else 5, 12, 2 if compact else 5)
+        if self._last_quote is not None:
+            self.update_quote(self._last_quote, config, self._last_trend)
 
     # ------------------------------------------------------------ 数据
 
     def update_quote(self, quote: Quote, config: Config, trend: Trend | None = None) -> None:
+        self._last_quote = quote
+        self._last_trend = trend
         color = direction_color(config, quote.change)
         self.name_label.setText(quote.name or quote.symbol)
 
@@ -99,6 +114,15 @@ class QuoteRow(QWidget):
         # 分时接口给了昨收就用它的，否则用行情里的——虚线基准不能缺。
         self.sparkline.set_prev_close(
             (trend.prev_close if trend and trend.prev_close else None) or quote.prev_close
+        )
+        prices = trend.prices if trend else self.sparkline.points
+        self.sparkline.set_annotations(
+            trend.open_price if trend else (prices[0] if prices else None),
+            calculate_bs_points(prices),
+            show_signals=config.show_bs_points,
+            show_open_line=config.show_open_line,
+            show_high_low=config.show_high_low,
+            grayscale=config.grayscale,
         )
 
         self._set_dark(quote.dark_fund, config)
