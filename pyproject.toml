@@ -12,6 +12,12 @@ dependencies = [
 [project.scripts]
 stock-ticker-widget = "stockwidget.app:main"
 
+# 开发依赖：uv sync 默认会一并安装，uv sync --no-dev 可跳过。
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"

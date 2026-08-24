@@ -26,11 +26,26 @@
 
 ## 快速开始
 
+用 [uv](https://docs.astral.sh/uv/) 管理虚拟环境与依赖：
+
 ```bash
-python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-python -m stockwidget
+uv sync                      # 按 uv.lock 创建 .venv 并装好依赖
+uv run stock-ticker-widget   # 启动（等价于 uv run python -m stockwidget）
 ```
+
+`uv sync` 会自己建 `.venv`，不需要手动 `python -m venv`，也不需要 `activate`——
+`uv run` 会直接用项目的虚拟环境。本机没有合适的 Python 时，uv 会按 `requires-python`
+自动下载一个。
+
+还没装 uv 的话：
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh      # macOS / Linux
+powershell -c "irm https://astral.sh/uv/install.ps1 | iex"   # Windows
+```
+
+依赖版本锁在 `uv.lock` 里并随仓库提交，任何机器上 `uv sync` 装出来的都是同一套版本。
+改动依赖后跑 `uv lock` 更新它。
 
 启动后终端会打印一行设置页地址（带一次性 token），点组件右上角 ⚙ 或托盘菜单「设置…」
 也会直接在默认浏览器里打开它。
@@ -119,7 +134,7 @@ python -m stockwidget
 ```
 stockwidget/
   app.py             把配置、轮询、窗口、托盘、WebUI 接到一起
-  __main__.py        python -m stockwidget 入口
+  __main__.py        uv run python -m stockwidget 入口
   config.py          JSON 配置读写与校验
   symbols.py         A 股代码归一化（沪深北）
   poller.py          后台轮询线程，行情 + 暗盘合并后发信号给界面
@@ -141,14 +156,16 @@ stockwidget/
     templates/, static/
 tests/               pytest 单元测试
 scripts/smoke.py     真正跑一遍的冒烟测试，可选出图
+pyproject.toml       依赖与项目元数据（uv 读这份）
+uv.lock              锁定的依赖版本，随仓库提交
 ```
 
 ## 测试
 
 ```bash
-pytest                 # 单元测试
-python scripts/smoke.py            # 真启动一次，检查窗口与 WebUI
-python scripts/smoke.py --shots docs/   # 顺便更新截图
+uv run pytest                              # 单元测试
+uv run python scripts/smoke.py             # 真启动一次，检查窗口与 WebUI
+uv run python scripts/smoke.py --shots docs/   # 顺便更新截图
 ```
 
 单元测试覆盖配置校验、代码归一化、各数据源解析与失败降级、暗盘字段映射与分页缓存、
