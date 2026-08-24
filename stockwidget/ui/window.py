@@ -212,7 +212,7 @@ class TickerWindow(QWidget):
         if self._config.layout == "single":
             self.marquee.set_quotes(quotes)
         else:
-            self._sync_rows(quotes)
+            self._sync_rows(quotes, snapshot.trends)
 
         failed = sum(1 for q in quotes if q.error)
         parts = [provider_label]
@@ -229,7 +229,8 @@ class TickerWindow(QWidget):
             f"更新于 {datetime.fromtimestamp(snapshot.at):%H:%M:%S} · 每 {self._config.refresh_seconds} 秒"
         )
 
-    def _sync_rows(self, quotes) -> None:
+    def _sync_rows(self, quotes, trends: dict | None = None) -> None:
+        trends = trends or {}
         for index, quote in enumerate(quotes):
             row = self._rows.get(quote.symbol)
             if row is None:
@@ -238,7 +239,7 @@ class TickerWindow(QWidget):
                 self._rows[quote.symbol] = row
             # 保持与配置一致的顺序
             self.rows_layout.insertWidget(index, row)
-            row.update_quote(quote, self._config)
+            row.update_quote(quote, self._config, trends.get(quote.symbol))
 
         wanted = {q.symbol for q in quotes}
         for symbol in list(self._rows):

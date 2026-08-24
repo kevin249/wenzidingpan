@@ -11,6 +11,7 @@ from PySide6.QtCore import QThread, Signal
 from . import providers
 from .config import Config
 from .darktrade import DarkTradeClient
+from .intraday import IntradayClient, Trend
 from .providers.base import Quote
 from .symbols import classify
 
@@ -25,6 +26,8 @@ class Snapshot:
     dark_date: str = ""
     dark_error: str | None = None
     dark_enabled: bool = False
+    # 自选代码 -> 当日分时曲线，关掉分时图时为空
+    trends: dict[str, Trend] = field(default_factory=dict)
 
 
 class Poller(QThread):
@@ -34,6 +37,7 @@ class Poller(QThread):
         super().__init__(parent)
         self._config = config
         self._dark = DarkTradeClient()
+        self._intraday = IntradayClient()
         self._wake = threading.Event()
         self._stopping = threading.Event()
         self._lock = threading.Lock()
@@ -72,7 +76,18 @@ class Poller(QThread):
         snapshot = Snapshot(provider_id=provider.id, quotes=quotes, dark_enabled=config.show_dark_trade)
         if config.show_dark_trade:
             self._attach_dark_trade(quotes, snapshot)
+        if config.show_sparkline and config.intraday_chart:
+            self._attach_trends(quotes, snapshot)
         return snapshot
+
+    def _attach_trends(self, quotes: list[Quote], snapshot: Snapshot) -> None:
+        """分时曲线按分钟变化，客户端内部缓存 60 秒；拉不到就让界面回退到采样点。"""
+        for quote in quotes:
+            if quote.error:
+                continue
+            trend = self._intraday.fetch(quote.symbol)
+            if trend:
+                snapshot.trends[quote.symbol] = trend
 
     def _attach_dark_trade(self, quotes: list[Quote], snapshot: Snapshot) -> None:
         """暗盘是日频数据，客户端内部有缓存；拉不到只留空，不影响行情。"""

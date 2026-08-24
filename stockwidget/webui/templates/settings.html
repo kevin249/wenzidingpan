@@ -102,7 +102,9 @@
           <label><input id="show_dark_trade" name="show_dark_trade" type="checkbox"
                         {% if config.show_dark_trade %}checked{% endif %} /> 显示东方财富暗盘资金</label>
           <label><input id="show_sparkline" name="show_sparkline" type="checkbox"
-                        {% if config.show_sparkline %}checked{% endif %} /> 显示迷你走势图</label>
+                        {% if config.show_sparkline %}checked{% endif %} /> 显示走势图</label>
+          <label><input id="intraday_chart" name="intraday_chart" type="checkbox"
+                        {% if config.intraday_chart %}checked{% endif %} /> 走势图使用当日分时数据</label>
           <label><input id="compact" name="compact" type="checkbox"
                         {% if config.compact %}checked{% endif %} /> 紧凑模式</label>
         </div>

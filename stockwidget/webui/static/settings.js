@@ -3,7 +3,13 @@
 const token = document.body.dataset.token;
 const el = (id) => document.getElementById(id);
 
-const CHECKBOXES = ['always_on_top', 'show_dark_trade', 'show_sparkline', 'compact'];
+const CHECKBOXES = [
+  'always_on_top',
+  'show_dark_trade',
+  'show_sparkline',
+  'intraday_chart',
+  'compact',
+];
 const NUMBERS = ['visible_rows', 'font_size', 'refresh_seconds', 'opacity'];
 const TEXTS = ['provider', 'layout', 'color_scheme', 'font_family'];
 

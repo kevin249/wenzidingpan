@@ -68,6 +68,8 @@ class Config:
     opacity: float = 0.95
     always_on_top: bool = True
     show_sparkline: bool = True
+    # 走势图画当日分时曲线（联网取分钟数据）；关掉则只画组件运行期间的采样点
+    intraday_chart: bool = True
     show_dark_trade: bool = True
     compact: bool = False
     layout: str = "multi"  # multi = 多行列表，single = 单行滚动
@@ -128,7 +130,7 @@ def sanitize(raw: Any) -> Config:
     if isinstance(font, str) and FONT_FAMILY_RE.match(font.strip()):
         out.font_family = font.strip()
 
-    for key in ("always_on_top", "show_sparkline", "show_dark_trade", "compact"):
+    for key in ("always_on_top", "show_sparkline", "intraday_chart", "show_dark_trade", "compact"):
         if isinstance(raw.get(key), bool):
             setattr(out, key, raw[key])
 

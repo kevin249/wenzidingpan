@@ -72,6 +72,43 @@ def fake_dark_trade() -> None:
     DarkTradeClient.fetch = fetch
 
 
+def fake_intraday() -> None:
+    """同样连不上东财，用一条 240 分钟的随机游走冒充当日分时，验证图形渲染。"""
+    import random
+
+    from stockwidget.intraday import IntradayClient, Trend
+
+    def fetch(self, raw_symbol, now=None):  # noqa: ANN001
+        seed = sum(ord(ch) for ch in raw_symbol)
+        rng = random.Random(seed)
+        prev_close = 10 + seed % 300
+        price = prev_close * (1 + rng.uniform(-0.01, 0.01))
+        prices = []
+        for _ in range(240):  # A 股一天 4 小时 = 240 分钟
+            price *= 1 + rng.gauss(0, 0.0015)
+            prices.append(round(price, 2))
+        return Trend(prices=prices, prev_close=round(prev_close, 2))
+
+    IntradayClient.fetch = fetch
+
+
+def fake_names() -> None:
+    """mock 数据源拿代码当名称，看不出「名称压代码」的两行版式；
+    截图时给默认自选补上真实名称，让文档里的样子和联网时一致。"""
+    from stockwidget.providers.mock import MockProvider
+
+    names = {"600519": "贵州茅台", "000001": "平安银行", "300750": "宁德时代", "601318": "中国平安"}
+    original = MockProvider.fetch
+
+    def fetch(self, symbols):  # noqa: ANN001
+        quotes = original(self, symbols)
+        for quote in quotes:
+            quote.name = names.get(quote.symbol, quote.name)
+        return quotes
+
+    MockProvider.fetch = fetch
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--shots", type=Path, help="把截图写到这个目录")
@@ -82,6 +119,8 @@ def main() -> int:
         return 0
 
     fake_dark_trade()
+    fake_intraday()
+    fake_names()
 
     from PySide6.QtCore import QTimer
     from stockwidget.app import WidgetApp
@@ -110,7 +149,9 @@ def main() -> int:
         check("价格已填充", bool(row.price_label.text().strip()), row.price_label.text())
         check("暗盘资金已显示", row.dark_value.isVisible() and "亿" in row.dark_value.text()
               or "万" in row.dark_value.text(), row.dark_value.text())
-        check("窗口高度按行数自适应", 120 < app.window.height() < 420, str(app.window.height()))
+        check("窗口高度按行数自适应", 120 < app.window.height() < 460, str(app.window.height()))
+        check("分时曲线已装入走势图", len(row.sparkline.points) > 100, str(len(row.sparkline.points)))
+        check("昨收基准线有值", row.sparkline._prev_close is not None)
         shot("shot-multi")
 
     def step_font() -> None:

@@ -1,21 +1,18 @@
-"""多行模式下的一行行情。"""
+"""多行模式下的一行行情。
+
+版式：左边名称压代码，中间当日分时图，右边现价压涨跌，暗盘资金挂在左下。
+"""
 
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QGridLayout, QLabel, QWidget
+from PySide6.QtWidgets import QGridLayout, QHBoxLayout, QLabel, QSizePolicy, QWidget
 
 from ..config import Config
+from ..intraday import Trend
 from ..providers.base import Quote
 from .sparkline import Sparkline
-from .theme import (
-    MUTED,
-    direction_color,
-    fmt_change,
-    fmt_money,
-    fmt_price,
-    make_font,
-)
+from .theme import MUTED, direction_color, fmt_change, fmt_money, fmt_price, make_font
 
 
 def _color_style(color) -> str:
@@ -23,8 +20,6 @@ def _color_style(color) -> str:
 
 
 class QuoteRow(QWidget):
-    """一行包含：名称/代码、现价、迷你走势图、涨跌、暗盘资金。"""
-
     def __init__(self, symbol: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.symbol = symbol
@@ -33,54 +28,57 @@ class QuoteRow(QWidget):
         self.code_label = QLabel()
         self.price_label = QLabel()
         self.change_label = QLabel()
-        self.dark_label = QLabel("暗盘资金")
+        self.dark_label = QLabel("暗盘")
         self.dark_value = QLabel()
         self.sparkline = Sparkline()
 
         self.price_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.change_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.dark_value.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.code_label.setStyleSheet(_color_style(MUTED))
         self.dark_label.setStyleSheet(_color_style(MUTED))
+        self.sparkline.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
 
-        header = QWidget()
-        header_layout = QGridLayout(header)
-        header_layout.setContentsMargins(0, 0, 0, 0)
-        header_layout.setSpacing(6)
-        header_layout.addWidget(self.name_label, 0, 0)
-        header_layout.addWidget(self.code_label, 0, 1)
-        header_layout.setColumnStretch(2, 1)
+        self.dark_box = QWidget()
+        dark_layout = QHBoxLayout(self.dark_box)
+        dark_layout.setContentsMargins(0, 0, 0, 0)
+        dark_layout.setSpacing(5)
+        dark_layout.addWidget(self.dark_label)
+        dark_layout.addWidget(self.dark_value)
+        dark_layout.addStretch(1)
 
         layout = QGridLayout(self)
-        layout.setContentsMargins(12, 4, 12, 4)
-        layout.setHorizontalSpacing(10)
+        layout.setContentsMargins(12, 5, 12, 5)
+        layout.setHorizontalSpacing(12)
         layout.setVerticalSpacing(1)
-        layout.addWidget(header, 0, 0)
-        layout.addWidget(self.price_label, 0, 1)
-        layout.addWidget(self.sparkline, 1, 0)
-        layout.addWidget(self.change_label, 1, 1)
-        layout.addWidget(self.dark_label, 2, 0)
-        layout.addWidget(self.dark_value, 2, 1)
-        layout.setColumnStretch(0, 1)
+        layout.addWidget(self.name_label, 0, 0)
+        layout.addWidget(self.code_label, 1, 0)
+        layout.addWidget(self.dark_box, 2, 0)
+        layout.addWidget(self.sparkline, 0, 1, 3, 1)  # 走势图纵向占满整行
+        layout.addWidget(self.price_label, 0, 2)
+        layout.addWidget(self.change_label, 1, 2)
+        layout.setColumnStretch(1, 1)  # 多出来的宽度都给走势图
         self._layout = layout
 
-    # ------------------------------------------------------------ 更新
+    # ------------------------------------------------------------ 外观
 
     def apply_config(self, config: Config) -> None:
         self.name_label.setFont(make_font(config, 0.95, bold=True))
-        self.code_label.setFont(make_font(config, 0.8))
-        self.price_label.setFont(make_font(config, 1.1, bold=True))
+        self.code_label.setFont(make_font(config, 0.78))
+        self.price_label.setFont(make_font(config, 1.15, bold=True))
         self.change_label.setFont(make_font(config, 0.85))
-        self.dark_label.setFont(make_font(config, 0.8))
-        self.dark_value.setFont(make_font(config, 0.8))
-        self.sparkline.setFixedHeight(round(config.font_size * 1.3))
+        self.dark_label.setFont(make_font(config, 0.75))
+        self.dark_value.setFont(make_font(config, 0.75))
 
         compact = config.compact
+        chart = config.show_sparkline and not compact
         self.code_label.setVisible(not compact)
-        self.sparkline.setVisible(config.show_sparkline and not compact)
-        self._layout.setContentsMargins(12, 2 if compact else 4, 12, 2 if compact else 4)
+        self.sparkline.setVisible(chart)
+        self.sparkline.setMinimumHeight(round(config.font_size * (2.6 if chart else 0)))
+        self._layout.setContentsMargins(12, 2 if compact else 5, 12, 2 if compact else 5)
 
-    def update_quote(self, quote: Quote, config: Config) -> None:
+    # ------------------------------------------------------------ 数据
+
+    def update_quote(self, quote: Quote, config: Config, trend: Trend | None = None) -> None:
         color = direction_color(config, quote.change)
         self.name_label.setText(quote.name or quote.symbol)
         self.code_label.setText(quote.symbol if quote.name != quote.symbol else "")
@@ -97,16 +95,21 @@ class QuoteRow(QWidget):
         self.price_label.setStyleSheet(_color_style(color))
         self.change_label.setText(fmt_change(quote.change, quote.change_percent))
         self.change_label.setStyleSheet(_color_style(color))
+
         self.sparkline.set_color(color)
-        self.sparkline.push(quote.price)
+        self.sparkline.push_sample(quote.price)
+        self.sparkline.set_series(trend.prices if trend else [])
+        # 分时接口给了昨收就用它的，否则用行情里的——虚线基准不能缺。
+        self.sparkline.set_prev_close(
+            (trend.prev_close if trend and trend.prev_close else None) or quote.prev_close
+        )
+
         self._set_dark(quote.dark_fund, config)
 
     def _set_dark(self, dark_fund: float | None, config: Config) -> None:
         text = fmt_money(dark_fund) if config.show_dark_trade and not config.compact else None
-        visible = text is not None
-        self.dark_label.setVisible(visible)
-        self.dark_value.setVisible(visible)
-        if not visible:
+        self.dark_box.setVisible(text is not None)
+        if text is None:
             return
         self.dark_value.setText(text)
         self.dark_value.setStyleSheet(_color_style(direction_color(config, dark_fund)))
