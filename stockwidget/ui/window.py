@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QGridLayout,
     QScrollArea,
     QVBoxLayout,
     QWidget,
@@ -219,22 +220,23 @@ class TickerWindow(QWidget):
         self.title_bar.settings_requested.connect(self.settings_requested.emit)
         self.title_bar.quit_requested.connect(self.quit_requested.emit)
 
+        # 自选按「设置里的行数」铺成网格：1 行就全部横向排开，2 行就铺两行。
         self.rows_host = QWidget()
-        self.rows_layout = QVBoxLayout(self.rows_host)
+        self.rows_layout = QGridLayout(self.rows_host)
         self.rows_layout.setContentsMargins(0, 3, 0, 3)
         self.rows_layout.setSpacing(0)
-        self.rows_layout.addStretch(1)
+        self._grid_shape: tuple[int, int] = (0, 0)
 
         self.scroll = QScrollArea()
         self.scroll.setWidget(self.rows_host)
         self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QScrollArea.NoFrame)
-        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.scroll.setStyleSheet(
             "QScrollArea, QWidget { background: transparent; }"
             "QScrollBar:vertical { width: 6px; background: transparent; }"
-            "QScrollBar::handle:vertical { background: rgba(255,255,255,0.14); border-radius: 3px; }"
-            "QScrollBar::add-line, QScrollBar::sub-line { height: 0; }"
+            "QScrollBar:horizontal { height: 6px; background: transparent; }"
+            "QScrollBar::handle { background: rgba(255,255,255,0.14); border-radius: 3px; }"
+            "QScrollBar::add-line, QScrollBar::sub-line { height: 0; width: 0; }"
         )
 
         self.marquee = Marquee()
@@ -326,7 +328,7 @@ class TickerWindow(QWidget):
             config.background_alpha,
         ):
             self.update()
-        self._resize_to_rows()
+        self._resize_to_grid()
 
     def paintEvent(self, event) -> None:  # noqa: N802 - Qt 命名
         painter = QPainter(self)
@@ -374,8 +376,6 @@ class TickerWindow(QWidget):
                 row = QuoteRow(quote.symbol)
                 row.apply_config(scaled)
                 self._rows[quote.symbol] = row
-            # 保持与配置一致的顺序
-            self.rows_layout.insertWidget(index, row)
             row.update_quote(quote, scaled, trends.get(quote.symbol))
 
         wanted = {q.symbol for q in quotes}
@@ -385,15 +385,43 @@ class TickerWindow(QWidget):
                 self.rows_layout.removeWidget(row)
                 row.deleteLater()
 
+        self._lay_out_grid([q.symbol for q in quotes])
+
         single = self._config.layout == "single"
         self.scroll.setVisible(not single and bool(self._rows))
         self.empty_label.setVisible(not single and not self._rows)
-        self._resize_to_rows()
+        self._resize_to_grid()
+
+    def _grid_size(self, count: int) -> tuple[int, int]:
+        """设置里的行数决定网格有几行，列数由自选数量摊出来。"""
+        rows = max(1, min(self._config.visible_rows, max(count, 1)))
+        columns = max(1, -(-count // rows))  # 向上取整
+        return rows, columns
+
+    def _lay_out_grid(self, order: list[str]) -> None:
+        """按自选顺序从左到右填，填满一行再换下一行。"""
+        rows, columns = self._grid_size(len(order))
+        if (rows, columns) == self._grid_shape and all(
+            self.rows_layout.indexOf(self._rows[s]) >= 0 for s in order if s in self._rows
+        ):
+            return  # 形状没变，位置也都在，不必重排
+
+        for symbol in order:
+            row = self._rows.get(symbol)
+            if row is not None:
+                self.rows_layout.removeWidget(row)
+        for index, symbol in enumerate(order):
+            row = self._rows.get(symbol)
+            if row is not None:
+                self.rows_layout.addWidget(row, index // columns, index % columns)
+        for column in range(columns):
+            self.rows_layout.setColumnStretch(column, 1)
+        self._grid_shape = (rows, columns)
 
     # ------------------------------------------------------------ 尺寸
 
-    def _resize_to_rows(self) -> None:
-        """窗口高度跟着「行数 × 当前字号下的实际行高」走。"""
+    def _resize_to_grid(self) -> None:
+        """高度按网格行数算，宽度按列数摊开——1 行就是全部横向铺满。"""
         chrome = self.title_bar.sizeHint().height() + 2
         if self._config.layout == "single":
             self.setFixedHeight(chrome + self.marquee.height() + 4)
@@ -406,10 +434,23 @@ class TickerWindow(QWidget):
         if not self._rows:
             self.resize(self.width(), chrome + 90)
             return
-        row_height = next(iter(self._rows.values())).sizeHint().height()
-        count = max(1, min(self._config.visible_rows, len(self._rows)))
+
+        sample = next(iter(self._rows.values()))
+        rows, columns = self._grid_size(len(self._rows))
         footer = self.footer.sizeHint().height() if self.footer.isVisible() else 0
-        self.resize(self.width(), chrome + row_height * count + footer + 8)
+        height = chrome + sample.sizeHint().height() * rows + footer + 8
+
+        # 宽度直接问网格要：自己按 sizeHint×列数 估会漏掉边距和滚动条，
+        # 差那十几像素就会把最右一列的价格裁掉。
+        self.rows_layout.activate()
+        width = max(
+            self.rows_host.sizeHint().width() + 10,
+            columns * round(self.scaled_config().font_size * 13),
+        )
+        screen = self.screen()
+        if screen is not None:  # 列太多时别撑出屏幕，剩下的交给横向滚动
+            width = min(width, screen.availableGeometry().width())
+        self.resize(width, height)
 
     def restore_bounds(self, bounds: Bounds | None, available: list) -> None:
         """恢复上次位置前先确认它仍落在某块屏幕上（外接显示器可能已拔掉）。"""

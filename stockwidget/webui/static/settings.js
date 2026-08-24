@@ -184,7 +184,7 @@ function refreshHints() {
   el('visible_rows').disabled = single;
   el('layout-hint').textContent = single
     ? '单行滚动：所有股票在一行里横向滚动，鼠标悬停暂停；此模式下行数设置不生效。'
-    : '多行列表：窗口高度按行数自适应，自选超过行数时列表内可滚动。';
+    : '多行列表：自选按这个行数铺成网格——填 1 就全部横向排开，填 2 就铺两行，窗口宽度随之变宽。';
 }
 
 function note(text) {

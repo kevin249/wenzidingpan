@@ -1,6 +1,6 @@
-"""多行模式下的一行行情。
+"""网格里的一格行情。
 
-版式：左边名称压代码，中间当日分时图，右边现价压涨跌，暗盘资金挂在左下。
+版式：左边名称压暗盘资金，中间当日分时图，右边现价压涨跌。
 """
 
 from __future__ import annotations
@@ -25,7 +25,6 @@ class QuoteRow(QWidget):
         self.symbol = symbol
 
         self.name_label = QLabel()
-        self.code_label = QLabel()
         self.price_label = QLabel()
         self.change_label = QLabel()
         self.dark_label = QLabel("暗盘")
@@ -34,7 +33,6 @@ class QuoteRow(QWidget):
 
         self.price_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.change_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.code_label.setStyleSheet(_color_style(MUTED))
         self.dark_label.setStyleSheet(_color_style(MUTED))
         self.sparkline.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
 
@@ -51,9 +49,8 @@ class QuoteRow(QWidget):
         layout.setHorizontalSpacing(12)
         layout.setVerticalSpacing(1)
         layout.addWidget(self.name_label, 0, 0)
-        layout.addWidget(self.code_label, 1, 0)
-        layout.addWidget(self.dark_box, 2, 0)
-        layout.addWidget(self.sparkline, 0, 1, 3, 1)  # 走势图纵向占满整行
+        layout.addWidget(self.dark_box, 1, 0)
+        layout.addWidget(self.sparkline, 0, 1, 2, 1)  # 走势图纵向占满整格
         layout.addWidget(self.price_label, 0, 2)
         layout.addWidget(self.change_label, 1, 2)
         layout.setColumnStretch(1, 1)  # 多出来的宽度都给走势图
@@ -63,19 +60,18 @@ class QuoteRow(QWidget):
 
     def apply_config(self, config: Config) -> None:
         self.name_label.setFont(make_font(config, 0.95, bold=True))
-        self.code_label.setFont(make_font(config, 0.78))
         self.price_label.setFont(make_font(config, 1.15, bold=True))
         self.change_label.setFont(make_font(config, 0.85))
         self.dark_label.setFont(make_font(config, 0.75))
         self.dark_value.setFont(make_font(config, 0.75))
 
         compact = config.compact
-        # 紧凑模式只省掉代码、暗盘和页脚，走势图照画——只是压扁一点。
-        self.code_label.setVisible(not compact)
+        # 紧凑模式只省掉暗盘和页脚，走势图照画——只是压扁一点。
         self.sparkline.setVisible(config.show_sparkline)
         self.sparkline.setMinimumHeight(
             round(config.font_size * (1.6 if compact else 2.6)) if config.show_sparkline else 0
         )
+        self.sparkline.setMinimumWidth(round(config.font_size * 4) if config.show_sparkline else 0)
         self._layout.setContentsMargins(12, 2 if compact else 5, 12, 2 if compact else 5)
 
     # ------------------------------------------------------------ 数据
@@ -83,7 +79,6 @@ class QuoteRow(QWidget):
     def update_quote(self, quote: Quote, config: Config, trend: Trend | None = None) -> None:
         color = direction_color(config, quote.change)
         self.name_label.setText(quote.name or quote.symbol)
-        self.code_label.setText(quote.symbol if quote.name != quote.symbol else "")
 
         if quote.error:
             self.price_label.setText(quote.error)

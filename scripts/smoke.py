@@ -137,6 +137,15 @@ def main() -> int:
 
     steps: list = []
 
+    def _grid_rows(app) -> set:  # noqa: ANN001
+        """当前网格里所有格子占用的行号。"""
+        layout = app.window.rows_layout
+        return {
+            layout.getItemPosition(i)[0]
+            for i in range(layout.count())
+            if layout.itemAt(i).widget() is not None
+        }
+
     def shot(name: str) -> None:
         if args.shots:
             args.shots.mkdir(parents=True, exist_ok=True)
@@ -157,9 +166,34 @@ def main() -> int:
     def step_font() -> None:
         app._apply_config(store.update({"font_size": 17, "visible_rows": 2}))
         QTimer.singleShot(600, lambda: (
-            check("改字号后窗口跟着缩放", app.window.height() < 260, str(app.window.height())),
+            check("改字号后窗口跟着缩放", app.window.height() < 300, str(app.window.height())),
             shot("shot-font-rows"),
         ))
+
+    def step_tile_one_row() -> None:
+        """1 行时四只股票应该全部横向铺开，窗口变宽变矮。"""
+        app._apply_config(store.update({"font_size": 13, "visible_rows": 1}))
+        QTimer.singleShot(700, lambda: (
+            check("1 行时铺成 1×4", app.window._grid_shape == (1, 4), str(app.window._grid_shape)),
+            check("1 行时窗口宽大于高",
+                  app.window.width() > app.window.height(),
+                  f"{app.window.width()}x{app.window.height()}"),
+            check("所有股票都在第 0 行", _grid_rows(app) == {0}, str(_grid_rows(app))),
+            shot("shot-tile-1"),
+        ))
+
+    def step_tile_two_rows() -> None:
+        app._apply_config(store.update({"visible_rows": 2}))
+        QTimer.singleShot(700, lambda: (
+            check("2 行时铺成 2×2", app.window._grid_shape == (2, 2), str(app.window._grid_shape)),
+            check("2 行时占用两行", _grid_rows(app) == {0, 1}, str(_grid_rows(app))),
+            shot("shot-tile-2"),
+        ))
+
+    def step_no_code() -> None:
+        row = next(iter(app.window._rows.values()))
+        check("左侧不再显示股票代码", not hasattr(row, "code_label"))
+        check("左侧仍显示名称", bool(row.name_label.text().strip()), row.name_label.text())
 
     def step_compact() -> None:
         """紧凑模式以前会把走势图一起藏掉，这是回归点。"""
@@ -247,7 +281,10 @@ def main() -> int:
 
     steps = [
         step_multi,
+        step_no_code,
         step_font,
+        step_tile_one_row,
+        step_tile_two_rows,
         step_compact,
         step_scale,
         step_background,
