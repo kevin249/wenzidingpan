@@ -50,6 +50,27 @@ powershell -c "irm https://astral.sh/uv/install.ps1 | iex"   # Windows
 启动后终端会打印一行设置页地址（带一次性 token），点组件右上角 ⚙ 或托盘菜单「设置…」
 也会直接在默认浏览器里打开它。
 
+### 运行环境要求
+
+锁定的 PySide6 只提供二进制 wheel、没有源码包，所以能装的平台由它的 wheel 决定：
+
+| 平台 | 要求 |
+| --- | --- |
+| Windows | x86-64 / ARM64 |
+| macOS | **13 及以上**（universal2） |
+| Linux x86-64 | glibc **2.34** 及以上（Ubuntu 22.04+、Debian 12+） |
+| Linux ARM64 | glibc **2.39** 及以上（Ubuntu 24.04+） |
+
+不满足时 `uv sync` 会直接报找不到可用的 wheel。macOS 12 可以退到 PySide6 6.9.x
+（那一支还提供 `macosx_12_0` 的包）：
+
+```bash
+uv add "PySide6-Essentials>=6.6,<6.10"
+```
+
+Linux ARM64 的 glibc 2.39 门槛则退不了——上游从 6.9 到 6.11 的 aarch64 wheel 都是这个下限，
+只能换更新的发行版，或自行编译 Qt。
+
 > Linux 上如果 Qt 报 `Could not load the Qt platform plugin "xcb"`，
 > 装一下系统库：`sudo apt install libegl1 libxkbcommon-x11-0 libxcb-cursor0`。
 
