@@ -122,7 +122,7 @@ def main() -> int:
     fake_intraday()
     fake_names()
 
-    from PySide6.QtCore import Qt, QTimer
+    from PySide6.QtCore import QSize, Qt, QTimer
     from stockwidget.app import WidgetApp
     from stockwidget.config import Store
 
@@ -209,7 +209,7 @@ def main() -> int:
         """拖宽窗口时字号要跟着放大。"""
         app._apply_config(store.update({"compact": False}))
         before = app.window.scaled_config().font_size
-        app.window._on_grip_dragged(560)  # 模拟拖动右下角把手
+        app.window._on_grip_dragged(QSize(560, app.window.height()))  # 模拟拖动右下角把手
         QTimer.singleShot(700, lambda: (
             check("拉宽后字号等比放大",
                   app.window.scaled_config().font_size > before,
@@ -241,7 +241,7 @@ def main() -> int:
         ))
 
     def step_single() -> None:
-        app.window._on_grip_dragged(300)  # 先把缩放拖回基准，高度才有可比性
+        app.window._on_grip_dragged(QSize(300, app.window.height()))  # 先把缩放拖回基准
         app._apply_config(store.update({"layout": "single", "font_size": 13}))
         QTimer.singleShot(900, lambda: (
             check("单行模式只占一行高", app.window.height() < 90, str(app.window.height())),
