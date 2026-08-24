@@ -1,0 +1,26 @@
+[project]
+name = "stock-ticker-widget"
+version = "0.2.0"
+description = "A 股行情桌面悬浮组件，参数通过本地 WebUI 修改，配置以 JSON 存储"
+requires-python = ">=3.10"
+dependencies = [
+    "PySide6-Essentials>=6.6",
+    "Flask>=2.3.0",
+    "requests>=2.31.0",
+]
+
+[project.scripts]
+stock-ticker-widget = "stockwidget.app:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["stockwidget*"]
+
+[tool.setuptools.package-data]
+stockwidget = ["webui/templates/*.html", "webui/static/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

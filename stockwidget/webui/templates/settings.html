@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>行情组件设置</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='settings.css') }}" />
+  </head>
+  <body data-token="{{ token }}">
+    <main>
+      <header class="page-header">
+        <h1>行情组件设置</h1>
+        <p class="sub">改动即时生效，同时写入本地 JSON 配置文件。</p>
+      </header>
+
+      <section class="card">
+        <div class="field">
+          <label for="provider">数据源</label>
+          <select id="provider" name="provider">
+            {% for item in providers %}
+            <option value="{{ item.id }}" {% if item.id == config.provider %}selected{% endif %}>
+              {{ item.label }}
+            </option>
+            {% endfor %}
+          </select>
+          <p class="hint" id="provider-hint"></p>
+        </div>
+
+        <div class="field">
+          <label for="symbols">自选股票</label>
+          <textarea id="symbols" name="symbols" rows="6" spellcheck="false">{{ config.symbols | join('\n') }}</textarea>
+          <p class="hint">
+            每行一个，或用逗号分隔，最多 50 只。可写 <code>600519</code>、<code>sh600519</code>
+            或 <code>600519.SH</code>，交易所前缀会自动补全。示例：<span id="symbols-hint"></span>
+          </p>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>显示</h2>
+        <div class="grid">
+          <div class="field">
+            <label for="layout">显示模式</label>
+            <select id="layout" name="layout">
+              <option value="multi" {% if config.layout == 'multi' %}selected{% endif %}>多行列表</option>
+              <option value="single" {% if config.layout == 'single' %}selected{% endif %}>单行滚动</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="visible_rows">显示行数</label>
+            <input id="visible_rows" name="visible_rows" type="number" min="1" max="30" step="1"
+                   value="{{ config.visible_rows }}" />
+          </div>
+        </div>
+        <p class="hint" id="layout-hint"></p>
+
+        <div class="grid">
+          <div class="field">
+            <label for="font_family">字体</label>
+            <input id="font_family" name="font_family" type="text" list="font-presets"
+                   placeholder="跟随系统" spellcheck="false" value="{{ config.font_family }}" />
+            <datalist id="font-presets">
+              <option value="PingFang SC"></option>
+              <option value="Microsoft YaHei"></option>
+              <option value="Noto Sans SC"></option>
+              <option value="Source Han Sans SC"></option>
+              <option value="SimHei"></option>
+            </datalist>
+          </div>
+          <div class="field">
+            <label for="font_size">字号（px）</label>
+            <input id="font_size" name="font_size" type="number" min="9" max="28" step="1"
+                   value="{{ config.font_size }}" />
+          </div>
+        </div>
+        <p class="hint">字体留空表示跟随系统；填系统里已安装的字体名即可。</p>
+
+        <div class="grid">
+          <div class="field">
+            <label for="refresh_seconds">刷新间隔（秒）</label>
+            <input id="refresh_seconds" name="refresh_seconds" type="number" min="1" max="3600"
+                   step="1" value="{{ config.refresh_seconds }}" />
+          </div>
+          <div class="field">
+            <label for="color_scheme">涨跌配色</label>
+            <select id="color_scheme" name="color_scheme">
+              <option value="cn" {% if config.color_scheme == 'cn' %}selected{% endif %}>红涨绿跌（A 股）</option>
+              <option value="us" {% if config.color_scheme == 'us' %}selected{% endif %}>绿涨红跌（欧美）</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="opacity">窗口透明度 <span class="value" id="opacity-value"></span></label>
+          <input id="opacity" name="opacity" type="range" min="0.2" max="1" step="0.05"
+                 value="{{ config.opacity }}" />
+        </div>
+
+        <div class="checks">
+          <label><input id="always_on_top" name="always_on_top" type="checkbox"
+                        {% if config.always_on_top %}checked{% endif %} /> 最前显示（始终置于所有窗口之上）</label>
+          <label><input id="show_dark_trade" name="show_dark_trade" type="checkbox"
+                        {% if config.show_dark_trade %}checked{% endif %} /> 显示东方财富暗盘资金</label>
+          <label><input id="show_sparkline" name="show_sparkline" type="checkbox"
+                        {% if config.show_sparkline %}checked{% endif %} /> 显示迷你走势图</label>
+          <label><input id="compact" name="compact" type="checkbox"
+                        {% if config.compact %}checked{% endif %} /> 紧凑模式</label>
+        </div>
+      </section>
+
+      <footer class="bar">
+        <span class="saved" id="saved"></span>
+        <button id="apply" class="primary" type="button">保存并应用</button>
+      </footer>
+    </main>
+    <script src="{{ url_for('static', filename='settings.js') }}"></script>
+  </body>
+</html>
