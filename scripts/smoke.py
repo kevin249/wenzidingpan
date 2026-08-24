@@ -122,7 +122,7 @@ def main() -> int:
     fake_intraday()
     fake_names()
 
-    from PySide6.QtCore import QTimer
+    from PySide6.QtCore import Qt, QTimer
     from stockwidget.app import WidgetApp
     from stockwidget.config import Store
 
@@ -161,7 +161,53 @@ def main() -> int:
             shot("shot-font-rows"),
         ))
 
+    def step_compact() -> None:
+        """紧凑模式以前会把走势图一起藏掉，这是回归点。"""
+        app._apply_config(store.update({"compact": True, "font_size": 13, "visible_rows": 4}))
+        QTimer.singleShot(700, lambda: (
+            check("紧凑模式仍显示走势图",
+                  next(iter(app.window._rows.values())).sparkline.isVisible()),
+            check("紧凑模式确实更紧凑", app.window.height() < 260, str(app.window.height())),
+            shot("shot-compact"),
+        ))
+
+    def step_scale() -> None:
+        """拖宽窗口时字号要跟着放大。"""
+        app._apply_config(store.update({"compact": False}))
+        before = app.window.scaled_config().font_size
+        app.window._on_grip_dragged(560)  # 模拟拖动右下角把手
+        QTimer.singleShot(700, lambda: (
+            check("拉宽后字号等比放大",
+                  app.window.scaled_config().font_size > before,
+                  f"{before} -> {app.window.scaled_config().font_size}"),
+            shot("shot-scaled"),
+        ))
+
+    def step_background() -> None:
+        app._apply_config(store.update({"background_color": "#1d3f2b", "background_alpha": 0.0}))
+        QTimer.singleShot(700, lambda: (
+            check("背景可调到完全透明", app.window._config.background_alpha == 0.0),
+            shot("shot-transparent"),
+        ))
+        QTimer.singleShot(900, lambda: app._apply_config(
+            store.update({"background_color": "#11141c", "background_alpha": 0.82})
+        ))
+
+    def step_click_through() -> None:
+        app._apply_config(store.update({"click_through": True}))
+        QTimer.singleShot(700, lambda: (
+            check("穿透时窗口不吃鼠标事件",
+                  bool(app.window.windowFlags() & Qt.WindowTransparentForInput)),
+            check("穿透时左上角把手可见", app.window.handle.isVisible()),
+            shot("shot-clickthrough"),
+        ))
+        QTimer.singleShot(900, lambda: app._apply_config(store.update({"click_through": False})))
+        QTimer.singleShot(1100, lambda: check(
+            "关掉穿透后把手收起", not app.window.handle.isVisible()
+        ))
+
     def step_single() -> None:
+        app.window._on_grip_dragged(300)  # 先把缩放拖回基准，高度才有可比性
         app._apply_config(store.update({"layout": "single", "font_size": 13}))
         QTimer.singleShot(900, lambda: (
             check("单行模式只占一行高", app.window.height() < 90, str(app.window.height())),
@@ -199,7 +245,17 @@ def main() -> int:
             check("配置已写入 JSON", json.loads(config_path.read_text())["color_scheme"] == "us"),
         ))
 
-    steps = [step_multi, step_font, step_single, step_webui, step_webui_applies]
+    steps = [
+        step_multi,
+        step_font,
+        step_compact,
+        step_scale,
+        step_background,
+        step_click_through,
+        step_single,
+        step_webui,
+        step_webui_applies,
+    ]
     delay = 0.0
     for step in steps:
         delay += args.seconds

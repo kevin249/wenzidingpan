@@ -14,6 +14,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .providers import DEFAULT_PROVIDER
+
 APP_DIR_NAME = "stock-ticker-widget"
 CONFIG_FILE_NAME = "config.json"
 
@@ -21,6 +23,7 @@ LAYOUTS = ("multi", "single")
 COLOR_SCHEMES = ("cn", "us")
 # 字体名允许中英文、数字、空格、引号、逗号和连字符，挡掉可能破坏样式声明的字符。
 FONT_FAMILY_RE = re.compile(r"^[\w \-,'\"一-鿿]{0,120}$")
+HEX_COLOR_RE = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
 
 MAX_SYMBOLS = 50
 
@@ -61,11 +64,14 @@ class Bounds:
 
 @dataclass
 class Config:
-    provider: str = "eastmoney"
+    provider: str = DEFAULT_PROVIDER
     symbols: list[str] = field(default_factory=lambda: ["600519", "000001", "300750", "601318"])
     refresh_seconds: int = 5
     color_scheme: str = "cn"  # cn = 红涨绿跌，us = 绿涨红跌
-    opacity: float = 0.95
+    opacity: float = 0.95  # 整窗透明度，文字也会跟着变淡
+    background_color: str = "#11141c"
+    background_alpha: float = 0.82  # 只影响背景板；调到 0 就只剩文字和曲线浮在桌面上
+    click_through: bool = False  # 鼠标穿透，只留左上角把手可拖动
     always_on_top: bool = True
     show_sparkline: bool = True
     # 走势图画当日分时曲线（联网取分钟数据）；关掉则只画组件运行期间的采样点
@@ -118,6 +124,14 @@ def sanitize(raw: Any) -> Config:
     if opacity is not None:
         out.opacity = round(_clamp(opacity, 0.2, 1.0), 2)
 
+    background_alpha = _as_number(raw.get("background_alpha"))
+    if background_alpha is not None:
+        out.background_alpha = round(_clamp(background_alpha, 0.0, 1.0), 2)
+
+    color = raw.get("background_color")
+    if isinstance(color, str) and HEX_COLOR_RE.match(color.strip()):
+        out.background_color = color.strip().lower()
+
     rows = _as_number(raw.get("visible_rows"))
     if rows is not None:
         out.visible_rows = int(_clamp(round(rows), 1, 30))
@@ -130,7 +144,14 @@ def sanitize(raw: Any) -> Config:
     if isinstance(font, str) and FONT_FAMILY_RE.match(font.strip()):
         out.font_family = font.strip()
 
-    for key in ("always_on_top", "show_sparkline", "intraday_chart", "show_dark_trade", "compact"):
+    for key in (
+        "always_on_top",
+        "show_sparkline",
+        "intraday_chart",
+        "show_dark_trade",
+        "compact",
+        "click_through",
+    ):
         if isinstance(raw.get(key), bool):
             setattr(out, key, raw[key])
 

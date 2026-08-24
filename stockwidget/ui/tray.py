@@ -18,6 +18,8 @@ class Tray(QSystemTrayIcon):
         self.toggle_action = QAction("显示 / 隐藏", self._menu)
         self.refresh_action = QAction("立即刷新", self._menu)
         self.on_top_action = QAction("最前显示", self._menu, checkable=True)
+        # 穿透开启后窗口点不到了，托盘是唯一能关掉它的地方，必须留在这里。
+        self.click_through_action = QAction("鼠标穿透", self._menu, checkable=True)
         self.settings_action = QAction("设置…", self._menu)
         self.quit_action = QAction("退出", self._menu)
 
@@ -25,6 +27,7 @@ class Tray(QSystemTrayIcon):
         self._menu.addAction(self.refresh_action)
         self._menu.addSeparator()
         self._menu.addAction(self.on_top_action)
+        self._menu.addAction(self.click_through_action)
         self._menu.addAction(self.settings_action)
         self._menu.addSeparator()
         self._menu.addAction(self.quit_action)
@@ -33,4 +36,11 @@ class Tray(QSystemTrayIcon):
         self.apply_config(config)
 
     def apply_config(self, config: Config) -> None:
-        self.on_top_action.setChecked(config.always_on_top)
+        # 回填勾选状态时屏蔽信号，免得又反过来触发一次写配置。
+        for action, checked in (
+            (self.on_top_action, config.always_on_top),
+            (self.click_through_action, config.click_through),
+        ):
+            action.blockSignals(True)
+            action.setChecked(checked)
+            action.blockSignals(False)

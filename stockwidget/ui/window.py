@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime
 
-from PySide6.QtCore import QPoint, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QPainter, QPainterPath, QPen
+from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
     QScrollArea,
-    QSizeGrip,
     QVBoxLayout,
     QWidget,
 )
@@ -20,7 +20,15 @@ from ..config import Bounds, Config
 from ..poller import Snapshot
 from .marquee import Marquee
 from .quote_row import QuoteRow
-from .theme import BACKGROUND, BORDER, make_font
+from .theme import BORDER, MUTED, TEXT, make_font
+
+# 缩放基准：窗口宽度相对它的比例，就是字号与图高的放大倍数。
+REFERENCE_WIDTH = 300
+HANDLE_SIZE = 20
+
+
+def _clamp(value: float, low: float, high: float) -> float:
+    return min(high, max(low, value))
 
 BUTTON_STYLE = """
 QPushButton { border: none; border-radius: 6px; background: transparent; color: #8b93a7; }
@@ -93,6 +101,99 @@ class TitleBar(QWidget):
         self._drag_offset = None
 
 
+class ResizeGrip(QWidget):
+    """右下角的缩放把手。
+
+    刻意不用 ``QSizeGrip``：缩放要联动字号，而字号变大又会把控件的最小宽度顶大、
+    反过来撑宽窗口，挂在 ``resizeEvent`` 上就成了正反馈，一路顶到上限。
+    自己接管拖拽，就能只在「用户真的在拖」的时候改缩放。
+    """
+
+    dragged = Signal(int)  # 拖出来的新宽度
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setFixedSize(14, 14)
+        self.setCursor(Qt.SizeFDiagCursor)
+        self.setToolTip("拖动缩放，字体与走势图会等比放大")
+        self._origin: QPoint | None = None
+        self._start_width = 0
+
+    def paintEvent(self, event) -> None:  # noqa: N802 - Qt 命名
+        painter = QPainter(self)
+        painter.setPen(QPen(MUTED, 1.1))
+        for offset in (3, 7, 11):
+            painter.drawLine(QPointF(offset, 12), QPointF(12, offset))
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt 命名
+        if event.button() == Qt.LeftButton:
+            self._origin = event.globalPosition().toPoint()
+            self._start_width = self.window().width()
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802 - Qt 命名
+        if self._origin is None or not event.buttons() & Qt.LeftButton:
+            return
+        delta = event.globalPosition().toPoint().x() - self._origin.x()
+        self.dragged.emit(max(180, self._start_width + delta))
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 - Qt 命名
+        self._origin = None
+
+
+class DragHandle(QWidget):
+    """鼠标穿透时唯一还接收鼠标的东西：左上角一个可拖动的小把手。
+
+    主窗口开了 ``WindowTransparentForInput`` 之后连自己都点不到了，
+    所以把手必须是另一个独立窗口，跟着主窗口走。
+    """
+
+    moved = Signal(QPoint)
+
+    def __init__(self) -> None:
+        super().__init__(None, Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setFixedSize(HANDLE_SIZE, HANDLE_SIZE)
+        self.setCursor(Qt.SizeAllCursor)
+        self.setToolTip("拖动移动组件（鼠标穿透已开启）")
+        self._offset: QPoint | None = None
+
+    def paintEvent(self, event) -> None:  # noqa: N802 - Qt 命名
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(17, 20, 28, 200))
+        painter.drawRoundedRect(QRectF(0, 0, HANDLE_SIZE, HANDLE_SIZE), 6, 6)
+
+        # 四向箭头，示意这里可以拖
+        pen = QPen(TEXT, 1.2)
+        pen.setCapStyle(Qt.RoundCap)
+        painter.setPen(pen)
+        mid = HANDLE_SIZE / 2
+        arm = HANDLE_SIZE * 0.28
+        painter.drawLine(QPointF(mid, mid - arm), QPointF(mid, mid + arm))
+        painter.drawLine(QPointF(mid - arm, mid), QPointF(mid + arm, mid))
+        for dx, dy in ((0, -1), (0, 1), (-1, 0), (1, 0)):
+            tip = QPointF(mid + dx * arm, mid + dy * arm)
+            wing = HANDLE_SIZE * 0.12
+            if dx:
+                painter.drawLine(tip, QPointF(tip.x() - dx * wing, tip.y() - wing))
+                painter.drawLine(tip, QPointF(tip.x() - dx * wing, tip.y() + wing))
+            else:
+                painter.drawLine(tip, QPointF(tip.x() - wing, tip.y() - dy * wing))
+                painter.drawLine(tip, QPointF(tip.x() + wing, tip.y() - dy * wing))
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt 命名
+        if event.button() == Qt.LeftButton:
+            self._offset = event.globalPosition().toPoint() - self.pos()
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802 - Qt 命名
+        if self._offset is not None and event.buttons() & Qt.LeftButton:
+            self.moved.emit(event.globalPosition().toPoint() - self._offset)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 - Qt 命名
+        self._offset = None
+
+
 class TickerWindow(QWidget):
     """组件主窗口。"""
 
@@ -105,9 +206,13 @@ class TickerWindow(QWidget):
         super().__init__()
         self._config = config
         self._rows: dict[str, QuoteRow] = {}
+        self._scale = 1.0
 
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setWindowTitle("股票行情组件")
+
+        self.handle = DragHandle()
+        self.handle.moved.connect(self._on_handle_moved)
 
         self.title_bar = TitleBar(self)
         self.title_bar.refresh_requested.connect(self.refresh_requested.emit)
@@ -144,7 +249,9 @@ class TickerWindow(QWidget):
         footer_layout = QHBoxLayout(self.footer)
         footer_layout.setContentsMargins(12, 2, 4, 2)
         footer_layout.addWidget(self.updated_label, 1)
-        footer_layout.addWidget(QSizeGrip(self.footer), 0, Qt.AlignBottom | Qt.AlignRight)
+        self.grip = ResizeGrip(self.footer)
+        self.grip.dragged.connect(self._on_grip_dragged)
+        footer_layout.addWidget(self.grip, 0, Qt.AlignBottom | Qt.AlignRight)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(1, 1, 1, 1)
@@ -161,9 +268,22 @@ class TickerWindow(QWidget):
         self._save_timer.setInterval(400)
         self._save_timer.timeout.connect(self._emit_bounds)
 
+        # 拖动过程中每一像素都重排字体太重，等手停下来再统一缩放。
+        self._scale_timer = QTimer(self)
+        self._scale_timer.setSingleShot(True)
+        self._scale_timer.setInterval(80)
+        self._scale_timer.timeout.connect(self._apply_scale)
+
         self.apply_config(config)
 
     # ------------------------------------------------------------ 外观
+
+    def scaled_config(self) -> Config:
+        """把配置里的基准字号乘上窗口缩放系数，界面所有尺寸都由它推出来。"""
+        if abs(self._scale - 1.0) < 0.01:
+            return self._config
+        size = int(round(_clamp(self._config.font_size * self._scale, 8, 48)))
+        return replace(self._config, font_size=size)
 
     def apply_config(self, config: Config) -> None:
         previous = self._config
@@ -172,19 +292,23 @@ class TickerWindow(QWidget):
         flags = Qt.FramelessWindowHint | Qt.Tool
         if config.always_on_top:
             flags |= Qt.WindowStaysOnTopHint
+        if config.click_through:
+            # 让整窗不吃鼠标事件，点击直接落到下面的程序上。
+            flags |= Qt.WindowTransparentForInput
         if flags != self.windowFlags():
             visible = self.isVisible()
             self.setWindowFlags(flags)
             if visible:
                 self.show()  # 改 flag 会隐藏窗口，需要重新显示
 
+        scaled = self.scaled_config()
         self.setWindowOpacity(config.opacity)
-        self.title_bar.apply_config(config)
-        self.marquee.apply_config(config)
-        self.updated_label.setFont(make_font(config, 0.78))
-        self.empty_label.setFont(make_font(config, 0.9))
+        self.title_bar.apply_config(scaled)
+        self.marquee.apply_config(scaled)
+        self.updated_label.setFont(make_font(scaled, 0.78))
+        self.empty_label.setFont(make_font(scaled, 0.9))
         for row in self._rows.values():
-            row.apply_config(config)
+            row.apply_config(scaled)
 
         single = config.layout == "single"
         self.marquee.setVisible(single)
@@ -192,7 +316,15 @@ class TickerWindow(QWidget):
         self.empty_label.setVisible(not single and not self._rows)
         self.footer.setVisible(not single and not config.compact)
 
-        if previous.color_scheme != config.color_scheme:
+        # 穿透时整窗不可交互，只留左上角把手能拖。
+        self.handle.setVisible(config.click_through and self.isVisible())
+        self._move_handle()
+
+        if (previous.color_scheme, previous.background_color, previous.background_alpha) != (
+            config.color_scheme,
+            config.background_color,
+            config.background_alpha,
+        ):
             self.update()
         self._resize_to_rows()
 
@@ -201,9 +333,13 @@ class TickerWindow(QWidget):
         painter.setRenderHint(QPainter.Antialiasing)
         path = QPainterPath()
         path.addRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 12, 12)
-        painter.fillPath(path, BACKGROUND)
-        painter.setPen(QPen(BORDER, 1))
-        painter.drawPath(path)
+
+        background = QColor(self._config.background_color)
+        background.setAlphaF(self._config.background_alpha)
+        painter.fillPath(path, background)
+        if self._config.background_alpha > 0.02:  # 全透明时连边框也不该留
+            painter.setPen(QPen(BORDER, 1))
+            painter.drawPath(path)
 
     # ------------------------------------------------------------ 数据
 
@@ -231,15 +367,16 @@ class TickerWindow(QWidget):
 
     def _sync_rows(self, quotes, trends: dict | None = None) -> None:
         trends = trends or {}
+        scaled = self.scaled_config()
         for index, quote in enumerate(quotes):
             row = self._rows.get(quote.symbol)
             if row is None:
                 row = QuoteRow(quote.symbol)
-                row.apply_config(self._config)
+                row.apply_config(scaled)
                 self._rows[quote.symbol] = row
             # 保持与配置一致的顺序
             self.rows_layout.insertWidget(index, row)
-            row.update_quote(quote, self._config, trends.get(quote.symbol))
+            row.update_quote(quote, scaled, trends.get(quote.symbol))
 
         wanted = {q.symbol for q in quotes}
         for symbol in list(self._rows):
@@ -288,14 +425,45 @@ class TickerWindow(QWidget):
             for geo in available
         )
         self.resize(bounds.width, bounds.height)
+        # 上次拖成多宽，字号就该按同样比例恢复。
+        self._scale = _clamp(bounds.width / REFERENCE_WIDTH, 0.6, 3.0)
         if visible:
             self.move(bounds.x, bounds.y)
 
     def moveEvent(self, event) -> None:  # noqa: N802 - Qt 命名
         self._save_timer.start()
+        self._move_handle()
 
     def resizeEvent(self, event) -> None:  # noqa: N802 - Qt 命名
         self._save_timer.start()
+        self._move_handle()
+
+    def _on_grip_dragged(self, width: int) -> None:
+        """只有用户真的在拖把手时才改缩放，避免布局回弹造成正反馈。"""
+        self.resize(width, self.height())
+        scale = _clamp(width / REFERENCE_WIDTH, 0.6, 3.0)
+        if abs(scale - self._scale) > 0.02:
+            self._scale = scale
+            self._scale_timer.start()
+
+    def showEvent(self, event) -> None:  # noqa: N802 - Qt 命名
+        self.handle.setVisible(self._config.click_through)
+        self._move_handle()
+
+    def hideEvent(self, event) -> None:  # noqa: N802 - Qt 命名
+        self.handle.hide()
+
+    def _apply_scale(self) -> None:
+        """窗口拉大拉小之后，按新的比例把字号和图高重新推一遍。"""
+        self.apply_config(self._config)
+
+    def _move_handle(self) -> None:
+        """把手贴在窗口左上角外沿，不挡住标题栏内容。"""
+        if self.handle.isVisible():
+            self.handle.move(self.x() + 2, self.y() + 2)
+
+    def _on_handle_moved(self, position: QPoint) -> None:
+        self.move(position.x() - 2, position.y() - 2)
 
     def _emit_bounds(self) -> None:
         geometry = self.geometry()

@@ -61,6 +61,9 @@ class WidgetApp:
             self.tray.on_top_action.toggled.connect(
                 lambda checked: self._apply_config(self.store.update({"always_on_top": checked}))
             )
+            self.tray.click_through_action.toggled.connect(
+                lambda checked: self._apply_config(self.store.update({"click_through": checked}))
+            )
             self.tray.activated.connect(
                 lambda reason: self.toggle_window()
                 if reason == QSystemTrayIcon.Trigger
@@ -96,10 +99,11 @@ class WidgetApp:
         self.store.update({"bounds": bounds})
 
     def _on_snapshot(self, snapshot: Snapshot) -> None:
-        label = next(
-            (p["label"] for p in providers.listing() if p["id"] == snapshot.provider_id),
-            snapshot.provider_id,
-        )
+        listing = {p["id"]: p["label"] for p in providers.listing()}
+        label = listing.get(snapshot.provider_id, snapshot.provider_id)
+        if snapshot.effective_provider:
+            # 自动模式下把真正出数的源标出来，省得用户猜现在走的是哪家。
+            label = f"自动 · {listing.get(snapshot.effective_provider, snapshot.effective_provider)}"
         self.window.update_snapshot(snapshot, label)
 
     # ------------------------------------------------------------ 启动

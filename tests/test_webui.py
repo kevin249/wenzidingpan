@@ -42,8 +42,8 @@ def test_settings_page_renders(server):
 
 def test_read_config_returns_providers(server):
     payload = _client(server).get(f"/api/config?token={server.token}").get_json()
-    assert payload["config"]["provider"] == "eastmoney"
-    assert [p["id"] for p in payload["providers"]][0] == "eastmoney"
+    assert payload["config"]["provider"] == "auto"
+    assert [p["id"] for p in payload["providers"]][0] == "auto"
 
 
 def test_write_config_validates_persists_and_notifies(server):
@@ -71,3 +71,30 @@ def test_write_config_validates_persists_and_notifies(server):
 def test_write_config_rejects_non_object_body(server):
     response = _client(server).post(f"/api/config?token={server.token}", json=["nope"])
     assert response.status_code == 400
+
+
+def test_search_endpoint_requires_token_and_returns_results(server, monkeypatch):
+    monkeypatch.setattr(
+        server.search, "query", lambda text: {"results": [{"code": "600519", "name": "贵州茅台"}], "error": None}
+    )
+    client = _client(server)
+    assert client.get("/api/search?q=gzmt").status_code == 403
+    payload = client.get(f"/api/search?q=gzmt&token={server.token}").get_json()
+    assert payload["results"][0]["code"] == "600519"
+
+
+def test_watchlist_endpoint_requires_token(server):
+    assert _client(server).get("/api/watchlist").status_code == 403
+
+
+def test_watchlist_endpoint_survives_provider_failure(server, monkeypatch):
+    """名称只是锦上添花，取不到也得让设置页正常打开。"""
+    import stockwidget.webui.server as server_module
+
+    class _Boom:
+        def fetch(self, symbols):
+            raise RuntimeError("数据源挂了")
+
+    monkeypatch.setattr(server_module.providers, "resolve", lambda _id: _Boom())
+    payload = _client(server).get(f"/api/watchlist?token={server.token}").get_json()
+    assert payload == {"names": {}}

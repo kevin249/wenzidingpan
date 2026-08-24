@@ -6,17 +6,51 @@ import pytest
 import requests
 
 from stockwidget import providers
+from stockwidget.providers.auto import AutoProvider
+from stockwidget.providers.base import Quote
 from stockwidget.providers.eastmoney import EastmoneyProvider, detect_scale
 from stockwidget.providers.mock import MockProvider
 from stockwidget.providers.textquote import SinaProvider, TencentProvider, decode_gbk
 
 
-def test_registry_defaults_to_eastmoney():
-    assert providers.DEFAULT_PROVIDER == "eastmoney"
-    assert providers.resolve("does-not-exist").id == "eastmoney"
+def test_registry_defaults_to_auto():
+    assert providers.DEFAULT_PROVIDER == "auto"
+    assert providers.resolve("does-not-exist").id == "auto"
     ids = [item["id"] for item in providers.listing()]
-    assert ids == ["eastmoney", "tencent", "sina", "mock"]
+    assert ids == ["auto", "eastmoney", "tencent", "sina", "mock"]
     assert "yahoo" not in ids  # 已聚焦 A 股，美股数据源不再提供
+
+
+def test_auto_provider_falls_back_to_next_source():
+    """前面的源没出数就换下一个，并记住能用的那个。"""
+    dead = _StubProvider("dead", [Quote.failed("600519", "HTTP 403")])
+    alive = _StubProvider("alive", [Quote.from_prices("600519", "贵州茅台", 1680.0, 1640.0)])
+    auto = AutoProvider([dead, alive])
+
+    quotes = auto.fetch(["600519"])
+    assert quotes[0].price == 1680.0
+    assert auto.last_used == "alive"
+    assert dead.calls == 1
+
+    # 下一轮优先用上次成功的那个，不再白试前面的死源
+    auto.fetch(["600519"])
+    assert dead.calls == 1
+    assert alive.calls == 2
+
+
+def test_auto_provider_survives_raising_source():
+    boom = _RaisingProvider("boom")
+    alive = _StubProvider("alive", [Quote.from_prices("600519", "贵州茅台", 1680.0, 1640.0)])
+    assert AutoProvider([boom, alive]).fetch(["600519"])[0].price == 1680.0
+
+
+def test_auto_provider_reports_first_error_when_all_fail():
+    """全都不出数时保留第一个源的原因，而不是笼统说一句失败。"""
+    first = _StubProvider("first", [Quote.failed("600519", "HTTP 403")])
+    second = _StubProvider("second", [Quote.failed("600519", "请求超时")])
+    auto = AutoProvider([first, second])
+    assert auto.fetch(["600519"])[0].error == "HTTP 403"
+    assert auto.last_used is None
 
 
 def test_tencent_parses_and_handles_halt():
@@ -116,6 +150,31 @@ class _FailingSession:
 
     def get(self, *args, **kwargs):
         raise self._error
+
+
+class _StubProvider:
+    """固定返回预设行情的数据源，用来驱动自动回退逻辑。"""
+
+    def __init__(self, provider_id: str, quotes: list[Quote]):
+        self.id = provider_id
+        self.label = provider_id
+        self.placeholder = ""
+        self._quotes = quotes
+        self.calls = 0
+
+    def fetch(self, symbols: list[str]) -> list[Quote]:
+        self.calls += 1
+        return list(self._quotes)
+
+
+class _RaisingProvider:
+    def __init__(self, provider_id: str):
+        self.id = provider_id
+        self.label = provider_id
+        self.placeholder = ""
+
+    def fetch(self, symbols: list[str]) -> list[Quote]:
+        raise RuntimeError("源挂了")
 
 
 def _fetch_with_body(provider, body: bytes):

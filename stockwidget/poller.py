@@ -28,6 +28,8 @@ class Snapshot:
     dark_enabled: bool = False
     # 自选代码 -> 当日分时曲线，关掉分时图时为空
     trends: dict[str, Trend] = field(default_factory=dict)
+    # 「自动」模式下真正出数的那个源，供界面显示
+    effective_provider: str | None = None
 
 
 class Poller(QThread):
@@ -73,7 +75,12 @@ class Poller(QThread):
         except Exception as exc:  # 数据源整体挂掉时也要出一屏，让用户看到原因
             quotes = [Quote.failed(symbol, str(exc)[:60]) for symbol in config.symbols]
 
-        snapshot = Snapshot(provider_id=provider.id, quotes=quotes, dark_enabled=config.show_dark_trade)
+        snapshot = Snapshot(
+            provider_id=provider.id,
+            quotes=quotes,
+            dark_enabled=config.show_dark_trade,
+            effective_provider=getattr(provider, "last_used", None),
+        )
         if config.show_dark_trade:
             self._attach_dark_trade(quotes, snapshot)
         if config.show_sparkline and config.intraday_chart:

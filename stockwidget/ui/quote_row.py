@@ -70,10 +70,12 @@ class QuoteRow(QWidget):
         self.dark_value.setFont(make_font(config, 0.75))
 
         compact = config.compact
-        chart = config.show_sparkline and not compact
+        # 紧凑模式只省掉代码、暗盘和页脚，走势图照画——只是压扁一点。
         self.code_label.setVisible(not compact)
-        self.sparkline.setVisible(chart)
-        self.sparkline.setMinimumHeight(round(config.font_size * (2.6 if chart else 0)))
+        self.sparkline.setVisible(config.show_sparkline)
+        self.sparkline.setMinimumHeight(
+            round(config.font_size * (1.6 if compact else 2.6)) if config.show_sparkline else 0
+        )
         self._layout.setContentsMargins(12, 2 if compact else 5, 12, 2 if compact else 5)
 
     # ------------------------------------------------------------ 数据

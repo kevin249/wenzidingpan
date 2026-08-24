@@ -2,22 +2,156 @@
 
 const token = document.body.dataset.token;
 const el = (id) => document.getElementById(id);
+const api = (path) => `${path}${path.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`;
 
 const CHECKBOXES = [
   'always_on_top',
+  'click_through',
   'show_dark_trade',
   'show_sparkline',
   'intraday_chart',
   'compact',
 ];
-const NUMBERS = ['visible_rows', 'font_size', 'refresh_seconds', 'opacity'];
-const TEXTS = ['provider', 'layout', 'color_scheme', 'font_family'];
+const NUMBERS = ['visible_rows', 'font_size', 'refresh_seconds', 'opacity', 'background_alpha'];
+const TEXTS = ['provider', 'layout', 'color_scheme', 'font_family', 'background_color'];
+const MAX_SYMBOLS = 50;
 
 let providers = [];
+let symbols = [];
+/** 代码 -> 名称，来自搜索结果或 /api/watchlist，缺了就只显示代码 */
+let names = {};
 let savedTimer = null;
+let searchTimer = null;
+
+/* ------------------------------------------------------------ 自选列表 */
+
+function renderWatchlist() {
+  const list = el('watchlist');
+  list.innerHTML = '';
+  if (!symbols.length) {
+    const empty = document.createElement('li');
+    empty.className = 'watchlist-empty';
+    empty.textContent = '还没有自选，用上面的搜索框添加';
+    list.append(empty);
+    return;
+  }
+
+  symbols.forEach((code, index) => {
+    const item = document.createElement('li');
+    item.className = 'watchlist-item';
+
+    const label = document.createElement('span');
+    label.className = 'watchlist-name';
+    label.textContent = names[code] || code;
+    const sub = document.createElement('span');
+    sub.className = 'watchlist-code';
+    sub.textContent = names[code] ? code : '';
+
+    const actions = document.createElement('span');
+    actions.className = 'watchlist-actions';
+    actions.append(
+      button('↑', '上移', () => move(index, -1), index === 0),
+      button('↓', '下移', () => move(index, 1), index === symbols.length - 1),
+      button('✕', '移除', () => remove(index), false, 'danger')
+    );
+
+    item.append(label, sub, actions);
+    list.append(item);
+  });
+}
+
+function button(text, title, onClick, disabled = false, extra = '') {
+  const element = document.createElement('button');
+  element.type = 'button';
+  element.className = `icon-btn ${extra}`.trim();
+  element.textContent = text;
+  element.title = title;
+  element.disabled = disabled;
+  element.addEventListener('click', onClick);
+  return element;
+}
+
+function move(index, delta) {
+  const target = index + delta;
+  if (target < 0 || target >= symbols.length) return;
+  [symbols[index], symbols[target]] = [symbols[target], symbols[index]];
+  renderWatchlist();
+  apply('已应用');
+}
+
+function remove(index) {
+  symbols.splice(index, 1);
+  renderWatchlist();
+  apply('已应用');
+}
+
+function add(code, name) {
+  if (symbols.includes(code)) {
+    note(`${name || code} 已在自选里`);
+    return;
+  }
+  if (symbols.length >= MAX_SYMBOLS) {
+    note(`最多 ${MAX_SYMBOLS} 只`);
+    return;
+  }
+  symbols.push(code);
+  if (name) names[code] = name;
+  renderWatchlist();
+  apply('已添加');
+}
+
+/* ------------------------------------------------------------ 搜索 */
+
+function hideSuggestions() {
+  el('suggestions').hidden = true;
+  el('suggestions').innerHTML = '';
+}
+
+function renderSuggestions(results) {
+  const box = el('suggestions');
+  box.innerHTML = '';
+  if (!results.length) {
+    hideSuggestions();
+    return;
+  }
+  for (const item of results) {
+    const option = document.createElement('li');
+    option.className = 'suggestion';
+    option.innerHTML = '<span class="suggestion-name"></span><span class="suggestion-code"></span>';
+    option.querySelector('.suggestion-name').textContent = item.name || item.code;
+    option.querySelector('.suggestion-code').textContent = item.name ? item.code : '';
+    option.addEventListener('click', () => {
+      add(item.code, item.name);
+      el('stock-search').value = '';
+      hideSuggestions();
+    });
+    box.append(option);
+  }
+  box.hidden = false;
+}
+
+async function search(text) {
+  if (!text.trim()) {
+    hideSuggestions();
+    el('search-hint').textContent = `最多 ${MAX_SYMBOLS} 只，用按钮调整顺序。`;
+    return;
+  }
+  try {
+    const response = await fetch(api(`/api/search?q=${encodeURIComponent(text)}`));
+    const data = await response.json();
+    renderSuggestions(data.results || []);
+    el('search-hint').textContent = data.error
+      ? `搜索接口不可用（${data.error}），仍可直接输入 6 位代码添加`
+      : `最多 ${MAX_SYMBOLS} 只，用按钮调整顺序。`;
+  } catch (error) {
+    el('search-hint').textContent = `搜索失败：${error.message}`;
+  }
+}
+
+/* ------------------------------------------------------------ 表单 */
 
 function collect() {
-  const patch = { symbols: el('symbols').value };
+  const patch = { symbols };
   for (const id of TEXTS) patch[id] = el(id).value;
   for (const id of NUMBERS) patch[id] = Number(el(id).value);
   for (const id of CHECKBOXES) patch[id] = el(id).checked;
@@ -25,21 +159,26 @@ function collect() {
 }
 
 function fill(config) {
-  el('symbols').value = config.symbols.join('\n');
+  symbols = [...config.symbols];
   for (const id of TEXTS) el(id).value = config[id];
   for (const id of NUMBERS) el(id).value = config[id];
   for (const id of CHECKBOXES) el(id).checked = config[id];
   el('opacity-value').textContent = `${Math.round(config.opacity * 100)}%`;
+  el('background_alpha-value').textContent = `${Math.round(config.background_alpha * 100)}%`;
   refreshHints();
+  renderWatchlist();
 }
 
 function refreshHints() {
   const provider = providers.find((p) => p.id === el('provider').value);
+  const id = el('provider').value;
   el('provider-hint').textContent =
-    el('provider').value === 'mock'
+    id === 'mock'
       ? '离线随机行情，任何代码都能显示，适合先把界面调好。'
-      : '公开接口，无需 API key；请求频率过高可能被限流。';
-  el('symbols-hint').textContent = provider ? provider.placeholder : '';
+      : id === 'auto'
+        ? '按东财 → 腾讯 → 新浪的顺序自动挑一个能用的，并记住它。'
+        : '公开接口，无需 API key；请求频率过高可能被限流。';
+  if (provider && el('symbols-hint')) el('symbols-hint').textContent = provider.placeholder;
 
   const single = el('layout').value === 'single';
   el('visible_rows').disabled = single;
@@ -56,7 +195,7 @@ function note(text) {
 
 async function apply(label = '已保存') {
   try {
-    const response = await fetch(`/api/config?token=${encodeURIComponent(token)}`, {
+    const response = await fetch(api('/api/config'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(collect()),
@@ -70,22 +209,49 @@ async function apply(label = '已保存') {
   }
 }
 
+/* ------------------------------------------------------------ 事件 */
+
 // 开关和下拉改完即时生效，文本与数字框失焦后再提交，避免每敲一个字就写盘。
-for (const id of [...CHECKBOXES, 'provider', 'layout', 'color_scheme']) {
+for (const id of [...CHECKBOXES, 'provider', 'layout', 'color_scheme', 'background_color']) {
   el(id).addEventListener('change', () => apply('已应用'));
 }
-el('opacity').addEventListener('input', () => {
-  el('opacity-value').textContent = `${Math.round(Number(el('opacity').value) * 100)}%`;
-});
-el('opacity').addEventListener('change', () => apply('已应用'));
-for (const id of ['symbols', 'visible_rows', 'font_family', 'font_size', 'refresh_seconds']) {
+for (const [id, valueId] of [['opacity', 'opacity-value'], ['background_alpha', 'background_alpha-value']]) {
+  el(id).addEventListener('input', () => {
+    el(valueId).textContent = `${Math.round(Number(el(id).value) * 100)}%`;
+  });
+  el(id).addEventListener('change', () => apply('已应用'));
+}
+for (const id of ['visible_rows', 'font_family', 'font_size', 'refresh_seconds']) {
   el(id).addEventListener('blur', () => apply('已应用'));
 }
 el('apply').addEventListener('click', () => apply());
 
+el('stock-search').addEventListener('input', (event) => {
+  clearTimeout(searchTimer);
+  const text = event.target.value;
+  searchTimer = setTimeout(() => search(text), 250);
+});
+el('stock-search').addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') hideSuggestions();
+});
+document.addEventListener('click', (event) => {
+  if (!event.target.closest('.search')) hideSuggestions();
+});
+
+/* ------------------------------------------------------------ 启动 */
+
 (async () => {
-  const response = await fetch(`/api/config?token=${encodeURIComponent(token)}`);
+  const response = await fetch(api('/api/config'));
   const data = await response.json();
   providers = data.providers;
   fill(data.config);
+
+  // 名称是额外信息，拿不到也不影响列表可用
+  try {
+    const watchlist = await (await fetch(api('/api/watchlist'))).json();
+    names = { ...names, ...(watchlist.names || {}) };
+    renderWatchlist();
+  } catch (error) {
+    /* 离线就只显示代码 */
+  }
 })();

@@ -16,6 +16,7 @@ from flask import Flask, abort, jsonify, render_template, request
 
 from .. import providers
 from ..config import Config, Store
+from ..search import StockSearch
 
 DEFAULT_HOST = "127.0.0.1"
 
@@ -34,6 +35,7 @@ class SettingsServer:
         self.on_change = on_change
         self.host = host
         self.token = secrets.token_urlsafe(16)
+        self.search = StockSearch()
         self._port = port
         self._thread: threading.Thread | None = None
         self.app = self._build_app()
@@ -76,6 +78,26 @@ class SettingsServer:
             config = self.store.update(patch)
             self.on_change(config)
             return jsonify({"config": config.to_dict()})
+
+        @app.get("/api/search")
+        def search():
+            """按代码/名称/拼音/首字母找股票，供自选列表的搜索框用。"""
+            require_token()
+            return jsonify(self.search.query(request.args.get("q", "")))
+
+        @app.get("/api/watchlist")
+        def watchlist():
+            """给自选里的代码补上名称，一次请求解决，拉不到就只显示代码。"""
+            require_token()
+            config = self.store.get()
+            names: dict[str, str] = {}
+            try:
+                for quote in providers.resolve(config.provider).fetch(list(config.symbols)):
+                    if not quote.error and quote.name != quote.symbol:
+                        names[quote.symbol] = quote.name
+            except Exception:
+                pass
+            return jsonify({"names": names})
 
         return app
 
