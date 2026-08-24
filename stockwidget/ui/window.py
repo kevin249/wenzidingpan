@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import datetime
 
-from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QPoint, QPointF, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QHBoxLayout,
@@ -114,7 +114,7 @@ class ResizeGrip(QWidget):
     自己接管拖拽，就能只在「用户真的在拖」的时候改缩放。
     """
 
-    dragged = Signal(int)  # 拖出来的新宽度
+    dragged = Signal(QSize)  # 拖出来的新窗口尺寸
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -122,7 +122,7 @@ class ResizeGrip(QWidget):
         self.setCursor(Qt.SizeFDiagCursor)
         self.setToolTip("拖动缩放，字体与走势图会等比放大")
         self._origin: QPoint | None = None
-        self._start_width = 0
+        self._start_size = QSize()
 
     def paintEvent(self, event) -> None:  # noqa: N802 - Qt 命名
         painter = QPainter(self)
@@ -133,16 +133,24 @@ class ResizeGrip(QWidget):
     def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt 命名
         if event.button() == Qt.LeftButton:
             self._origin = event.globalPosition().toPoint()
-            self._start_width = self.window().width()
+            self._start_size = self.window().size()
+            event.accept()
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802 - Qt 命名
         if self._origin is None or not event.buttons() & Qt.LeftButton:
             return
-        delta = event.globalPosition().toPoint().x() - self._origin.x()
-        self.dragged.emit(max(180, self._start_width + delta))
+        delta = event.globalPosition().toPoint() - self._origin
+        self.dragged.emit(
+            QSize(
+                max(180, self._start_size.width() + delta.x()),
+                max(80, self._start_size.height() + delta.y()),
+            )
+        )
+        event.accept()
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802 - Qt 命名
         self._origin = None
+        event.accept()
 
 
 class DragHandle(QWidget):
@@ -502,10 +510,10 @@ class TickerWindow(QWidget):
         self._save_timer.start()
         self._move_handle()
 
-    def _on_grip_dragged(self, width: int) -> None:
+    def _on_grip_dragged(self, size: QSize) -> None:
         """只有用户真的在拖把手时才改缩放，避免布局回弹造成正反馈。"""
-        self.resize(width, self.height())
-        scale = _clamp(width / REFERENCE_WIDTH, 0.6, 3.0)
+        self.resize(size)
+        scale = _clamp(size.width() / REFERENCE_WIDTH, 0.6, 3.0)
         if abs(scale - self._scale) > 0.02:
             self._scale = scale
             self._scale_timer.start()
@@ -519,7 +527,11 @@ class TickerWindow(QWidget):
 
     def _apply_scale(self) -> None:
         """窗口拉大拉小之后，按新的比例把字号和图高重新推一遍。"""
+        # apply_config 会按内容重算默认尺寸。拖拽是用户的明确选择，
+        # 应在更新字号后恢复，否则鼠标一停窗口就会弹回去。
+        dragged_size = self.size()
         self.apply_config(self._config)
+        self.resize(dragged_size)
 
     def _move_handle(self) -> None:
         """把手贴在窗口左上角外沿，不挡住标题栏内容。"""
