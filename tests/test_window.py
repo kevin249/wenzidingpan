@@ -250,14 +250,14 @@ def test_chart_height_overrides_the_font_derived_height(app):
     row.apply_config(Config(font_size=13, chart_height=90))
     assert row.sparkline.sizeHint().height() == 90
     assert row.sparkline.maximumHeight() == 90  # 有空间时就是这么高，不再更高
-    # 硬下限仍是字号推算的高度，窗口塞不下时走势图先被压扁而不是顶出可视区
-    assert row.sparkline.minimumHeight() == automatic
+    # 不留硬下限：窗口塞不下时走势图一路压扁让位，不会把行顶出可视区
+    assert row.sparkline.minimumHeight() == 0
     assert row.sizeHint().height() > automatic
 
     # 改回 0 应恢复成按字号推算，并解除高度上限
     row.apply_config(Config(font_size=13))
     assert row.sparkline.sizeHint().height() == automatic
-    assert row.sparkline.minimumHeight() == automatic
+    assert row.sparkline.minimumHeight() == 0
     assert row.sparkline.maximumHeight() == 16777215
     row.close()
 
@@ -338,6 +338,31 @@ def test_switching_back_to_sides_widens_the_window_again(app):
     app.processEvents()
     assert layout.getItemPosition(layout.indexOf(row.sparkline)) == (0, 1, 2, 1)
     assert all(row._narrow is False for row in window._rows.values())
+    window.close()
+
+
+def test_stacked_rows_stay_reachable_when_the_row_count_is_high(app):
+    """上中下每格多一行走势图，行数一多更容易顶出屏幕；
+    走势图必须能一路压扁让位，文字不能被挤出可视区。"""
+    from stockwidget.providers.base import Quote
+
+    count = 12
+    quotes = []
+    for index in range(count):
+        quote = Quote.from_prices(f"6005{index:02d}", f"股票{index:02d}", 1304.66, 1272.83)
+        quote.dark_fund = 198_000_000
+        quotes.append(quote)
+
+    window = TickerWindow(Config(visible_rows=count, row_style="stacked"))
+    window._sync_rows(quotes)
+    window.show()
+    app.processEvents()
+
+    viewport = window.scroll.viewport()
+    assert window.rows_host.height() <= viewport.height()
+    for row in window._rows.values():
+        label = row.percent_label
+        assert label.mapTo(viewport, label.rect().bottomLeft()).y() <= viewport.height()
     window.close()
 
 

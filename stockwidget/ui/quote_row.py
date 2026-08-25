@@ -268,10 +268,11 @@ class QuoteRow(QWidget):
             self.sparkline.setMinimumHeight(0)
             self.sparkline.setMaximumHeight(MAX_WIDGET_SIZE)
             return
-        # 想要的高度走 sizeHint，硬下限只留字号推算出的那点高度：窗口塞不下时
-        # （屏幕不够高、或用户把外框拖小）走势图先被压扁，而不是把行顶出可视区。
+        # 想要的高度走 sizeHint，不设硬下限：窗口塞不下时（行数多、屏幕不够高、
+        # 或用户把外框拖小）走势图一路压扁直到让位，而不是把后面的行顶出可视区。
+        # 有地方放时布局照 sizeHint 给足高度，外观和以前一样。
         self.sparkline.set_preferred_height(chart_height)
-        self.sparkline.setMinimumHeight(min(chart_height, auto_height))
+        self.sparkline.setMinimumHeight(0)
         # 自动模式下走势图仍可随格子拉伸，只有显式设了高度才封顶。
         self.sparkline.setMaximumHeight(chart_height if fixed_chart else MAX_WIDGET_SIZE)
 
