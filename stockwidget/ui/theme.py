@@ -73,11 +73,11 @@ def fmt_change(change: float | None, percent: float | None) -> str:
 
 
 def fmt_money(yuan: float | None) -> str | None:
-    """暗盘资金接口给的是元，按东财口径折算成万 / 亿。"""
+    """暗盘资金接口给的是元，一律折算成亿并保留两位小数。
+
+    不足一亿的也写成 0.XX 亿，单位始终一致，扫一眼就能横向比大小。
+    """
     if yuan is None:
         return None
     sign = "+" if yuan > 0 else "-" if yuan < 0 else ""
-    magnitude = abs(yuan)
-    if magnitude >= 1e8:
-        return f"{sign}{magnitude / 1e8:.2f}亿"
-    return f"{sign}{magnitude / 1e4:.2f}万"
+    return f"{sign}{abs(yuan) / 1e8:.2f}亿"

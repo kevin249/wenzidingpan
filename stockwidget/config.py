@@ -20,6 +20,8 @@ APP_DIR_NAME = "stock-ticker-widget"
 CONFIG_FILE_NAME = "config.json"
 
 LAYOUTS = ("multi", "single")
+# sides = 左中右（左右各两行文字），stacked = 上中下（上下各一行文字）
+ROW_STYLES = ("sides", "stacked")
 COLOR_SCHEMES = ("cn", "us")
 # 字体名允许中英文、数字、空格、引号、逗号和连字符，挡掉可能破坏样式声明的字符。
 FONT_FAMILY_RE = re.compile(r"^[\w \-,'\"一-鿿]{0,120}$")
@@ -90,7 +92,11 @@ class Config:
     show_dark_trade: bool = True
     compact: bool = False
     layout: str = "multi"  # multi = 多行列表，single = 单行滚动
+    # sides = 左中右：左侧名称/暗盘两行，右侧现价/涨跌幅两行，走势图在中间；
+    # stacked = 上中下：名称与现价同一行，暗盘与涨跌幅同一行，走势图永远在中间。
+    row_style: str = "sides"
     visible_rows: int = 4
+    chart_height: int = 0  # K 线（走势图）高度，0 表示按字号自动推算
     font_family: str = ""  # 留空表示跟随系统字体
     font_size: int = 13  # 按钮与间距的基础字号
     stock_name_font_size: int = 12
@@ -144,6 +150,8 @@ def sanitize(raw: Any) -> Config:
         out.color_scheme = raw["color_scheme"]
     if raw.get("layout") in LAYOUTS:
         out.layout = raw["layout"]
+    if raw.get("row_style") in ROW_STYLES:
+        out.row_style = raw["row_style"]
 
     opacity = _as_number(raw.get("opacity"))
     if opacity is not None:
@@ -160,6 +168,12 @@ def sanitize(raw: Any) -> Config:
     rows = _as_number(raw.get("visible_rows"))
     if rows is not None:
         out.visible_rows = int(_clamp(round(rows), 1, 30))
+
+    chart_height = _as_number(raw.get("chart_height"))
+    if chart_height is not None:
+        # 0（含负数）保持「自动」，其余夹进一个还能看清曲线的区间。
+        height = int(round(chart_height))
+        out.chart_height = 0 if height <= 0 else int(_clamp(height, 8, 400))
 
     size = _as_number(raw.get("font_size"))
     if size is not None:

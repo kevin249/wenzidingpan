@@ -52,6 +52,22 @@ def test_independent_font_sizes_are_clamped_and_preserved():
     assert config.chart_label_font_size == 48
 
 
+def test_row_style_falls_back_to_left_middle_right():
+    assert sanitize({}).row_style == "sides"
+    assert sanitize({"row_style": "stacked"}).row_style == "stacked"
+    assert sanitize({"row_style": "diagonal"}).row_style == "sides"
+
+
+def test_chart_height_keeps_zero_as_automatic_and_clamps_the_rest():
+    assert sanitize({}).chart_height == 0
+    assert sanitize({"chart_height": 64}).chart_height == 64
+    assert sanitize({"chart_height": 0}).chart_height == 0
+    assert sanitize({"chart_height": -20}).chart_height == 0  # 负数同样视为自动
+    assert sanitize({"chart_height": 3}).chart_height == 8
+    assert sanitize({"chart_height": 9999}).chart_height == 400
+    assert sanitize({"chart_height": True}).chart_height == 0
+
+
 def test_independent_font_colors_and_weights_are_sanitized():
     config = sanitize(
         {

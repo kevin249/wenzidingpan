@@ -31,8 +31,15 @@ const FONT_SIZES = [
   'dark_trade_font_size',
   'chart_label_font_size',
 ];
-const NUMBERS = ['visible_rows', ...FONT_SIZES, 'refresh_seconds', 'opacity', 'background_alpha'];
-const TEXTS = ['provider', 'layout', 'color_scheme', 'font_family', 'background_color'];
+const NUMBERS = [
+  'visible_rows',
+  'chart_height',
+  ...FONT_SIZES,
+  'refresh_seconds',
+  'opacity',
+  'background_alpha',
+];
+const TEXTS = ['provider', 'layout', 'row_style', 'color_scheme', 'font_family', 'background_color'];
 const FONT_COLORS = [
   'stock_name_color',
   'stock_price_color',
@@ -221,10 +228,15 @@ function refreshHints() {
   if (provider && el('symbols-hint')) el('symbols-hint').textContent = provider.placeholder;
 
   const single = el('layout').value === 'single';
-  el('visible_rows').disabled = single;
+  for (const id of ['visible_rows', 'row_style', 'chart_height']) el(id).disabled = single;
   el('layout-hint').textContent = single
-    ? '单行滚动：所有股票在一行里横向滚动，鼠标悬停暂停；此模式下行数设置不生效。'
+    ? '单行滚动：所有股票在一行里横向滚动，鼠标悬停暂停；此模式下行数、行内样式与 K 线高度都不生效。'
     : '多行列表：自选按这个行数铺成网格——填 1 就全部横向排开，填 2 就铺两行，窗口宽度随之变宽。';
+
+  el('row_style-hint').textContent =
+    el('row_style').value === 'stacked'
+      ? '上中下：上面一行是名称与现价，下面一行是暗盘与涨跌幅，中间永远是 K 线。'
+      : '左中右：左边名称压暗盘、右边现价压涨跌幅，左右各两行，中间永远是 K 线；格子窄到排不下时会自动改用上中下。';
 }
 
 function note(text) {
@@ -252,7 +264,7 @@ async function apply(label = '已保存') {
 /* ------------------------------------------------------------ 事件 */
 
 // 开关和下拉改完即时生效，文本与数字框失焦后再提交，避免每敲一个字就写盘。
-for (const id of [...CHECKBOXES, 'provider', 'layout', 'color_scheme', 'background_color']) {
+for (const id of [...CHECKBOXES, 'provider', 'layout', 'row_style', 'color_scheme', 'background_color']) {
   el(id).addEventListener('change', () => apply('已应用'));
 }
 for (const id of FONT_COLORS) {
@@ -268,7 +280,7 @@ for (const [id, valueId] of [['opacity', 'opacity-value'], ['background_alpha', 
   });
   el(id).addEventListener('change', () => apply('已应用'));
 }
-for (const id of ['visible_rows', 'font_family', ...FONT_SIZES, 'refresh_seconds']) {
+for (const id of ['visible_rows', 'chart_height', 'font_family', ...FONT_SIZES, 'refresh_seconds']) {
   el(id).addEventListener('blur', () => apply('已应用'));
 }
 el('apply').addEventListener('click', () => apply());
