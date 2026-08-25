@@ -338,8 +338,10 @@ class TickerWindow(QWidget):
             dark_trade_font_size=scaled(self._config.dark_trade_font_size),
             chart_label_font_size=scaled(self._config.chart_label_font_size),
             # 0 表示走势图高度自动，不参与缩放；设了固定高度才跟着窗口一起放大。
+            # 区间比配置里的 8–400 宽：那是存盘时的取值范围，缩放后的显示值
+            # 不该被它卡住，否则边界上的高度会和周围文字缩得不一样。
             chart_height=(
-                scaled(self._config.chart_height, 8, 400) if self._config.chart_height else 0
+                scaled(self._config.chart_height, 4, 1200) if self._config.chart_height else 0
             ),
         )
 

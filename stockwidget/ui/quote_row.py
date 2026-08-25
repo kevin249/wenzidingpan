@@ -255,18 +255,25 @@ class QuoteRow(QWidget):
             gap = max(4, round(config.font_size * 0.6))
             chart_height = round(config.font_size * (1.6 if compact else 2.6))
             chart_width = round(config.font_size * 4)
+        auto_height = chart_height
         if fixed_chart:
             chart_height = config.chart_height
         self._layout.setContentsMargins(padding, padding, padding, padding)
         self._layout.setHorizontalSpacing(gap)
         self._layout.setVerticalSpacing(1)
         self._dark_layout.setSpacing(max(2, gap // 2))
-        self.sparkline.setMinimumHeight(chart_height if config.show_sparkline else 0)
-        # 自动模式下走势图仍可随格子拉伸，只有显式设了高度才锁死。
-        self.sparkline.setMaximumHeight(
-            chart_height if fixed_chart and config.show_sparkline else MAX_WIDGET_SIZE
-        )
         self.sparkline.setMinimumWidth(chart_width if config.show_sparkline else 0)
+        if not config.show_sparkline:
+            self.sparkline.set_preferred_height(0)
+            self.sparkline.setMinimumHeight(0)
+            self.sparkline.setMaximumHeight(MAX_WIDGET_SIZE)
+            return
+        # 想要的高度走 sizeHint，硬下限只留字号推算出的那点高度：窗口塞不下时
+        # （屏幕不够高、或用户把外框拖小）走势图先被压扁，而不是把行顶出可视区。
+        self.sparkline.set_preferred_height(chart_height)
+        self.sparkline.setMinimumHeight(min(chart_height, auto_height))
+        # 自动模式下走势图仍可随格子拉伸，只有显式设了高度才封顶。
+        self.sparkline.setMaximumHeight(chart_height if fixed_chart else MAX_WIDGET_SIZE)
 
     # ------------------------------------------------------------ 数据
 

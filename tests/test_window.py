@@ -244,19 +244,63 @@ def test_chart_height_overrides_the_font_derived_height(app):
     row = QuoteRow("600519")
     row.resize(480, 220)
     row.apply_config(Config(font_size=13))
-    automatic = row.sparkline.minimumHeight()
+    automatic = row.sparkline.sizeHint().height()
     assert row.sparkline.maximumHeight() == 16777215  # 自动模式下不封顶
 
     row.apply_config(Config(font_size=13, chart_height=90))
-    assert row.sparkline.minimumHeight() == 90
-    assert row.sparkline.maximumHeight() == 90
+    assert row.sparkline.sizeHint().height() == 90
+    assert row.sparkline.maximumHeight() == 90  # 有空间时就是这么高，不再更高
+    # 硬下限仍是字号推算的高度，窗口塞不下时走势图先被压扁而不是顶出可视区
+    assert row.sparkline.minimumHeight() == automatic
     assert row.sizeHint().height() > automatic
 
     # 改回 0 应恢复成按字号推算，并解除高度上限
     row.apply_config(Config(font_size=13))
+    assert row.sparkline.sizeHint().height() == automatic
     assert row.sparkline.minimumHeight() == automatic
     assert row.sparkline.maximumHeight() == 16777215
     row.close()
+
+
+def test_row_gets_the_requested_chart_height_when_there_is_room(app):
+    """有地方放时，走势图就得正好是设定的高度。"""
+    from PySide6.QtWidgets import QVBoxLayout, QWidget
+
+    host = QWidget()
+    layout = QVBoxLayout(host)
+    layout.setContentsMargins(0, 0, 0, 0)
+    row = QuoteRow("600519")
+    layout.addWidget(row)
+    host.resize(480, 240)
+    row.apply_config(Config(chart_height=90))
+    host.show()
+    app.processEvents()
+
+    assert row.sparkline.height() == 90
+    host.close()
+
+
+def test_tall_chart_never_pushes_rows_out_of_the_viewport(app):
+    """组件刻意不带滚动条，所以内容再高也必须压得进可视区。"""
+    from stockwidget.providers.base import Quote
+
+    window = TickerWindow(Config(visible_rows=4, chart_height=400))
+    window._sync_rows([
+        Quote.from_prices("600519", "贵州茅台", 1304.66, 1272.83),
+        Quote.from_prices("603986", "兆易创新", 404.97, 432.37),
+        Quote.from_prices("300223", "北京君正", 381.66, 386.48),
+        Quote.from_prices("000001", "平安银行", 12.34, 12.00),
+    ])
+    window.show()
+    app.processEvents()
+
+    viewport = window.scroll.viewport()
+    assert window.rows_host.height() <= viewport.height()
+    assert window.scroll.verticalScrollBar().isVisible() is False
+    for row in window._rows.values():
+        bottom = row.mapTo(viewport, row.rect().bottomLeft()).y()
+        assert bottom <= viewport.height()
+    window.close()
 
 
 def test_hidden_sparkline_ignores_chart_height(app):
@@ -264,6 +308,7 @@ def test_hidden_sparkline_ignores_chart_height(app):
     row.resize(480, 220)
     row.apply_config(Config(show_sparkline=False, chart_height=120))
 
+    assert row.sparkline.sizeHint().height() == 0
     assert row.sparkline.minimumHeight() == 0
     assert row.sparkline.maximumHeight() == 16777215
     row.close()
@@ -300,6 +345,14 @@ def test_window_scales_fixed_chart_height_with_the_frame(app):
     window = TickerWindow(Config(chart_height=40))
     window._scale = 2.0
     assert window.scaled_config().chart_height == 80
+
+    # 配置里 8–400 只是存盘范围，缩放后的显示值不该被它卡住，
+    # 否则边界上的高度会和周围文字缩得不一样。
+    window._config = Config(chart_height=400)
+    assert window.scaled_config().chart_height == 800
+    window._scale = 0.6
+    window._config = Config(chart_height=8)
+    assert window.scaled_config().chart_height == 5
 
     window._config = Config(chart_height=0)
     assert window.scaled_config().chart_height == 0  # 自动高度不参与缩放

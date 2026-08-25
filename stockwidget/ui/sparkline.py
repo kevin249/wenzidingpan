@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections import deque
 
-from PySide6.QtCore import QPointF, Qt
+from PySide6.QtCore import QPointF, QSize, Qt
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QWidget
 
@@ -33,9 +33,25 @@ class Sparkline(QWidget):
         self._show_fill = False
         self._grayscale = False
         self._color = QColor(154, 163, 184)
+        self._preferred_height = 0
         self._annotation_font = QFont()
         self._annotation_font.setPixelSize(9)
         self.setAttribute(Qt.WA_TransparentForMouseEvents)
+
+    # ------------------------------------------------------------ 尺寸
+
+    def set_preferred_height(self, height: int) -> None:
+        """曲线本身没有固有尺寸，想要多高由外层告诉它。
+
+        高度必须走 sizeHint 而不是最小高度：最小高度会一路顶成窗口的硬下限，
+        行数一多就把后面的股票顶到屏幕外，而这个组件刻意不带滚动条。
+        """
+        if height != self._preferred_height:
+            self._preferred_height = height
+            self.updateGeometry()
+
+    def sizeHint(self) -> QSize:  # noqa: N802 - Qt 命名
+        return QSize(self.minimumWidth(), self._preferred_height)
 
     # ------------------------------------------------------------ 数据
 
