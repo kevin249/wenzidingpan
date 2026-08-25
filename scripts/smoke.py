@@ -162,8 +162,9 @@ def main() -> int:
         check("行情已渲染到窗口", len(app.window._rows) == 4, f"行数={len(app.window._rows)}")
         row = next(iter(app.window._rows.values()))
         check("价格已填充", bool(row.price_label.text().strip()), row.price_label.text())
-        check("暗盘资金已显示", row.dark_value.isVisible() and "亿" in row.dark_value.text()
-              or "万" in row.dark_value.text(), row.dark_value.text())
+        check("暗盘资金已显示且以亿为单位",
+              row.dark_value.isVisible() and row.dark_value.text().endswith("亿"),
+              row.dark_value.text())
         check("窗口高度按行数自适应", 120 < app.window.height() < 460, str(app.window.height()))
         check("分时曲线已装入走势图", len(row.sparkline.points) > 100, str(len(row.sparkline.points)))
         check("昨收基准线有值", row.sparkline._prev_close is not None)
@@ -200,6 +201,48 @@ def main() -> int:
         row = next(iter(app.window._rows.values()))
         check("左侧不再显示股票代码", not hasattr(row, "code_label"))
         check("左侧仍显示名称", bool(row.name_label.text().strip()), row.name_label.text())
+
+    def cell(row, widget) -> tuple:  # noqa: ANN001
+        """某个控件在格子内网格里的 (行, 列)。"""
+        layout = row.layout()
+        index = layout.indexOf(widget)
+        return layout.getItemPosition(index)[:2] if index >= 0 else (-1, -1)
+
+    def check_stacked() -> None:
+        row = next(iter(app.window._rows.values()))
+        name, price = cell(row, row.name_label), cell(row, row.price_label)
+        dark, percent = cell(row, row.dark_box), cell(row, row.percent_label)
+        chart = cell(row, row.sparkline)
+        check("上中下时名称与现价同一行", name[0] == price[0] and name[1] != price[1],
+              f"{name} {price}")
+        check("上中下时暗盘与涨跌幅同一行", dark[0] == percent[0] and dark[1] != percent[1],
+              f"{dark} {percent}")
+        check("上中下时 K 线夹在上下两行中间", name[0] < chart[0] < dark[0],
+              f"{name} {chart} {dark}")
+        check("K 线高度按参数固定", row.sparkline.height() == 60, str(row.sparkline.height()))
+        shot("shot-stacked")
+
+    def check_sides() -> None:
+        row = next(iter(app.window._rows.values()))
+        name, dark = cell(row, row.name_label), cell(row, row.dark_box)
+        price, percent = cell(row, row.price_label), cell(row, row.percent_label)
+        check("左中右时左侧名称压暗盘两行", name[1] == dark[1] and name[0] < dark[0],
+              f"{name} {dark}")
+        check("左中右时右侧现价压涨跌幅两行", price[1] == percent[1] and price[0] < percent[0],
+              f"{price} {percent}")
+        check("左中右时 K 线在中间列", name[1] < cell(row, row.sparkline)[1] < price[1],
+              f"{name} {cell(row, row.sparkline)} {price}")
+        check("K 线高度恢复自动后不再固定", row.sparkline.maximumHeight() > 400,
+              str(row.sparkline.maximumHeight()))
+
+    def step_row_style() -> None:
+        """两种行内样式与 K 线高度参数：上中下上下各一行，左中右左右各两行。"""
+        app._apply_config(store.update({"row_style": "stacked", "chart_height": 60}))
+        QTimer.singleShot(700, check_stacked)
+        QTimer.singleShot(900, lambda: app._apply_config(
+            store.update({"row_style": "sides", "chart_height": 0})
+        ))
+        QTimer.singleShot(1200, check_sides)
 
     def step_compact() -> None:
         """紧凑模式以前会把走势图一起藏掉，这是回归点。"""
@@ -294,6 +337,7 @@ def main() -> int:
         step_font,
         step_tile_one_row,
         step_tile_two_rows,
+        step_row_style,
         step_compact,
         step_scale,
         step_background,

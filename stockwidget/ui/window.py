@@ -331,17 +331,24 @@ class TickerWindow(QWidget):
 
         return replace(
             self._config,
-            font_size=scaled(self._config.font_size, 8, 48),
+            font_size=scaled(self._config.font_size, 7, 48),
             stock_name_font_size=scaled(self._config.stock_name_font_size),
             stock_price_font_size=scaled(self._config.stock_price_font_size),
             stock_percent_font_size=scaled(self._config.stock_percent_font_size),
             dark_trade_font_size=scaled(self._config.dark_trade_font_size),
             chart_label_font_size=scaled(self._config.chart_label_font_size),
+            # 0 表示走势图高度自动，不参与缩放；设了固定高度才跟着窗口一起放大。
+            # 区间比配置里的 8–400 宽：那是存盘时的取值范围，缩放后的显示值
+            # 不该被它卡住，否则边界上的高度会和周围文字缩得不一样。
+            chart_height=(
+                scaled(self._config.chart_height, 4, 1200) if self._config.chart_height else 0
+            ),
         )
 
     def apply_config(self, config: Config) -> None:
         previous = self._config
         self._config = config
+        chart_height_changed = previous.chart_height != config.chart_height
 
         flags = Qt.FramelessWindowHint | Qt.Tool
         if config.always_on_top:
@@ -392,7 +399,7 @@ class TickerWindow(QWidget):
             config.background_alpha,
         ):
             self.update()
-        self._resize_to_grid()
+        self._resize_to_grid(ensure_chart_height=chart_height_changed)
 
     def paintEvent(self, event) -> None:  # noqa: N802 - Qt 命名
         painter = QPainter(self)
@@ -479,7 +486,7 @@ class TickerWindow(QWidget):
 
     # ------------------------------------------------------------ 尺寸
 
-    def _resize_to_grid(self) -> None:
+    def _resize_to_grid(self, *, ensure_chart_height: bool = False) -> None:
         """高度按网格行数算，宽度按列数摊开——1 行就是全部横向铺满。"""
         chrome = self.title_bar.sizeHint().height() + 2
         if self._config.layout == "single":
@@ -506,14 +513,32 @@ class TickerWindow(QWidget):
         self.rows_layout.activate()
         width = max(
             self.rows_host.sizeHint().width() + 10,
-            columns * round(self.scaled_config().font_size * 13),
+            columns * self._column_floor() + 2,
         )
         screen = self.screen()
         if screen is not None:  # 列太多时别撑出屏幕，剩下的交给横向滚动
             width = min(width, screen.availableGeometry().width())
         if not self._manual_size:
             self.resize(width, height)
+        elif ensure_chart_height and height > self.height():
+            # 用户拖过右下角后，普通配置刷新应继续尊重手动外框；但 K 线高度
+            # 是明确的像素目标。旧外框放不下时必须补足高度，否则布局只能把
+            # 走势图压回原尺寸，看起来就像这个设置完全没有生效。
+            self.resize(self.width(), height)
         self._keep_on_screen()
+
+    def _column_floor(self) -> int:
+        """自动排版时每列至少要多宽。
+
+        选了左中右就得留够三列的宽度，否则格子一窄，QuoteRow 会自己退回上中下，
+        而窗口宽度又是照着退回后的 sizeHint 算的——两边互相迁就就再也回不去了。
+        """
+        scaled = self.scaled_config()
+        if self._config.row_style != "sides":
+            return round(scaled.font_size * 13)
+        side_font = max(scaled.stock_name_font_size, scaled.stock_price_font_size)
+        # 与 QuoteRow 判定窄卡片的阈值保持一致，再多给几像素避免边界抖动。
+        return max(120, round(side_font * 12)) + 4
 
     def restore_bounds(self, bounds: Bounds | None, available: list) -> None:
         """恢复上次位置前先确认它仍落在某块屏幕上（外接显示器可能已拔掉）。"""
@@ -621,7 +646,7 @@ class TickerWindow(QWidget):
         """记录本次手势，并以当前列宽下的基准高度校准内容缩放。"""
         self._drag_start_size = QSize(size)
         self._drag_start_scale = self._scale
-        self._drag_reference_height = self._base_frame_height(size.width())
+        self._drag_reference_height = self._absolute_scale_reference(size.width())
         self._manual_size = True
 
     def _on_grip_dragged(self, size: QSize) -> None:
@@ -648,6 +673,18 @@ class TickerWindow(QWidget):
     def _on_grip_drag_finished(self) -> None:
         self._drag_start_size = QSize()
         self._drag_reference_height = 0
+
+    def _absolute_scale_reference(self, frame_width: int) -> int:
+        """能不能拿「1.0 倍时的自然高度」当缩放基准；不能就返回 0 改用相对比例。
+
+        自然高度高过屏幕时，窗口已经被 _keep_on_screen 压回屏幕内，谁也到不了
+        那个高度。再拿它作分母，用户只拖宽度也会被算成缩小——图和字一起变小。
+        """
+        reference = self._base_frame_height(frame_width)
+        screen = self.screen()
+        if screen is not None and reference > screen.availableGeometry().height():
+            return 0
+        return reference
 
     def _base_frame_height(self, frame_width: int) -> int:
         """计算当前列宽下、缩放为 1 时窗口内容所需的自然高度。"""
@@ -682,7 +719,8 @@ class TickerWindow(QWidget):
         if not self._restore_scale_from_height or not self._rows:
             return
         self._restore_scale_from_height = False
-        reference_height = self._base_frame_height(self.width())
+        # 同样只在自然高度落在屏幕内时才敢按高度反推，否则修出来的比例只会更小。
+        reference_height = self._absolute_scale_reference(self.width())
         if reference_height <= 0:
             return
         self._scale = _clamp(self.height() / reference_height, 0.6, 3.0)

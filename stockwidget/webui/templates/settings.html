@@ -58,6 +58,24 @@
 
         <div class="grid">
           <div class="field">
+            <label for="row_style">行内样式</label>
+            <select id="row_style" name="row_style">
+              <option value="sides" {% if config.row_style == 'sides' %}selected{% endif %}>左中右</option>
+              <option value="stacked" {% if config.row_style == 'stacked' %}selected{% endif %}>上中下</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="chart_height">K 线高度（px）</label>
+            <input id="chart_height" name="chart_height" type="number" min="0" max="400" step="1"
+                   value="{{ config.chart_height }}" />
+          </div>
+        </div>
+        <p class="hint" id="row_style-hint"></p>
+        <p class="hint">K 线高度填 0 表示按字号自动推算；填了具体像素就固定成该高度，并随窗口拖拽等比缩放。
+          行数多到窗口放不下时，走势图会自动压扁，保证每只股票都还在可视区里。</p>
+
+        <div class="grid">
+          <div class="field">
             <label for="font_family">字体</label>
             <input id="font_family" name="font_family" type="text" list="font-presets"
                    placeholder="跟随系统" spellcheck="false" value="{{ config.font_family }}" />
@@ -71,7 +89,7 @@
           </div>
           <div class="field">
             <label for="font_size">基础 / 控件字号（px）</label>
-            <input id="font_size" name="font_size" type="number" min="9" max="28" step="1"
+            <input id="font_size" name="font_size" type="number" min="7" max="28" step="1"
                    value="{{ config.font_size }}" />
           </div>
         </div>

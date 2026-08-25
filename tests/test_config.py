@@ -30,7 +30,7 @@ def test_out_of_range_values_are_clamped():
     assert config.refresh_seconds == 3600
     assert config.opacity == 1.0
     assert config.visible_rows == 30
-    assert config.font_size == 9
+    assert config.font_size == 7
     assert config.layout == "multi"
     assert config.color_scheme == "cn"
 
@@ -50,6 +50,32 @@ def test_independent_font_sizes_are_clamped_and_preserved():
     assert config.stock_percent_font_size == 12
     assert config.dark_trade_font_size == 7
     assert config.chart_label_font_size == 48
+
+
+def test_base_font_size_below_nine_is_persisted(tmp_path):
+    path = tmp_path / "config.json"
+    store = Store(path)
+
+    saved = store.update({"font_size": 7})
+
+    assert saved.font_size == 7
+    assert Store(path).get().font_size == 7
+
+
+def test_row_style_falls_back_to_left_middle_right():
+    assert sanitize({}).row_style == "sides"
+    assert sanitize({"row_style": "stacked"}).row_style == "stacked"
+    assert sanitize({"row_style": "diagonal"}).row_style == "sides"
+
+
+def test_chart_height_keeps_zero_as_automatic_and_clamps_the_rest():
+    assert sanitize({}).chart_height == 0
+    assert sanitize({"chart_height": 64}).chart_height == 64
+    assert sanitize({"chart_height": 0}).chart_height == 0
+    assert sanitize({"chart_height": -20}).chart_height == 0  # 负数同样视为自动
+    assert sanitize({"chart_height": 3}).chart_height == 8
+    assert sanitize({"chart_height": 9999}).chart_height == 400
+    assert sanitize({"chart_height": True}).chart_height == 0
 
 
 def test_independent_font_colors_and_weights_are_sanitized():
