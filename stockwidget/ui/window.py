@@ -640,7 +640,7 @@ class TickerWindow(QWidget):
         """记录本次手势，并以当前列宽下的基准高度校准内容缩放。"""
         self._drag_start_size = QSize(size)
         self._drag_start_scale = self._scale
-        self._drag_reference_height = self._base_frame_height(size.width())
+        self._drag_reference_height = self._absolute_scale_reference(size.width())
         self._manual_size = True
 
     def _on_grip_dragged(self, size: QSize) -> None:
@@ -667,6 +667,18 @@ class TickerWindow(QWidget):
     def _on_grip_drag_finished(self) -> None:
         self._drag_start_size = QSize()
         self._drag_reference_height = 0
+
+    def _absolute_scale_reference(self, frame_width: int) -> int:
+        """能不能拿「1.0 倍时的自然高度」当缩放基准；不能就返回 0 改用相对比例。
+
+        自然高度高过屏幕时，窗口已经被 _keep_on_screen 压回屏幕内，谁也到不了
+        那个高度。再拿它作分母，用户只拖宽度也会被算成缩小——图和字一起变小。
+        """
+        reference = self._base_frame_height(frame_width)
+        screen = self.screen()
+        if screen is not None and reference > screen.availableGeometry().height():
+            return 0
+        return reference
 
     def _base_frame_height(self, frame_width: int) -> int:
         """计算当前列宽下、缩放为 1 时窗口内容所需的自然高度。"""
@@ -701,7 +713,8 @@ class TickerWindow(QWidget):
         if not self._restore_scale_from_height or not self._rows:
             return
         self._restore_scale_from_height = False
-        reference_height = self._base_frame_height(self.width())
+        # 同样只在自然高度落在屏幕内时才敢按高度反推，否则修出来的比例只会更小。
+        reference_height = self._absolute_scale_reference(self.width())
         if reference_height <= 0:
             return
         self._scale = _clamp(self.height() / reference_height, 0.6, 3.0)

@@ -341,6 +341,36 @@ def test_switching_back_to_sides_widens_the_window_again(app):
     window.close()
 
 
+def test_width_only_drag_keeps_scale_when_content_is_screen_compressed(app):
+    """自然高度超屏时窗口已被压回屏幕内，不能再拿那个高度当缩放分母，
+    否则用户只拖宽度也会被判成缩小，字和图一起变小。"""
+    from stockwidget.providers.base import Quote
+
+    window = TickerWindow(Config(visible_rows=4, chart_height=400))
+    window._sync_rows([
+        Quote.from_prices("600519", "贵州茅台", 1304.66, 1272.83),
+        Quote.from_prices("603986", "兆易创新", 404.97, 432.37),
+        Quote.from_prices("300223", "北京君正", 381.66, 386.48),
+        Quote.from_prices("000001", "平安银行", 12.34, 12.00),
+    ])
+    window.show()
+    app.processEvents()
+    screen = window.screen().availableGeometry()
+    assert window._base_frame_height(window.width()) > screen.height()  # 确实超屏
+
+    height = window.height()
+    window._on_grip_drag_started(window.size())
+    window._on_grip_dragged(QSize(window.width() + 60, height))
+    window._apply_scale()
+    assert window._scale == pytest.approx(1.0)
+
+    # 真的拖高度时仍要跟着缩放
+    window._on_grip_dragged(QSize(window.width(), round(height * 0.7)))
+    window._apply_scale()
+    assert window._scale < 1.0
+    window.close()
+
+
 def test_window_scales_fixed_chart_height_with_the_frame(app):
     window = TickerWindow(Config(chart_height=40))
     window._scale = 2.0
