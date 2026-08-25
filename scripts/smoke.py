@@ -162,8 +162,9 @@ def main() -> int:
         check("行情已渲染到窗口", len(app.window._rows) == 4, f"行数={len(app.window._rows)}")
         row = next(iter(app.window._rows.values()))
         check("价格已填充", bool(row.price_label.text().strip()), row.price_label.text())
-        check("暗盘资金已显示", row.dark_value.isVisible() and "亿" in row.dark_value.text()
-              or "万" in row.dark_value.text(), row.dark_value.text())
+        check("暗盘资金已显示且以亿为单位",
+              row.dark_value.isVisible() and row.dark_value.text().endswith("亿"),
+              row.dark_value.text())
         check("窗口高度按行数自适应", 120 < app.window.height() < 460, str(app.window.height()))
         check("分时曲线已装入走势图", len(row.sparkline.points) > 100, str(len(row.sparkline.points)))
         check("昨收基准线有值", row.sparkline._prev_close is not None)

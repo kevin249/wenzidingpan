@@ -107,6 +107,34 @@ def test_quote_row_uses_independent_font_colors_and_weights(app):
     row.close()
 
 
+def test_dark_fund_always_uses_the_yi_unit(app):
+    """暗盘金额统一折算成亿，不足一亿也写成 0.XX 亿，单位不再在万和亿之间跳。"""
+    from stockwidget.ui.theme import fmt_money
+
+    assert fmt_money(198_000_000) == "+1.98亿"
+    assert fmt_money(-952_000_000) == "-9.52亿"
+    assert fmt_money(-43_800_000) == "-0.44亿"
+    assert fmt_money(9_650_000) == "+0.10亿"
+    assert fmt_money(120_000) == "+0.00亿"
+    assert fmt_money(0) == "0.00亿"
+    assert fmt_money(None) is None
+
+
+def test_quote_row_shows_dark_fund_in_yi(app):
+    from stockwidget.providers.base import Quote
+
+    config = Config()
+    quote = Quote.from_prices("000001", "平安银行", 12.34, 12.00)
+    quote.dark_fund = -43_800_000
+    row = QuoteRow("000001")
+    row.resize(360, 120)
+    row.apply_config(config)
+    row.update_quote(quote, config)
+
+    assert row.dark_value.text() == "-0.44亿"
+    row.close()
+
+
 def test_marquee_uses_each_text_style_in_single_mode(app):
     from stockwidget.providers.base import Quote
 
