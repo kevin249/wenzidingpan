@@ -45,6 +45,10 @@ def test_settings_page_renders(server):
     assert "填充走势图下方颜色" in body
     assert "字体颜色与字重" in body
     assert "跟随涨跌" in body
+    assert "行内样式" in body
+    assert "左中右" in body
+    assert "上中下" in body
+    assert "K 线高度" in body
 
 
 def test_read_config_returns_providers(server):
@@ -93,6 +97,24 @@ def test_write_config_validates_persists_and_notifies(server):
     assert json.loads(server.store.path.read_text(encoding="utf-8"))["provider"] == "tencent"
     # 实时下发给桌面窗口
     assert server.applied[-1].provider == "tencent"
+
+
+def test_write_config_accepts_row_style_and_chart_height(server):
+    client = _client(server)
+    config = client.post(
+        f"/api/config?token={server.token}",
+        json={"row_style": "stacked", "chart_height": 500},  # 越界，应被夹到 400
+    ).get_json()["config"]
+    assert config["row_style"] == "stacked"
+    assert config["chart_height"] == 400
+    assert server.applied[-1].row_style == "stacked"
+
+    config = client.post(
+        f"/api/config?token={server.token}",
+        json={"row_style": "spiral", "chart_height": 0},
+    ).get_json()["config"]
+    assert config["row_style"] == "sides"  # 非法样式回落到左中右
+    assert config["chart_height"] == 0
 
 
 def test_write_config_rejects_non_object_body(server):

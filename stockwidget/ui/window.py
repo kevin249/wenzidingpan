@@ -337,6 +337,10 @@ class TickerWindow(QWidget):
             stock_percent_font_size=scaled(self._config.stock_percent_font_size),
             dark_trade_font_size=scaled(self._config.dark_trade_font_size),
             chart_label_font_size=scaled(self._config.chart_label_font_size),
+            # 0 表示走势图高度自动，不参与缩放；设了固定高度才跟着窗口一起放大。
+            chart_height=(
+                scaled(self._config.chart_height, 8, 400) if self._config.chart_height else 0
+            ),
         )
 
     def apply_config(self, config: Config) -> None:
@@ -506,7 +510,7 @@ class TickerWindow(QWidget):
         self.rows_layout.activate()
         width = max(
             self.rows_host.sizeHint().width() + 10,
-            columns * round(self.scaled_config().font_size * 13),
+            columns * self._column_floor() + 2,
         )
         screen = self.screen()
         if screen is not None:  # 列太多时别撑出屏幕，剩下的交给横向滚动
@@ -514,6 +518,19 @@ class TickerWindow(QWidget):
         if not self._manual_size:
             self.resize(width, height)
         self._keep_on_screen()
+
+    def _column_floor(self) -> int:
+        """自动排版时每列至少要多宽。
+
+        选了左中右就得留够三列的宽度，否则格子一窄，QuoteRow 会自己退回上中下，
+        而窗口宽度又是照着退回后的 sizeHint 算的——两边互相迁就就再也回不去了。
+        """
+        scaled = self.scaled_config()
+        if self._config.row_style != "sides":
+            return round(scaled.font_size * 13)
+        side_font = max(scaled.stock_name_font_size, scaled.stock_price_font_size)
+        # 与 QuoteRow 判定窄卡片的阈值保持一致，再多给几像素避免边界抖动。
+        return max(120, round(side_font * 12)) + 4
 
     def restore_bounds(self, bounds: Bounds | None, available: list) -> None:
         """恢复上次位置前先确认它仍落在某块屏幕上（外接显示器可能已拔掉）。"""

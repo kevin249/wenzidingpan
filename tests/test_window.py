@@ -161,6 +161,123 @@ def test_quote_row_removes_chart_column_when_sparkline_is_hidden(app):
     assert layout.columnStretch(2) == 0
 
 
+def test_stacked_row_style_keeps_top_and_bottom_texts_on_one_line(app):
+    """上中下：名称与现价同行，暗盘与涨跌幅同行，中间是走势图。"""
+    row = QuoteRow("600519")
+    row.resize(480, 220)
+    row.apply_config(Config(row_style="stacked"))
+
+    layout = row.layout()
+    assert layout.getItemPosition(layout.indexOf(row.name_label))[:2] == (0, 0)
+    assert layout.getItemPosition(layout.indexOf(row.price_label))[:2] == (0, 1)
+    # 走势图独占中间一行，横跨左右两列
+    assert layout.getItemPosition(layout.indexOf(row.sparkline)) == (1, 0, 1, 2)
+    assert layout.getItemPosition(layout.indexOf(row.dark_box))[:2] == (2, 0)
+    assert layout.getItemPosition(layout.indexOf(row.percent_label))[:2] == (2, 1)
+    row.close()
+
+
+def test_stacked_row_style_never_splits_a_line_even_when_narrow(app):
+    """显式选了上中下，窄格子里也不能把同一行的两段文字拆开。"""
+    row = QuoteRow("600519")
+    row.resize(150, 150)
+    row.apply_config(Config(row_style="stacked"))
+    row.name_label.setText("一只名字很长的股票")
+    row.price_label.setText("1234.56")
+    row.dark_value.setText("-9.52亿")
+    row.percent_label.setText("-6.34%")
+    row._update_layout_mode()
+
+    layout = row.layout()
+    assert row._narrow is True
+    assert layout.getItemPosition(layout.indexOf(row.name_label))[:2] == (0, 0)
+    assert layout.getItemPosition(layout.indexOf(row.price_label))[:2] == (0, 1)
+    assert layout.getItemPosition(layout.indexOf(row.dark_box))[:2] == (2, 0)
+    assert layout.getItemPosition(layout.indexOf(row.percent_label))[:2] == (2, 1)
+    row.close()
+
+
+def test_sides_row_style_keeps_two_lines_on_each_side(app):
+    """左中右：左右各两行，走势图纵向占满中间列。"""
+    row = QuoteRow("600519")
+    row.resize(480, 220)
+    row.apply_config(Config(row_style="sides"))
+
+    layout = row.layout()
+    assert layout.getItemPosition(layout.indexOf(row.name_label))[:2] == (0, 0)
+    assert layout.getItemPosition(layout.indexOf(row.dark_box))[:2] == (1, 0)
+    assert layout.getItemPosition(layout.indexOf(row.sparkline)) == (0, 1, 2, 1)
+    assert layout.getItemPosition(layout.indexOf(row.price_label))[:2] == (0, 2)
+    assert layout.getItemPosition(layout.indexOf(row.percent_label))[:2] == (1, 2)
+    row.close()
+
+
+def test_chart_height_overrides_the_font_derived_height(app):
+    row = QuoteRow("600519")
+    row.resize(480, 220)
+    row.apply_config(Config(font_size=13))
+    automatic = row.sparkline.minimumHeight()
+    assert row.sparkline.maximumHeight() == 16777215  # 自动模式下不封顶
+
+    row.apply_config(Config(font_size=13, chart_height=90))
+    assert row.sparkline.minimumHeight() == 90
+    assert row.sparkline.maximumHeight() == 90
+    assert row.sizeHint().height() > automatic
+
+    # 改回 0 应恢复成按字号推算，并解除高度上限
+    row.apply_config(Config(font_size=13))
+    assert row.sparkline.minimumHeight() == automatic
+    assert row.sparkline.maximumHeight() == 16777215
+    row.close()
+
+
+def test_hidden_sparkline_ignores_chart_height(app):
+    row = QuoteRow("600519")
+    row.resize(480, 220)
+    row.apply_config(Config(show_sparkline=False, chart_height=120))
+
+    assert row.sparkline.minimumHeight() == 0
+    assert row.sparkline.maximumHeight() == 16777215
+    row.close()
+
+
+def test_switching_back_to_sides_widens_the_window_again(app):
+    """自动宽度是照着 QuoteRow 的 sizeHint 算的，上中下会把它算窄；
+    切回左中右时必须重新撑开，否则格子太窄又被判成窄卡片，样式就再也切不回来。"""
+    from stockwidget.providers.base import Quote
+
+    window = TickerWindow(Config(visible_rows=2))
+    quotes = [
+        Quote.from_prices("600519", "贵州茅台", 1304.66, 1272.83),
+        Quote.from_prices("603986", "兆易创新", 404.97, 432.37),
+    ]
+    window._sync_rows(quotes)
+    window.show()
+    app.processEvents()
+
+    window.apply_config(Config(visible_rows=2, row_style="stacked"))
+    app.processEvents()
+    row = next(iter(window._rows.values()))
+    layout = row.layout()
+    assert layout.getItemPosition(layout.indexOf(row.sparkline)) == (1, 0, 1, 2)
+
+    window.apply_config(Config(visible_rows=2, row_style="sides"))
+    app.processEvents()
+    assert layout.getItemPosition(layout.indexOf(row.sparkline)) == (0, 1, 2, 1)
+    assert all(row._narrow is False for row in window._rows.values())
+    window.close()
+
+
+def test_window_scales_fixed_chart_height_with_the_frame(app):
+    window = TickerWindow(Config(chart_height=40))
+    window._scale = 2.0
+    assert window.scaled_config().chart_height == 80
+
+    window._config = Config(chart_height=0)
+    assert window.scaled_config().chart_height == 0  # 自动高度不参与缩放
+    window.close()
+
+
 def test_sparkline_fill_is_disabled_by_default_and_can_be_enabled(app):
     row = QuoteRow("600519")
 
