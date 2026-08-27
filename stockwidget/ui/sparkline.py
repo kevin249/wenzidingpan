@@ -175,7 +175,8 @@ class Sparkline(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
 
-        # B/S 波动转折：B 红线、S 蓝线。先画标记，再让曲线覆盖在线条之上。
+        # B/S 波动转折：B 红线从底部向上画到曲线，S 蓝线从顶部向下画到曲线，
+        # 两者都停在转折点上，不穿过曲线。
         if self._show_signals:
             for index, kind in self._signals:
                 if 0 <= index < len(points):
@@ -184,7 +185,9 @@ class Sparkline(QWidget):
                     )
                     painter.setPen(QPen(color, 1.2))
                     x = x_of(index)
-                    painter.drawLine(QPointF(x, 1), QPointF(x, height - 1))
+                    y = y_of(points[index])
+                    start = height - 1 if kind == "B" else 1
+                    painter.drawLine(QPointF(x, start), QPointF(x, y))
 
         curve = QPainterPath()
         curve.moveTo(QPointF(x_of(0), y_of(points[0])))
