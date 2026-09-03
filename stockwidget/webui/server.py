@@ -15,7 +15,7 @@ from typing import Callable
 from flask import Flask, abort, jsonify, render_template, request
 
 from .. import providers
-from ..config import Config, Store
+from ..config import MIN_OPACITY, Config, Store
 from ..search import StockSearch
 
 DEFAULT_HOST = "127.0.0.1"
@@ -59,6 +59,8 @@ class SettingsServer:
                 token=self.token,
                 providers=providers.listing(),
                 config=self.store.get().to_dict(),
+                # 滑块下限跟着 sanitize 的夹取区间走，免得页面比后端更严。
+                min_opacity=MIN_OPACITY,
             )
 
         @app.get("/api/config")

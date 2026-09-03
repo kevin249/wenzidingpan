@@ -29,6 +29,11 @@ HEX_COLOR_RE = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
 
 MAX_SYMBOLS = 50
 
+# 整窗透明度下限。留一丝可见度而不是 0：关掉鼠标穿透时，全隐的窗口照样拦鼠标，
+# 桌面上就多出一块看不见又点不穿的死区。想彻底看不见请配合「鼠标穿透」使用。
+# WebUI 的滑块下限也读这个值，两边不会再各写一份。
+MIN_OPACITY = 0.05
+
 
 def config_dir() -> Path:
     """按平台惯例给出配置目录。"""
@@ -155,7 +160,7 @@ def sanitize(raw: Any) -> Config:
 
     opacity = _as_number(raw.get("opacity"))
     if opacity is not None:
-        out.opacity = round(_clamp(opacity, 0.2, 1.0), 2)
+        out.opacity = round(_clamp(opacity, MIN_OPACITY, 1.0), 2)
 
     background_alpha = _as_number(raw.get("background_alpha"))
     if background_alpha is not None:
