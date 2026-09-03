@@ -1174,3 +1174,36 @@ def test_hiding_and_resizing_text_in_one_update_still_restores_correctly(app):
     assert window.height() - hidden_frame == pytest.approx(window.title_bar.height(), abs=2)
     assert window.scroll.viewport().height() == pytest.approx(viewport, abs=2)
     window.close()
+
+
+def test_resizing_while_hidden_drops_the_clamped_bookkeeping(app):
+    """藏着的时候用户重新拉过窗口，之前那次夹取过的记账就不作数了。"""
+    from stockwidget.providers.base import Quote
+
+    window = TickerWindow(Config(visible_rows=2))
+    window._sync_rows([Quote.from_prices("600519", "贵州茅台", 1304.66, 1272.83)])
+    window.show()
+    window._manual_size = True
+    window.resize(window.width(), 80)
+    app.processEvents()
+
+    window.apply_config(Config(visible_rows=2, show_title_buttons=False))
+    app.processEvents()
+    assert window._hidden_title_height > 0  # 贴着下限，只减掉了一部分
+
+    # 藏着的时候把窗口拉高，空间够了，那份残缺的记账就该丢掉
+    window._on_grip_drag_started(window.size())
+    window._on_grip_dragged(QSize(window.width(), 200))
+    window._on_grip_drag_finished()
+    window._apply_scale()
+    app.processEvents()
+    assert window._hidden_title_height == 0
+    grown, viewport = window.height(), window.scroll.viewport().height()
+
+    window.apply_config(Config(visible_rows=2))
+    app.processEvents()
+
+    # 补的是标题栏此刻该占的整条高度，新选的内容区一点不被抠。
+    assert window.height() - grown == pytest.approx(window.title_bar.height(), abs=2)
+    assert window.scroll.viewport().height() == pytest.approx(viewport, abs=2)
+    window.close()
