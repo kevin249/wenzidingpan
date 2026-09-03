@@ -946,3 +946,71 @@ def test_hidden_title_buttons_keep_window_draggable_and_point_to_tray(app):
     assert "⚙" not in window.empty_label.text()
     assert "托盘" in window.empty_label.text()
     window.close()
+
+
+def test_toggling_title_buttons_keeps_manual_frame_content_and_scale(app):
+    """手动尺寸下切换标题栏，不能把缩放基准搞歪。
+
+    标题栏是 chrome：外框不跟着加减那一条，内容区就凭空多／少一截高度，
+    而绝对缩放基准（_absolute_scale_reference）已经按新的 chrome 算了——
+    下一次哪怕只拖宽度，也会照着歪掉的基准把字号顶大一截。
+    """
+    from stockwidget.providers.base import Quote
+
+    window = TickerWindow(Config(visible_rows=2))
+    window._sync_rows([
+        Quote.from_prices("600519", "贵州茅台", 1304.66, 1272.83),
+        Quote.from_prices("000001", "平安银行", 12.34, 12.00),
+    ])
+    window.show()
+    app.processEvents()
+
+    def drag(size: QSize) -> None:
+        window._on_grip_drag_started(window.size())
+        window._on_grip_dragged(size)
+        window._on_grip_drag_finished()
+        window._apply_scale()
+        app.processEvents()
+
+    drag(QSize(window.width(), window.height() + 60))  # 拖出一个手动尺寸
+    assert window._manual_size is True
+    frame = window.height()
+    viewport = window.scroll.viewport().height()
+    scale = window._scale
+    font = window.scaled_config().stock_price_font_size
+
+    window.apply_config(Config(visible_rows=2, show_title_buttons=False))
+    app.processEvents()
+
+    # 外框少掉标题栏那一条，内容区一个像素都不动。
+    assert window.height() == pytest.approx(frame - window.title_bar.height(), abs=2)
+    assert window.scroll.viewport().height() == pytest.approx(viewport, abs=2)
+    assert window.scaled_config().stock_price_font_size == font
+
+    # 原样开回来：外框回到原值，字号和缩放都不该被这一趟顶动。
+    window.apply_config(Config(visible_rows=2))
+    app.processEvents()
+    assert window.height() == pytest.approx(frame, abs=2)
+    assert window._scale == pytest.approx(scale)
+    assert window.scaled_config().stock_price_font_size == font
+
+    # 再开开关关也不能一次比一次跑偏：加回来的必须正好是减掉的那一条。
+    settled = (window.height(), window.scroll.viewport().height())
+    for _ in range(2):
+        window.apply_config(Config(visible_rows=2, show_title_buttons=False))
+        app.processEvents()
+        hidden = (window.height(), window.scroll.viewport().height())
+        window.apply_config(Config(visible_rows=2))
+        app.processEvents()
+        assert (window.height(), window.scroll.viewport().height()) == settled
+    assert hidden[0] < settled[0]
+    assert hidden[1] == settled[1]  # 内容区始终不变，少掉的只有 chrome
+
+    # 藏起来之后只拖宽度、高度不动，缩放就该基本留在原地：修之前这里会照着
+    # 少了一条 chrome 的基准算，scale 直接涨 25%，字号 19→24。
+    window.apply_config(Config(visible_rows=2, show_title_buttons=False))
+    app.processEvents()
+    drag(QSize(window.width() + 120, window.height()))
+    assert window._scale == pytest.approx(scale, rel=0.08)
+    assert abs(window.scaled_config().stock_price_font_size - font) <= 1
+    window.close()

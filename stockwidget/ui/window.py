@@ -225,6 +225,8 @@ class TickerWindow(QWidget):
         self._drag_start_scale = 1.0
         self._drag_reference_height = 0
         self._restore_scale_from_height = False
+        # 手动外框下藏起标题栏时减掉的高度，开回来时原样加回去。
+        self._hidden_title_height = 0
         self._move_drag_offset: QPoint | None = None
         self._move_drag_origin: QPoint | None = None
         self._move_drag_active = False
@@ -407,6 +409,8 @@ class TickerWindow(QWidget):
             config.background_alpha,
         ):
             self.update()
+        if previous.show_title_buttons != config.show_title_buttons:
+            self._compensate_title_bar_height(showing=config.show_title_buttons)
         self._resize_to_grid(ensure_chart_height=chart_height_changed)
 
     def paintEvent(self, event) -> None:  # noqa: N802 - Qt 命名
@@ -493,6 +497,35 @@ class TickerWindow(QWidget):
         self._grid_shape = (rows, columns)
 
     # ------------------------------------------------------------ 尺寸
+
+    def _compensate_title_bar_height(self, *, showing: bool) -> None:
+        """手动外框下，标题栏显隐要连着外框一起加减那一条高度。
+
+        标题栏是外框自带的 chrome，不是用户拖出来的内容高度。外框不动的话，
+        藏起来等于白送内容区一条高度：当场看不出问题，但下次拖右下角时，绝对
+        缩放基准（``_absolute_scale_reference``）已经少了这条 chrome，连只拖宽度
+        都会照着歪掉的基准把字号顶大一截（实测 +25%，字号 19→24）。
+
+        这里按标题栏在布局里真实占到的高度同步外框，内容区就一个像素都不动。
+        基准仍会差一点点——它是按各部件的 sizeHint 估的，和被压扁后的实际高度
+        对不齐——于是之后只拖宽度还会有约 5% 的偏移（最多一档字号）。要把这点
+        也抹平就得改动共用的缩放模型（紧凑模式藏页脚有同样的老问题），不在本
+        改动范围内，这里先保内容不跳。自动尺寸不必管——``_resize_to_grid``
+        本来就会重算。
+        """
+        if not self._manual_size or self._config.layout == "single":
+            return
+        if showing:
+            # 加回来的必须正好是当初减掉的那一条，否则开开关关几次外框就会跑偏
+            # ——窗口高度会改变布局分给标题栏的高度，两个方向量出来的并不相等。
+            delta = self._hidden_title_height or self.title_bar.sizeHint().height()
+            self._hidden_title_height = 0
+        else:
+            # 用布局里真实占到的高度，不是 sizeHint：窗口不够高时标题栏会被压扁，
+            # 按 sizeHint 减就会多切内容区几个像素。
+            delta = self.title_bar.height() or self.title_bar.sizeHint().height()
+            self._hidden_title_height = delta
+        self.resize(self.width(), max(56, self.height() + (delta if showing else -delta)))
 
     def _chrome_height(self) -> int:
         """标题栏之上的固定高度；标题栏藏起来时它不再占位，窗口跟着收紧。"""

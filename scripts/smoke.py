@@ -293,21 +293,21 @@ def main() -> int:
         ))
 
     def step_title_buttons() -> None:
-        """右上角按钮藏起来后，标题栏那一行高度要还给行情内容。
+        """右上角按钮藏起来后，外框跟着少掉标题栏那一条，内容区一点不变。
 
-        这一步跑在拖拽缩放之后，窗口已经是手动尺寸——按既有约定外框不再随配置
-        自动改（紧凑模式同理），于是省下的高度落在内容区上而不是把窗口缩矮。
-        自动尺寸下会直接矮一截，那条路径由单元测试覆盖。
+        这一步跑在拖拽缩放之后，窗口已经是手动尺寸。标题栏是 chrome 不是内容，
+        所以这里破例动外框：内容区高度保持不变，缩放基准也就还对得上，
+        下次拖右下角不会把字号顶大一截。
         """
         before_frame = app.window.height()
         before_viewport = app.window.scroll.viewport().height()
         app._apply_config(store.update({"show_title_buttons": False}))
         QTimer.singleShot(700, lambda: (
             check("关掉后右上角按钮不再显示", not app.window.title_bar.isVisible()),
-            check("手动拖过的外框保持不变", app.window.height() == before_frame,
+            check("外框跟着少掉标题栏那一条", app.window.height() < before_frame,
                   f"{before_frame} -> {app.window.height()}"),
-            check("标题栏那一行还给了内容区",
-                  app.window.scroll.viewport().height() > before_viewport,
+            check("内容区高度保持不变",
+                  abs(app.window.scroll.viewport().height() - before_viewport) <= 2,
                   f"{before_viewport} -> {app.window.scroll.viewport().height()}"),
             check("行情内容没被一起藏掉", app.window.scroll.isVisible()),
             shot("shot-no-title-buttons"),
@@ -315,8 +315,10 @@ def main() -> int:
         QTimer.singleShot(900, lambda: app._apply_config(
             store.update({"show_title_buttons": True})
         ))
-        QTimer.singleShot(1100, lambda: check(
-            "开回来后按钮恢复显示", app.window.title_bar.isVisible()
+        QTimer.singleShot(1100, lambda: (
+            check("开回来后按钮恢复显示", app.window.title_bar.isVisible()),
+            check("开回来后外框也复原", abs(app.window.height() - before_frame) <= 2,
+                  f"{before_frame} -> {app.window.height()}"),
         ))
 
     def step_single() -> None:
