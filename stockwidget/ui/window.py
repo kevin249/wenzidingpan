@@ -233,10 +233,12 @@ class TickerWindow(QWidget):
         self._drag_start_scale = 1.0
         self._drag_reference_height = 0
         self._restore_scale_from_height = False
-        # 手动外框下藏起标题栏时真正减掉的高度，开回来时原样加回去；
-        # 同时记下当时的 sizeHint，藏着期间改了字号就按它等比换算。
+        # 手动外框下藏起标题栏时真正减掉的高度，开回来时原样加回去；同时记下
+        # 当时的 sizeHint（藏着期间改了字号按它等比换算）和减完后的外框高度
+        # （外框被任何路径改过，这份记账即作废）。
         self._hidden_title_height = 0
         self._hidden_title_hint = 0
+        self._hidden_title_frame = 0
         self._move_drag_offset: QPoint | None = None
         self._move_drag_origin: QPoint | None = None
         self._move_drag_active = False
@@ -565,22 +567,28 @@ class TickerWindow(QWidget):
             return
         hint = self.title_bar.sizeHint().height()
         if showing:
-            if self._hidden_title_hint:
-                # 记过账：加回来的必须正好是当初减掉的那一条，否则开开关关几次
-                # 外框就会跑偏——窗口高度会改变布局分给标题栏的高度，两个方向
-                # 量出来的并不相等。外框本来就贴着下限时减掉的是 0，这里加回来
-                # 的也得是 0，所以拿 hint 当「有没有记过账」的标记而不是高度本身。
+            # 记账只在「外框还是当初减完时那个高度」的前提下才算数。外框可能被
+            # 各种路径改掉——拖右下角、K 线高度撑高（_resize_to_grid 的
+            # ensure_chart_height）、屏幕夹取……逐个去清很容易漏，直接比高度就够：
+            # 一旦有人动过外框，这份「撤销我刚才那次隐藏」的配对就不成立了。
+            if self._hidden_title_hint and self._hidden_title_frame == self.height():
+                # 加回来的必须正好是当初减掉的那一条，否则开开关关几次外框就会
+                # 跑偏——窗口高度会改变布局分给标题栏的高度，两个方向量出来的并
+                # 不相等。外框本来就贴着下限时减掉的是 0，这里加回来的也得是 0，
+                # 所以拿 hint 当「有没有记过账」的标记，而不是高度本身。
                 delta = self._hidden_title_height
                 if delta and self._hidden_title_hint != hint:
                     # 藏着的时候改过字号，标题栏本身会变高变矮，按 sizeHint 的
                     # 变化等比换算，免得开回来多给或少给内容区一截。
                     delta = max(1, round(delta * hint / self._hidden_title_hint))
             else:
-                # 没有记过账——例如重启后配置里就记着隐藏。这时无从知道当初减了
-                # 多少，只能按标题栏该占的高度补，内容区维持现状不被挤。
+                # 没有记账，或者外框已经被动过——例如重启后配置里就记着隐藏。
+                # 这时无从知道当初减了多少，只能按标题栏该占的整条高度补，
+                # 内容区维持现状不被挤。
                 delta = hint
             self._hidden_title_height = 0
             self._hidden_title_hint = 0
+            self._hidden_title_frame = 0
         else:
             # 用改配置之前布局里真实占到的高度，不是 sizeHint：窗口不够高时标题栏
             # 会被压扁，按 sizeHint 减就会多切内容区几个像素；而同一次更新如果连
@@ -596,6 +604,7 @@ class TickerWindow(QWidget):
             # 换算就会失真。
             self._hidden_title_height = before - self.height()
             self._hidden_title_hint = laid_out_hint or hint
+            self._hidden_title_frame = self.height()
 
     def _chrome_height(self) -> int:
         """标题栏之上的固定高度；标题栏藏起来时它不再占位，窗口跟着收紧。"""
@@ -770,13 +779,6 @@ class TickerWindow(QWidget):
         if not self._drag_start_size.isValid():
             self._on_grip_drag_started(self.size())
         size = self._bounded_drag_size(size)
-        if size.height() != self.height():
-            # 外框高度真的被改了，之前那次隐藏的记账就作废：贴着下限藏起来时
-            # 可能只减掉了一部分，按那个残缺的数补回去会从新选的内容区里抠掉
-            # 差额。作废之后走「按标题栏当前该占的整条高度补」，那才是对的。
-            # 只按一下把手没拖动时不能清——否则开回来会凭空多出一条标题栏。
-            self._hidden_title_height = 0
-            self._hidden_title_hint = 0
         self.resize(size)
         start_height = max(1, self._drag_start_size.height())
         # 字体由高度决定；宽度只负责给走势图更多或更少的横向空间。

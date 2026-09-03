@@ -1191,13 +1191,14 @@ def test_resizing_while_hidden_drops_the_clamped_bookkeeping(app):
     app.processEvents()
     assert window._hidden_title_height > 0  # 贴着下限，只减掉了一部分
 
-    # 藏着的时候把窗口拉高，空间够了，那份残缺的记账就该丢掉
+    # 藏着的时候把窗口拉高，空间够了，那份残缺的记账就该失效
     window._on_grip_drag_started(window.size())
     window._on_grip_dragged(QSize(window.width(), 200))
     window._on_grip_drag_finished()
     window._apply_scale()
     app.processEvents()
-    assert window._hidden_title_height == 0
+    # 判定方式是「外框还是不是减完时那个高度」，而不是逐个路径去清
+    assert window._hidden_title_frame != window.height()
     grown, viewport = window.height(), window.scroll.viewport().height()
 
     window.apply_config(Config(visible_rows=2))
@@ -1235,4 +1236,40 @@ def test_pressing_the_grip_without_dragging_keeps_the_bookkeeping(app):
     window.apply_config(Config(visible_rows=2))
     app.processEvents()
     assert window.height() == frame  # 补回当初减掉的 24，而不是整条 32
+    window.close()
+
+
+def test_chart_height_growth_while_hidden_invalidates_the_bookkeeping(app):
+    """藏着的时候 K 线高度把外框撑高了，也算「外框被动过」。
+
+    这条路径不经过右下角把手（走 _resize_to_grid 的 ensure_chart_height），
+    所以记账的作废不能挂在拖拽上，只能按「外框还是不是减完时那个高度」判定。
+    """
+    from stockwidget.providers.base import Quote
+
+    window = TickerWindow(Config(visible_rows=2))
+    window._sync_rows([Quote.from_prices("600519", "贵州茅台", 1304.66, 1272.83)])
+    window.show()
+    window._manual_size = True
+    window.resize(window.width(), 80)
+    app.processEvents()
+
+    window.apply_config(Config(visible_rows=2, show_title_buttons=False))
+    app.processEvents()
+    assert 0 < window._hidden_title_height < window.title_bar.sizeHint().height()
+
+    # K 线高度撑高外框，中途没有任何拖拽手势
+    window.apply_config(
+        Config(visible_rows=2, show_title_buttons=False, chart_height=160)
+    )
+    app.processEvents()
+    grown, viewport = window.height(), window.scroll.viewport().height()
+    assert grown > 80
+
+    window.apply_config(Config(visible_rows=2, chart_height=160))
+    app.processEvents()
+
+    # 补的是标题栏整条高度，撑高后的内容区不被抠。
+    assert window.height() - grown == pytest.approx(window.title_bar.height(), abs=2)
+    assert window.scroll.viewport().height() == pytest.approx(viewport, abs=2)
     window.close()
