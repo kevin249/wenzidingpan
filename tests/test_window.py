@@ -1118,3 +1118,24 @@ def test_drag_handle_offers_the_menu_when_click_through_hides_everything(app):
     )
     assert popped == [QPoint(77, 88)]
     window.close()
+
+
+def test_hiding_title_bar_at_the_floor_removes_and_restores_nothing(app):
+    """外框已经贴在下限时一点都减不掉，开回来也不能凭空长出一条标题栏。"""
+    from stockwidget.providers.base import Quote
+
+    window = TickerWindow(Config(visible_rows=2))
+    window._sync_rows([Quote.from_prices("600519", "贵州茅台", 1304.66, 1272.83)])
+    window.show()
+    window._manual_size = True
+    window.resize(window.width(), 56)  # 配置里保存高度的下限
+    app.processEvents()
+
+    window.apply_config(Config(visible_rows=2, show_title_buttons=False))
+    app.processEvents()
+    assert window.height() == 56  # 减不动
+
+    window.apply_config(Config(visible_rows=2))
+    app.processEvents()
+    assert window.height() == 56  # 当初减掉 0，就该加回 0，而不是 56 → 88
+    window.close()

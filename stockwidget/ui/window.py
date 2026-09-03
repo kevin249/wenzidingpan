@@ -557,13 +557,20 @@ class TickerWindow(QWidget):
             return
         hint = self.title_bar.sizeHint().height()
         if showing:
-            # 加回来的必须正好是当初减掉的那一条，否则开开关关几次外框就会跑偏
-            # ——窗口高度会改变布局分给标题栏的高度，两个方向量出来的并不相等。
-            delta = self._hidden_title_height or hint
-            if self._hidden_title_height and self._hidden_title_hint not in (0, hint):
-                # 藏着的时候改过字号，标题栏本身会变高变矮，按 sizeHint 的变化
-                # 等比换算，免得开回来多给或少给内容区一截。
-                delta = max(1, round(delta * hint / self._hidden_title_hint))
+            if self._hidden_title_hint:
+                # 记过账：加回来的必须正好是当初减掉的那一条，否则开开关关几次
+                # 外框就会跑偏——窗口高度会改变布局分给标题栏的高度，两个方向
+                # 量出来的并不相等。外框本来就贴着下限时减掉的是 0，这里加回来
+                # 的也得是 0，所以拿 hint 当「有没有记过账」的标记而不是高度本身。
+                delta = self._hidden_title_height
+                if delta and self._hidden_title_hint != hint:
+                    # 藏着的时候改过字号，标题栏本身会变高变矮，按 sizeHint 的
+                    # 变化等比换算，免得开回来多给或少给内容区一截。
+                    delta = max(1, round(delta * hint / self._hidden_title_hint))
+            else:
+                # 没有记过账——例如重启后配置里就记着隐藏。这时无从知道当初减了
+                # 多少，只能按标题栏该占的高度补，内容区维持现状不被挤。
+                delta = hint
             self._hidden_title_height = 0
             self._hidden_title_hint = 0
         else:
