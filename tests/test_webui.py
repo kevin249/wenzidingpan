@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from stockwidget.config import Store
+from stockwidget.config import MIN_OPACITY, Store
 from stockwidget.webui import SettingsServer
 
 
@@ -50,6 +50,25 @@ def test_settings_page_renders(server):
     assert "上中下" in body
     assert "K 线高度" in body
     assert 'id="font_size" name="font_size" type="number" min="7"' in body
+
+
+def test_opacity_slider_min_follows_sanitize_floor(server):
+    """滑块下限曾经写死 0.2，比后端更严，20% 以下根本拖不动。"""
+    body = _client(server).get(f"/?token={server.token}").get_data(as_text=True)
+    assert f'id="opacity" name="opacity" type="range" min="{MIN_OPACITY}"' in body
+
+
+def test_write_config_accepts_opacity_below_20_percent(server):
+    client = _client(server)
+    config = client.post(
+        f"/api/config?token={server.token}", json={"opacity": 0.1}
+    ).get_json()["config"]
+    assert config["opacity"] == pytest.approx(0.1)
+    assert server.applied[-1].opacity == pytest.approx(0.1)
+
+    # 页面回填的百分比也要跟着走到 10%，而不是停在旧下限。
+    body = client.get(f"/?token={server.token}").get_data(as_text=True)
+    assert 'value="0.1"' in body
 
 
 def test_read_config_returns_providers(server):

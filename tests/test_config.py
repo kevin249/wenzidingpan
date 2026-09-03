@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from stockwidget.config import Store, sanitize
+from stockwidget.config import MIN_OPACITY, Store, sanitize
 
 
 def test_empty_input_falls_back_to_defaults():
@@ -217,11 +217,22 @@ def test_background_color_accepts_hex_only():
 
 
 def test_background_alpha_allows_fully_transparent():
-    """背景要能调到完全透明，所以下限是 0，和整窗透明度的 0.2 不同。"""
+    """背景要能调到完全透明，所以下限是 0，整窗透明度则要留一丝可见。"""
     assert sanitize({"background_alpha": 0}).background_alpha == 0.0
     assert sanitize({"background_alpha": -1}).background_alpha == 0.0
     assert sanitize({"background_alpha": 9}).background_alpha == 1.0
-    assert sanitize({"opacity": 0}).opacity == 0.2  # 整窗透明度不许全隐
+    assert sanitize({"opacity": 0}).opacity == MIN_OPACITY  # 整窗透明度不许全隐
+
+
+def test_opacity_can_go_far_below_20_percent():
+    """20% 以下不该被夹回去：淡到几乎看不见也是合法的用法。"""
+    assert MIN_OPACITY < 0.2
+    for value in (0.15, 0.1, MIN_OPACITY):
+        assert sanitize({"opacity": value}).opacity == pytest.approx(value)
+    # 只有低于下限的值才被夹住，且夹到的仍是可见的下限而非全隐。
+    assert sanitize({"opacity": -3}).opacity == MIN_OPACITY
+    assert sanitize({"opacity": MIN_OPACITY / 2}).opacity == MIN_OPACITY
+    assert sanitize({"opacity": 0}).opacity > 0
 
 
 def test_click_through_defaults_off():
