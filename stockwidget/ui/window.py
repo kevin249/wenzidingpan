@@ -377,6 +377,10 @@ class TickerWindow(QWidget):
                 self.show()  # 改 flag 会隐藏窗口，需要重新显示
 
         scaled = self.scaled_config()
+        # 标题栏高度跟着字号走，而一次配置更新可以同时改字号和藏标题栏
+        # （WebUI 一次 POST 就能做到），所以在按新配置重排之前，先记下它此刻
+        # 占的高度和与之对应的 sizeHint——藏起来时要减的是这一条。
+        title_before = (self.title_bar.height(), self.title_bar.sizeHint().height())
         # 标题栏里除了这四个按钮没有别的东西，关掉就整条收起，省下那一行高度；
         # 窗口内容区本来就能拖动，少了标题栏也不影响挪窗口。
         self.title_bar.setVisible(config.show_title_buttons)
@@ -421,7 +425,9 @@ class TickerWindow(QWidget):
         ):
             self.update()
         if previous.show_title_buttons != config.show_title_buttons:
-            self._compensate_title_bar_height(showing=config.show_title_buttons)
+            self._compensate_title_bar_height(
+                showing=config.show_title_buttons, title_before=title_before
+            )
         self._resize_to_grid(ensure_chart_height=chart_height_changed)
 
     # ------------------------------------------------------------ 右键菜单
@@ -538,7 +544,9 @@ class TickerWindow(QWidget):
 
     # ------------------------------------------------------------ 尺寸
 
-    def _compensate_title_bar_height(self, *, showing: bool) -> None:
+    def _compensate_title_bar_height(
+        self, *, showing: bool, title_before: tuple[int, int]
+    ) -> None:
         """手动外框下，标题栏显隐要连着外框一起加减那一条高度。
 
         标题栏是外框自带的 chrome，不是用户拖出来的内容高度。外框不动的话，
@@ -574,16 +582,20 @@ class TickerWindow(QWidget):
             self._hidden_title_height = 0
             self._hidden_title_hint = 0
         else:
-            # 用布局里真实占到的高度，不是 sizeHint：窗口不够高时标题栏会被压扁，
-            # 按 sizeHint 减就会多切内容区几个像素。
-            delta = self.title_bar.height() or hint
+            # 用改配置之前布局里真实占到的高度，不是 sizeHint：窗口不够高时标题栏
+            # 会被压扁，按 sizeHint 减就会多切内容区几个像素；而同一次更新如果连
+            # 字号一起改了，此刻的 sizeHint 已经是新字号的，跟正在消失的这条无关。
+            laid_out, laid_out_hint = title_before
+            delta = laid_out or laid_out_hint or hint
         before = self.height()
         self.resize(self.width(), max(56, before + (delta if showing else -delta)))
         if not showing:
             # 记真正减掉的那点高度：贴着最小高度时 resize 会被夹住，减掉的比
             # delta 少，按 delta 加回来会把外框一次次撑大（80 → 56 → 88）。
+            # 配的 hint 必须是与这条高度同时期的那个，否则之后按新旧 hint 比例
+            # 换算就会失真。
             self._hidden_title_height = before - self.height()
-            self._hidden_title_hint = hint
+            self._hidden_title_hint = laid_out_hint or hint
 
     def _chrome_height(self) -> int:
         """标题栏之上的固定高度；标题栏藏起来时它不再占位，窗口跟着收紧。"""

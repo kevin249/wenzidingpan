@@ -1139,3 +1139,38 @@ def test_hiding_title_bar_at_the_floor_removes_and_restores_nothing(app):
     app.processEvents()
     assert window.height() == 56  # 当初减掉 0，就该加回 0，而不是 56 → 88
     window.close()
+
+
+def test_hiding_and_resizing_text_in_one_update_still_restores_correctly(app):
+    """一次配置更新里既藏标题栏又改字号（WebUI 一次 POST 就能做到）。
+
+    此刻 title_bar 的 sizeHint 已经是新字号的，和正在消失的那条没关系；
+    把「减掉的高度」和新 hint 配成一对，开回来时比例换算就会当成没变过，
+    只补回旧的那点高度，内容区平白被新的大标题栏吃掉一截。
+    """
+    from stockwidget.providers.base import Quote
+
+    window = TickerWindow(Config(visible_rows=2))
+    window._sync_rows([
+        Quote.from_prices("600519", "贵州茅台", 1304.66, 1272.83),
+        Quote.from_prices("000001", "平安银行", 12.34, 12.00),
+    ])
+    window.show()
+    window._manual_size = True
+    window.resize(window.width(), 220)
+    app.processEvents()
+    viewport = window.scroll.viewport().height()
+
+    # 同一次更新：藏起标题栏 + 把字号从 13 调到 22
+    window.apply_config(Config(visible_rows=2, show_title_buttons=False, font_size=22))
+    app.processEvents()
+    hidden_frame = window.height()
+    assert window.scroll.viewport().height() == pytest.approx(viewport, abs=2)
+
+    window.apply_config(Config(visible_rows=2, font_size=22))
+    app.processEvents()
+
+    # 补回来的要是「新字号下标题栏该占的高度」，内容区因此一点不变。
+    assert window.height() - hidden_frame == pytest.approx(window.title_bar.height(), abs=2)
+    assert window.scroll.viewport().height() == pytest.approx(viewport, abs=2)
+    window.close()
