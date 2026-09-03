@@ -240,6 +240,14 @@ def test_click_through_defaults_off():
     assert sanitize({"click_through": True}).click_through is True
 
 
+def test_title_buttons_default_on_and_can_be_switched_off():
+    assert sanitize({}).show_title_buttons is True
+    assert sanitize({"show_title_buttons": False}).show_title_buttons is False
+    # 只认真布尔值，脏数据回落到默认的「显示」，不会把按钮莫名其妙藏起来。
+    assert sanitize({"show_title_buttons": "false"}).show_title_buttons is True
+    assert sanitize({"show_title_buttons": 0}).show_title_buttons is True
+
+
 def test_chart_annotation_and_label_switches_are_sanitized():
     keys = (
         "show_sparkline_fill", "show_bs_points", "show_open_line", "show_high_low",

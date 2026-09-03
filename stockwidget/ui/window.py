@@ -364,6 +364,14 @@ class TickerWindow(QWidget):
                 self.show()  # 改 flag 会隐藏窗口，需要重新显示
 
         scaled = self.scaled_config()
+        # 标题栏里除了这四个按钮没有别的东西，关掉就整条收起，省下那一行高度；
+        # 窗口内容区本来就能拖动，少了标题栏也不影响挪窗口。
+        self.title_bar.setVisible(config.show_title_buttons)
+        self.empty_label.setText(
+            "自选列表为空\n点击 ⚙ 在浏览器里添加代码"
+            if config.show_title_buttons
+            else "自选列表为空\n从托盘菜单打开设置添加代码"
+        )
         self.setWindowOpacity(1.0)
         for effect in self._opacity_effects:
             effect.setOpacity(config.opacity)
@@ -486,9 +494,14 @@ class TickerWindow(QWidget):
 
     # ------------------------------------------------------------ 尺寸
 
+    def _chrome_height(self) -> int:
+        """标题栏之上的固定高度；标题栏藏起来时它不再占位，窗口跟着收紧。"""
+        title = self.title_bar.sizeHint().height() if self._config.show_title_buttons else 0
+        return title + 2
+
     def _resize_to_grid(self, *, ensure_chart_height: bool = False) -> None:
         """高度按网格行数算，宽度按列数摊开——1 行就是全部横向铺满。"""
-        chrome = self.title_bar.sizeHint().height() + 2
+        chrome = self._chrome_height()
         if self._config.layout == "single":
             self.setFixedHeight(chrome + self.marquee.height() + 4)
             self.setMinimumWidth(220)
@@ -692,9 +705,11 @@ class TickerWindow(QWidget):
             return 0
 
         base = self._config
-        title_probe = TitleBar()
-        title_probe.apply_config(base)
-        chrome = title_probe.sizeHint().height() + 2
+        chrome = 2
+        if base.show_title_buttons:
+            title_probe = TitleBar()
+            title_probe.apply_config(base)
+            chrome += title_probe.sizeHint().height()
 
         if base.layout == "single":
             marquee_probe = Marquee()

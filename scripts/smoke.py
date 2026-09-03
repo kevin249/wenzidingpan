@@ -292,6 +292,33 @@ def main() -> int:
             "关掉穿透后把手收起", not app.window.handle.isVisible()
         ))
 
+    def step_title_buttons() -> None:
+        """右上角按钮藏起来后，标题栏那一行高度要还给行情内容。
+
+        这一步跑在拖拽缩放之后，窗口已经是手动尺寸——按既有约定外框不再随配置
+        自动改（紧凑模式同理），于是省下的高度落在内容区上而不是把窗口缩矮。
+        自动尺寸下会直接矮一截，那条路径由单元测试覆盖。
+        """
+        before_frame = app.window.height()
+        before_viewport = app.window.scroll.viewport().height()
+        app._apply_config(store.update({"show_title_buttons": False}))
+        QTimer.singleShot(700, lambda: (
+            check("关掉后右上角按钮不再显示", not app.window.title_bar.isVisible()),
+            check("手动拖过的外框保持不变", app.window.height() == before_frame,
+                  f"{before_frame} -> {app.window.height()}"),
+            check("标题栏那一行还给了内容区",
+                  app.window.scroll.viewport().height() > before_viewport,
+                  f"{before_viewport} -> {app.window.scroll.viewport().height()}"),
+            check("行情内容没被一起藏掉", app.window.scroll.isVisible()),
+            shot("shot-no-title-buttons"),
+        ))
+        QTimer.singleShot(900, lambda: app._apply_config(
+            store.update({"show_title_buttons": True})
+        ))
+        QTimer.singleShot(1100, lambda: check(
+            "开回来后按钮恢复显示", app.window.title_bar.isVisible()
+        ))
+
     def step_single() -> None:
         drag_to(QSize(300, app.window.height()))  # 先把缩放拖回基准
         app._apply_config(store.update({"layout": "single", "font_size": 13}))
@@ -342,6 +369,7 @@ def main() -> int:
         step_scale,
         step_background,
         step_click_through,
+        step_title_buttons,
         step_single,
         step_webui,
         step_webui_applies,

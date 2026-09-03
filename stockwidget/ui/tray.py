@@ -20,6 +20,8 @@ class Tray(QSystemTrayIcon):
         self.on_top_action = QAction("最前显示", self._menu, checkable=True)
         # 穿透开启后窗口点不到了，托盘是唯一能关掉它的地方，必须留在这里。
         self.click_through_action = QAction("鼠标穿透", self._menu, checkable=True)
+        # 同理：按钮藏起来之后窗口上就没有开关它的入口了，托盘得留一个。
+        self.title_buttons_action = QAction("显示标题栏按钮", self._menu, checkable=True)
         self.settings_action = QAction("设置…", self._menu)
         self.quit_action = QAction("退出", self._menu)
 
@@ -28,6 +30,7 @@ class Tray(QSystemTrayIcon):
         self._menu.addSeparator()
         self._menu.addAction(self.on_top_action)
         self._menu.addAction(self.click_through_action)
+        self._menu.addAction(self.title_buttons_action)
         self._menu.addAction(self.settings_action)
         self._menu.addSeparator()
         self._menu.addAction(self.quit_action)
@@ -40,6 +43,7 @@ class Tray(QSystemTrayIcon):
         for action, checked in (
             (self.on_top_action, config.always_on_top),
             (self.click_through_action, config.click_through),
+            (self.title_buttons_action, config.show_title_buttons),
         ):
             action.blockSignals(True)
             action.setChecked(checked)

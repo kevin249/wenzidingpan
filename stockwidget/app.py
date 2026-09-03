@@ -68,6 +68,11 @@ class WidgetApp:
             self.tray.click_through_action.toggled.connect(
                 lambda checked: self._apply_config(self.store.update({"click_through": checked}))
             )
+            self.tray.title_buttons_action.toggled.connect(
+                lambda checked: self._apply_config(
+                    self.store.update({"show_title_buttons": checked})
+                )
+            )
             self.tray.activated.connect(
                 lambda reason: self.toggle_window()
                 if reason == QSystemTrayIcon.Trigger

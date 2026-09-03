@@ -84,6 +84,9 @@ class Config:
     background_alpha: float = 0.82  # 只影响背景板；调到 0 就只剩文字和曲线浮在桌面上
     click_through: bool = False  # 鼠标穿透，只留左上角把手可拖动
     always_on_top: bool = True
+    # 右上角的刷新 / 设置 / 灰度 / 退出四个按钮；关掉后整条标题栏一起收起，
+    # 窗口只剩行情内容。改配置、刷新和退出仍可从托盘菜单和设置页进行。
+    show_title_buttons: bool = True
     show_sparkline: bool = True
     show_sparkline_fill: bool = False
     show_bs_points: bool = True
@@ -221,6 +224,7 @@ def sanitize(raw: Any) -> Config:
 
     for key in (
         "always_on_top",
+        "show_title_buttons",
         "show_sparkline",
         "show_sparkline_fill",
         "show_bs_points",

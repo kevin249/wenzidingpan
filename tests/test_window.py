@@ -875,3 +875,74 @@ def test_click_through_disables_content_drag(app):
     assert moved is False
     assert window.frameGeometry().topLeft() == start
     window.close()
+
+
+def test_title_buttons_can_be_hidden(app):
+    """关掉右上角按钮后整条标题栏收起，那一行高度也还给行情内容。"""
+    from stockwidget.providers.base import Quote
+
+    quotes = [Quote.from_prices("600519", "贵州茅台", 1304.66, 1272.83)]
+
+    window = TickerWindow(Config(visible_rows=1))
+    window._sync_rows(quotes)
+    window.show()
+    app.processEvents()
+    # 行控件显示后 sizeHint 会再长一次，先按显示后的尺寸重算一遍当基准。
+    window.apply_config(Config(visible_rows=1))
+    app.processEvents()
+    assert window.title_bar.isVisible() is True
+    with_bar = window.height()
+
+    window.apply_config(Config(visible_rows=1, show_title_buttons=False))
+    app.processEvents()
+
+    assert window.title_bar.isVisible() is False
+    for button in (
+        window.title_bar.refresh_button,
+        window.title_bar.settings_button,
+        window.title_bar.grayscale_button,
+        window.title_bar.quit_button,
+    ):
+        assert button.isVisible() is False
+    # 收起的标题栏不再占位：窗口应当矮下去，而不是留一条空白。
+    assert window.height() < with_bar
+    assert window.height() == pytest.approx(
+        with_bar - window.title_bar.sizeHint().height(), abs=2
+    )
+    # 行情内容照常显示，没被一起藏掉。
+    assert window.scroll.isVisible() is True
+    assert window._rows["600519"].isVisible() is True
+
+    # 再打开就该原样回来。
+    window.apply_config(Config(visible_rows=1))
+    app.processEvents()
+    assert window.title_bar.isVisible() is True
+    assert window.title_bar.quit_button.isVisible() is True
+    assert window.height() == pytest.approx(with_bar, abs=2)
+    window.close()
+
+
+def test_hidden_title_buttons_keep_window_draggable_and_point_to_tray(app):
+    """标题栏是窗口自带的拖拽把手，藏起来后内容区必须还能拖动。"""
+    window = TickerWindow(Config(show_title_buttons=False))
+    window.move(100, 120)
+    start = window.frameGeometry().topLeft()
+    press_at = start + QPoint(40, 35)
+
+    window.eventFilter(
+        window.empty_label,
+        _WindowDragEvent(QEvent.MouseButtonPress, press_at, button=Qt.LeftButton),
+    )
+    moved = window.eventFilter(
+        window.empty_label,
+        _WindowDragEvent(
+            QEvent.MouseMove, press_at + QPoint(60, 40), buttons=Qt.LeftButton
+        ),
+    )
+
+    assert moved is True
+    assert window.frameGeometry().topLeft() == start + QPoint(60, 40)
+    # 空列表的提示不能再让用户去点已经藏起来的 ⚙。
+    assert "⚙" not in window.empty_label.text()
+    assert "托盘" in window.empty_label.text()
+    window.close()
