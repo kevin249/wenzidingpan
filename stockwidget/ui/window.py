@@ -760,11 +760,6 @@ class TickerWindow(QWidget):
 
     def _on_grip_drag_started(self, size: QSize) -> None:
         """记录本次手势，并以当前列宽下的基准高度校准内容缩放。"""
-        # 用户自己挑了新外框，之前那次隐藏的记账就作废了：贴着下限藏起来时
-        # 可能只减掉了一部分，窗口重新拉大后再按那个残缺的数补回去，标题栏就会
-        # 从新选的内容区里抠掉差额。没有记账时按标题栏当前该占的高度补，才对。
-        self._hidden_title_height = 0
-        self._hidden_title_hint = 0
         self._drag_start_size = QSize(size)
         self._drag_start_scale = self._scale
         self._drag_reference_height = self._absolute_scale_reference(size.width())
@@ -775,6 +770,13 @@ class TickerWindow(QWidget):
         if not self._drag_start_size.isValid():
             self._on_grip_drag_started(self.size())
         size = self._bounded_drag_size(size)
+        if size.height() != self.height():
+            # 外框高度真的被改了，之前那次隐藏的记账就作废：贴着下限藏起来时
+            # 可能只减掉了一部分，按那个残缺的数补回去会从新选的内容区里抠掉
+            # 差额。作废之后走「按标题栏当前该占的整条高度补」，那才是对的。
+            # 只按一下把手没拖动时不能清——否则开回来会凭空多出一条标题栏。
+            self._hidden_title_height = 0
+            self._hidden_title_hint = 0
         self.resize(size)
         start_height = max(1, self._drag_start_size.height())
         # 字体由高度决定；宽度只负责给走势图更多或更少的横向空间。

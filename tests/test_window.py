@@ -1207,3 +1207,32 @@ def test_resizing_while_hidden_drops_the_clamped_bookkeeping(app):
     assert window.height() - grown == pytest.approx(window.title_bar.height(), abs=2)
     assert window.scroll.viewport().height() == pytest.approx(viewport, abs=2)
     window.close()
+
+
+def test_pressing_the_grip_without_dragging_keeps_the_bookkeeping(app):
+    """只按一下右下角把手又松开，什么都没改，记账不该作废。"""
+    from stockwidget.providers.base import Quote
+
+    window = TickerWindow(Config(visible_rows=2))
+    window._sync_rows([Quote.from_prices("600519", "贵州茅台", 1304.66, 1272.83)])
+    window.show()
+    window._manual_size = True
+    window.resize(window.width(), 80)
+    app.processEvents()
+    frame = window.height()
+
+    window.apply_config(Config(visible_rows=2, show_title_buttons=False))
+    app.processEvents()
+    cached = window._hidden_title_height
+    assert cached > 0
+
+    # 按下把手、没拖动就松开：外框没变，记账要留着
+    window._on_grip_drag_started(window.size())
+    window._on_grip_drag_finished()
+    app.processEvents()
+    assert window._hidden_title_height == cached
+
+    window.apply_config(Config(visible_rows=2))
+    app.processEvents()
+    assert window.height() == frame  # 补回当初减掉的 24，而不是整条 32
+    window.close()
