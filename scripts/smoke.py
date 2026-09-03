@@ -312,13 +312,15 @@ def main() -> int:
             check("行情内容没被一起藏掉", app.window.scroll.isVisible()),
             shot("shot-no-title-buttons"),
         ))
-        QTimer.singleShot(900, lambda: app._apply_config(
-            store.update({"show_title_buttons": True})
-        ))
+        # 走右键菜单把按钮开回来：没有系统托盘的机器上，这是唯一的找回入口。
+        QTimer.singleShot(900, lambda: next(
+            a for a in app.window.build_menu().actions() if a.text() == "显示标题栏按钮"
+        ).trigger())
         QTimer.singleShot(1100, lambda: (
-            check("开回来后按钮恢复显示", app.window.title_bar.isVisible()),
+            check("右键菜单能把按钮开回来", app.window.title_bar.isVisible()),
             check("开回来后外框也复原", abs(app.window.height() - before_frame) <= 2,
                   f"{before_frame} -> {app.window.height()}"),
+            check("配置也跟着写回去", store.get().show_title_buttons is True),
         ))
 
     def step_single() -> None:

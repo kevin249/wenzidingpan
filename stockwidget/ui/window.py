@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLayout,
+    QMenu,
     QPushButton,
     QGridLayout,
     QScrollArea,
@@ -153,6 +154,8 @@ class DragHandle(QWidget):
     """
 
     moved = Signal(QPoint)
+    # 穿透时整窗不吃鼠标，把手是唯一还能右键的地方，菜单要从这里也能叫出来。
+    context_menu_requested = Signal(QPoint)
 
     def __init__(self) -> None:
         super().__init__(None, Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint)
@@ -205,6 +208,10 @@ class DragHandle(QWidget):
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802 - Qt 命名
         self._offset = None
 
+    def contextMenuEvent(self, event) -> None:  # noqa: N802 - Qt 命名
+        self.context_menu_requested.emit(event.globalPos())
+        event.accept()
+
 
 class TickerWindow(QWidget):
     """组件主窗口。"""
@@ -214,6 +221,7 @@ class TickerWindow(QWidget):
     quit_requested = Signal()
     bounds_changed = Signal(object)
     grayscale_requested = Signal()
+    title_buttons_requested = Signal()
 
     def __init__(self, config: Config) -> None:
         super().__init__()
@@ -225,8 +233,10 @@ class TickerWindow(QWidget):
         self._drag_start_scale = 1.0
         self._drag_reference_height = 0
         self._restore_scale_from_height = False
-        # 手动外框下藏起标题栏时减掉的高度，开回来时原样加回去。
+        # 手动外框下藏起标题栏时真正减掉的高度，开回来时原样加回去；
+        # 同时记下当时的 sizeHint，藏着期间改了字号就按它等比换算。
         self._hidden_title_height = 0
+        self._hidden_title_hint = 0
         self._move_drag_offset: QPoint | None = None
         self._move_drag_origin: QPoint | None = None
         self._move_drag_active = False
@@ -236,6 +246,7 @@ class TickerWindow(QWidget):
 
         self.handle = DragHandle()
         self.handle.moved.connect(self._on_handle_moved)
+        self.handle.context_menu_requested.connect(self.popup_menu)
 
         self.title_bar = TitleBar(self)
         self.title_bar.refresh_requested.connect(self.refresh_requested.emit)
@@ -413,6 +424,35 @@ class TickerWindow(QWidget):
             self._compensate_title_bar_height(showing=config.show_title_buttons)
         self._resize_to_grid(ensure_chart_height=chart_height_changed)
 
+    # ------------------------------------------------------------ 右键菜单
+
+    def build_menu(self) -> QMenu:
+        """右键菜单：和右上角按钮同一批动作，外加把按钮开回来的开关。
+
+        系统托盘不是哪儿都有（``QSystemTrayIcon.isSystemTrayAvailable()`` 为假时
+        整个托盘都不会创建），所以隐藏标题栏后不能只靠托盘找回设置和退出——
+        否则重启之后配置还记着隐藏，窗口上就再没有任何入口了。
+        """
+        menu = QMenu(self)
+        menu.addAction("立即刷新", self.refresh_requested.emit)
+        toggle = menu.addAction("显示标题栏按钮", self.title_buttons_requested.emit)
+        toggle.setCheckable(True)
+        toggle.setChecked(self._config.show_title_buttons)
+        menu.addSeparator()
+        menu.addAction("设置…", self.settings_requested.emit)
+        menu.addAction("退出", self.quit_requested.emit)
+        return menu
+
+    def popup_menu(self, position: QPoint) -> None:
+        menu = self.build_menu()
+        menu.exec(position)
+        menu.deleteLater()  # 菜单挂在窗口下，不回收的话点一次多一个
+
+    def contextMenuEvent(self, event) -> None:  # noqa: N802 - Qt 命名
+        # 子控件（行情文字、按钮）不处理右键，事件会冒泡到这里，整窗都能唤出菜单。
+        self.popup_menu(event.globalPos())
+        event.accept()
+
     def paintEvent(self, event) -> None:  # noqa: N802 - Qt 命名
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
@@ -515,17 +555,28 @@ class TickerWindow(QWidget):
         """
         if not self._manual_size or self._config.layout == "single":
             return
+        hint = self.title_bar.sizeHint().height()
         if showing:
             # 加回来的必须正好是当初减掉的那一条，否则开开关关几次外框就会跑偏
             # ——窗口高度会改变布局分给标题栏的高度，两个方向量出来的并不相等。
-            delta = self._hidden_title_height or self.title_bar.sizeHint().height()
+            delta = self._hidden_title_height or hint
+            if self._hidden_title_height and self._hidden_title_hint not in (0, hint):
+                # 藏着的时候改过字号，标题栏本身会变高变矮，按 sizeHint 的变化
+                # 等比换算，免得开回来多给或少给内容区一截。
+                delta = max(1, round(delta * hint / self._hidden_title_hint))
             self._hidden_title_height = 0
+            self._hidden_title_hint = 0
         else:
             # 用布局里真实占到的高度，不是 sizeHint：窗口不够高时标题栏会被压扁，
             # 按 sizeHint 减就会多切内容区几个像素。
-            delta = self.title_bar.height() or self.title_bar.sizeHint().height()
-            self._hidden_title_height = delta
-        self.resize(self.width(), max(56, self.height() + (delta if showing else -delta)))
+            delta = self.title_bar.height() or hint
+        before = self.height()
+        self.resize(self.width(), max(56, before + (delta if showing else -delta)))
+        if not showing:
+            # 记真正减掉的那点高度：贴着最小高度时 resize 会被夹住，减掉的比
+            # delta 少，按 delta 加回来会把外框一次次撑大（80 → 56 → 88）。
+            self._hidden_title_height = before - self.height()
+            self._hidden_title_hint = hint
 
     def _chrome_height(self) -> int:
         """标题栏之上的固定高度；标题栏藏起来时它不再占位，窗口跟着收紧。"""

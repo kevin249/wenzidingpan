@@ -1014,3 +1014,107 @@ def test_toggling_title_buttons_keeps_manual_frame_content_and_scale(app):
     assert window._scale == pytest.approx(scale, rel=0.08)
     assert abs(window.scaled_config().stock_price_font_size - font) <= 1
     window.close()
+
+
+def test_context_menu_can_restore_title_buttons_without_a_tray(app):
+    """系统托盘不是哪儿都有，右键菜单必须能把藏起来的按钮找回来。"""
+    from PySide6.QtGui import QContextMenuEvent
+
+    window = TickerWindow(Config(show_title_buttons=False))
+    menu = window.build_menu()
+
+    assert [action.text() for action in menu.actions() if action.text()] == [
+        "立即刷新",
+        "显示标题栏按钮",
+        "设置…",
+        "退出",
+    ]
+    toggle = next(a for a in menu.actions() if a.text() == "显示标题栏按钮")
+    assert toggle.isCheckable() is True
+    assert toggle.isChecked() is False  # 当前是藏起来的状态
+
+    asked: list[bool] = []
+    window.title_buttons_requested.connect(lambda: asked.append(True))
+    toggle.trigger()
+    assert asked == [True]
+
+    # 行情文字上按右键也要能唤出菜单，而不是只有窗口空白处才行。
+    popped: list[QPoint] = []
+    window.popup_menu = popped.append
+    app.sendEvent(
+        window.empty_label,
+        QContextMenuEvent(QContextMenuEvent.Mouse, QPoint(5, 5), QPoint(105, 105)),
+    )
+    assert popped == [QPoint(105, 105)]
+
+    assert window.build_menu().actions()[0].text() == "立即刷新"
+    window.close()
+
+
+def test_hiding_title_bar_at_minimum_height_still_round_trips(app):
+    """外框已经贴着最小高度时，减不动的那几像素不能在开回来时凭空多出来。"""
+    from stockwidget.providers.base import Quote
+
+    window = TickerWindow(Config(visible_rows=2))
+    window._sync_rows([Quote.from_prices("600519", "贵州茅台", 1304.66, 1272.83)])
+    window.show()
+    window._manual_size = True
+    window.resize(window.width(), 80)
+    app.processEvents()
+    frame = window.height()
+
+    window.apply_config(Config(visible_rows=2, show_title_buttons=False))
+    app.processEvents()
+    assert window.height() == 56  # 夹到下限，只减掉了 24 而不是整条标题栏
+
+    window.apply_config(Config(visible_rows=2))
+    app.processEvents()
+    assert window.height() == frame  # 加回来的也只有 24，不是 80 → 88
+    window.close()
+
+
+def test_font_size_change_while_hidden_restores_the_new_title_height(app):
+    """藏着的时候改字号，标题栏会变高；开回来要按新高度补，不是旧的那条。"""
+    from stockwidget.providers.base import Quote
+
+    window = TickerWindow(Config(visible_rows=2))
+    window._sync_rows([Quote.from_prices("600519", "贵州茅台", 1304.66, 1272.83)])
+    window.show()
+    window._manual_size = True
+    window.resize(window.width(), 220)
+    app.processEvents()
+    frame = window.height()
+
+    window.apply_config(Config(visible_rows=2, show_title_buttons=False))
+    app.processEvents()
+    removed = frame - window.height()
+    hidden_frame = window.height()
+
+    window.apply_config(Config(visible_rows=2, show_title_buttons=False, font_size=22))
+    app.processEvents()
+    window.apply_config(Config(visible_rows=2, font_size=22))
+    app.processEvents()
+
+    restored = window.height() - hidden_frame
+    assert restored > removed  # 字大了，标题栏也高了
+    assert restored == pytest.approx(window.title_bar.height(), abs=2)
+    window.close()
+
+
+def test_drag_handle_offers_the_menu_when_click_through_hides_everything(app):
+    """穿透 + 藏起按钮 + 没有托盘：左上角把手是最后一个能右键的地方。"""
+    from PySide6.QtGui import QContextMenuEvent
+
+    window = TickerWindow(Config(click_through=True, show_title_buttons=False))
+    window.show()
+    app.processEvents()
+    assert window.handle.isVisible() is True
+
+    popped: list[QPoint] = []
+    window.popup_menu = popped.append
+    app.sendEvent(
+        window.handle,
+        QContextMenuEvent(QContextMenuEvent.Mouse, QPoint(3, 3), QPoint(77, 88)),
+    )
+    assert popped == [QPoint(77, 88)]
+    window.close()
