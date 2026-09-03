@@ -1273,3 +1273,35 @@ def test_chart_height_growth_while_hidden_invalidates_the_bookkeeping(app):
     assert window.height() - grown == pytest.approx(window.title_bar.height(), abs=2)
     assert window.scroll.viewport().height() == pytest.approx(viewport, abs=2)
     window.close()
+
+
+def test_clamped_removal_plus_font_change_adds_the_title_growth(app):
+    """减掉的高度被下限夹过，再改字号时只能加差额，不能按比例放大。
+
+    夹过的记账是残值（80 的外框只减掉 24），乘比例等于把「没减成的那部分」
+    也一起放大，标题栏就会从内容区里吃掉差额。
+    """
+    from stockwidget.providers.base import Quote
+
+    window = TickerWindow(Config(visible_rows=2))
+    window._sync_rows([Quote.from_prices("600519", "贵州茅台", 1304.66, 1272.83)])
+    window.show()
+    window._manual_size = True
+    window.resize(window.width(), 80)
+    app.processEvents()
+
+    window.apply_config(Config(visible_rows=2, show_title_buttons=False))
+    app.processEvents()
+    removed, hint_then = window._hidden_title_height, window._hidden_title_hint
+    hidden = window.height()
+    assert 0 < removed < hint_then  # 确实被下限夹过
+
+    window.apply_config(Config(visible_rows=2, show_title_buttons=False, font_size=22))
+    app.processEvents()
+    window.apply_config(Config(visible_rows=2, font_size=22))
+    app.processEvents()
+
+    hint_now = window.title_bar.sizeHint().height()
+    assert hint_now > hint_then  # 字号变大，标题栏也变高
+    assert window.height() - hidden == removed + (hint_now - hint_then)
+    window.close()
