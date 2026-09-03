@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLayout,
+    QMenu,
     QPushButton,
     QGridLayout,
     QScrollArea,
@@ -153,6 +154,8 @@ class DragHandle(QWidget):
     """
 
     moved = Signal(QPoint)
+    # 穿透时整窗不吃鼠标，把手是唯一还能右键的地方，菜单要从这里也能叫出来。
+    context_menu_requested = Signal(QPoint)
 
     def __init__(self) -> None:
         super().__init__(None, Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint)
@@ -205,6 +208,10 @@ class DragHandle(QWidget):
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802 - Qt 命名
         self._offset = None
 
+    def contextMenuEvent(self, event) -> None:  # noqa: N802 - Qt 命名
+        self.context_menu_requested.emit(event.globalPos())
+        event.accept()
+
 
 class TickerWindow(QWidget):
     """组件主窗口。"""
@@ -214,6 +221,7 @@ class TickerWindow(QWidget):
     quit_requested = Signal()
     bounds_changed = Signal(object)
     grayscale_requested = Signal()
+    title_buttons_requested = Signal()
 
     def __init__(self, config: Config) -> None:
         super().__init__()
@@ -225,6 +233,12 @@ class TickerWindow(QWidget):
         self._drag_start_scale = 1.0
         self._drag_reference_height = 0
         self._restore_scale_from_height = False
+        # 手动外框下藏起标题栏时真正减掉的高度，开回来时原样加回去；同时记下
+        # 当时的 sizeHint（藏着期间改了字号按它等比换算）和减完后的外框高度
+        # （外框被任何路径改过，这份记账即作废）。
+        self._hidden_title_height = 0
+        self._hidden_title_hint = 0
+        self._hidden_title_frame = 0
         self._move_drag_offset: QPoint | None = None
         self._move_drag_origin: QPoint | None = None
         self._move_drag_active = False
@@ -234,6 +248,7 @@ class TickerWindow(QWidget):
 
         self.handle = DragHandle()
         self.handle.moved.connect(self._on_handle_moved)
+        self.handle.context_menu_requested.connect(self.popup_menu)
 
         self.title_bar = TitleBar(self)
         self.title_bar.refresh_requested.connect(self.refresh_requested.emit)
@@ -364,6 +379,18 @@ class TickerWindow(QWidget):
                 self.show()  # 改 flag 会隐藏窗口，需要重新显示
 
         scaled = self.scaled_config()
+        # 标题栏高度跟着字号走，而一次配置更新可以同时改字号和藏标题栏
+        # （WebUI 一次 POST 就能做到），所以在按新配置重排之前，先记下它此刻
+        # 占的高度和与之对应的 sizeHint——藏起来时要减的是这一条。
+        title_before = (self.title_bar.height(), self.title_bar.sizeHint().height())
+        # 标题栏里除了这四个按钮没有别的东西，关掉就整条收起，省下那一行高度；
+        # 窗口内容区本来就能拖动，少了标题栏也不影响挪窗口。
+        self.title_bar.setVisible(config.show_title_buttons)
+        self.empty_label.setText(
+            "自选列表为空\n点击 ⚙ 在浏览器里添加代码"
+            if config.show_title_buttons
+            else "自选列表为空\n从托盘菜单打开设置添加代码"
+        )
         self.setWindowOpacity(1.0)
         for effect in self._opacity_effects:
             effect.setOpacity(config.opacity)
@@ -399,7 +426,40 @@ class TickerWindow(QWidget):
             config.background_alpha,
         ):
             self.update()
+        if previous.show_title_buttons != config.show_title_buttons:
+            self._compensate_title_bar_height(
+                showing=config.show_title_buttons, title_before=title_before
+            )
         self._resize_to_grid(ensure_chart_height=chart_height_changed)
+
+    # ------------------------------------------------------------ 右键菜单
+
+    def build_menu(self) -> QMenu:
+        """右键菜单：和右上角按钮同一批动作，外加把按钮开回来的开关。
+
+        系统托盘不是哪儿都有（``QSystemTrayIcon.isSystemTrayAvailable()`` 为假时
+        整个托盘都不会创建），所以隐藏标题栏后不能只靠托盘找回设置和退出——
+        否则重启之后配置还记着隐藏，窗口上就再没有任何入口了。
+        """
+        menu = QMenu(self)
+        menu.addAction("立即刷新", self.refresh_requested.emit)
+        toggle = menu.addAction("显示标题栏按钮", self.title_buttons_requested.emit)
+        toggle.setCheckable(True)
+        toggle.setChecked(self._config.show_title_buttons)
+        menu.addSeparator()
+        menu.addAction("设置…", self.settings_requested.emit)
+        menu.addAction("退出", self.quit_requested.emit)
+        return menu
+
+    def popup_menu(self, position: QPoint) -> None:
+        menu = self.build_menu()
+        menu.exec(position)
+        menu.deleteLater()  # 菜单挂在窗口下，不回收的话点一次多一个
+
+    def contextMenuEvent(self, event) -> None:  # noqa: N802 - Qt 命名
+        # 子控件（行情文字、按钮）不处理右键，事件会冒泡到这里，整窗都能唤出菜单。
+        self.popup_menu(event.globalPos())
+        event.accept()
 
     def paintEvent(self, event) -> None:  # noqa: N802 - Qt 命名
         painter = QPainter(self)
@@ -486,9 +546,74 @@ class TickerWindow(QWidget):
 
     # ------------------------------------------------------------ 尺寸
 
+    def _compensate_title_bar_height(
+        self, *, showing: bool, title_before: tuple[int, int]
+    ) -> None:
+        """手动外框下，标题栏显隐要连着外框一起加减那一条高度。
+
+        标题栏是外框自带的 chrome，不是用户拖出来的内容高度。外框不动的话，
+        藏起来等于白送内容区一条高度：当场看不出问题，但下次拖右下角时，绝对
+        缩放基准（``_absolute_scale_reference``）已经少了这条 chrome，连只拖宽度
+        都会照着歪掉的基准把字号顶大一截（实测 +25%，字号 19→24）。
+
+        这里按标题栏在布局里真实占到的高度同步外框，内容区就一个像素都不动。
+        基准仍会差一点点——它是按各部件的 sizeHint 估的，和被压扁后的实际高度
+        对不齐——于是之后只拖宽度还会有约 5% 的偏移（最多一档字号）。要把这点
+        也抹平就得改动共用的缩放模型（紧凑模式藏页脚有同样的老问题），不在本
+        改动范围内，这里先保内容不跳。自动尺寸不必管——``_resize_to_grid``
+        本来就会重算。
+        """
+        if not self._manual_size or self._config.layout == "single":
+            return
+        hint = self.title_bar.sizeHint().height()
+        if showing:
+            # 记账只在「外框还是当初减完时那个高度」的前提下才算数。外框可能被
+            # 各种路径改掉——拖右下角、K 线高度撑高（_resize_to_grid 的
+            # ensure_chart_height）、屏幕夹取……逐个去清很容易漏，直接比高度就够：
+            # 一旦有人动过外框，这份「撤销我刚才那次隐藏」的配对就不成立了。
+            if self._hidden_title_hint and self._hidden_title_frame == self.height():
+                # 加回来的必须正好是当初减掉的那一条，否则开开关关几次外框就会
+                # 跑偏——窗口高度会改变布局分给标题栏的高度，两个方向量出来的并
+                # 不相等。外框本来就贴着下限时减掉的是 0，这里加回来的也得是 0，
+                # 所以拿 hint 当「有没有记过账」的标记，而不是高度本身。
+                delta = self._hidden_title_height
+                if delta and self._hidden_title_hint != hint:
+                    # 藏着的时候改过字号，标题栏本身会变高变矮，按 sizeHint 的
+                    # 变化等比换算，免得开回来多给或少给内容区一截。
+                    delta = max(1, round(delta * hint / self._hidden_title_hint))
+            else:
+                # 没有记账，或者外框已经被动过——例如重启后配置里就记着隐藏。
+                # 这时无从知道当初减了多少，只能按标题栏该占的整条高度补，
+                # 内容区维持现状不被挤。
+                delta = hint
+            self._hidden_title_height = 0
+            self._hidden_title_hint = 0
+            self._hidden_title_frame = 0
+        else:
+            # 用改配置之前布局里真实占到的高度，不是 sizeHint：窗口不够高时标题栏
+            # 会被压扁，按 sizeHint 减就会多切内容区几个像素；而同一次更新如果连
+            # 字号一起改了，此刻的 sizeHint 已经是新字号的，跟正在消失的这条无关。
+            laid_out, laid_out_hint = title_before
+            delta = laid_out or laid_out_hint or hint
+        before = self.height()
+        self.resize(self.width(), max(56, before + (delta if showing else -delta)))
+        if not showing:
+            # 记真正减掉的那点高度：贴着最小高度时 resize 会被夹住，减掉的比
+            # delta 少，按 delta 加回来会把外框一次次撑大（80 → 56 → 88）。
+            # 配的 hint 必须是与这条高度同时期的那个，否则之后按新旧 hint 比例
+            # 换算就会失真。
+            self._hidden_title_height = before - self.height()
+            self._hidden_title_hint = laid_out_hint or hint
+            self._hidden_title_frame = self.height()
+
+    def _chrome_height(self) -> int:
+        """标题栏之上的固定高度；标题栏藏起来时它不再占位，窗口跟着收紧。"""
+        title = self.title_bar.sizeHint().height() if self._config.show_title_buttons else 0
+        return title + 2
+
     def _resize_to_grid(self, *, ensure_chart_height: bool = False) -> None:
         """高度按网格行数算，宽度按列数摊开——1 行就是全部横向铺满。"""
-        chrome = self.title_bar.sizeHint().height() + 2
+        chrome = self._chrome_height()
         if self._config.layout == "single":
             self.setFixedHeight(chrome + self.marquee.height() + 4)
             self.setMinimumWidth(220)
@@ -692,9 +817,11 @@ class TickerWindow(QWidget):
             return 0
 
         base = self._config
-        title_probe = TitleBar()
-        title_probe.apply_config(base)
-        chrome = title_probe.sizeHint().height() + 2
+        chrome = 2
+        if base.show_title_buttons:
+            title_probe = TitleBar()
+            title_probe.apply_config(base)
+            chrome += title_probe.sizeHint().height()
 
         if base.layout == "single":
             marquee_probe = Marquee()

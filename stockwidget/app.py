@@ -47,6 +47,14 @@ class WidgetApp:
         self.window.grayscale_requested.connect(
             lambda: self._apply_config(self.store.update({"grayscale": not self.store.get().grayscale}))
         )
+        # 右键菜单里的开关，没有系统托盘时就靠它把标题栏按钮找回来。
+        self.window.title_buttons_requested.connect(
+            lambda: self._apply_config(
+                self.store.update(
+                    {"show_title_buttons": not self.store.get().show_title_buttons}
+                )
+            )
+        )
 
         self.bridge = ConfigBridge()
         self.bridge.changed.connect(self._apply_config, Qt.QueuedConnection)
@@ -67,6 +75,11 @@ class WidgetApp:
             )
             self.tray.click_through_action.toggled.connect(
                 lambda checked: self._apply_config(self.store.update({"click_through": checked}))
+            )
+            self.tray.title_buttons_action.toggled.connect(
+                lambda checked: self._apply_config(
+                    self.store.update({"show_title_buttons": checked})
+                )
             )
             self.tray.activated.connect(
                 lambda reason: self.toggle_window()

@@ -52,6 +52,24 @@ def test_settings_page_renders(server):
     assert 'id="font_size" name="font_size" type="number" min="7"' in body
 
 
+def test_title_buttons_switch_renders_and_persists(server):
+    client = _client(server)
+    body = client.get(f"/?token={server.token}").get_data(as_text=True)
+    assert 'id="show_title_buttons" name="show_title_buttons" type="checkbox"' in body
+    assert "显示右上角按钮" in body
+
+    config = client.post(
+        f"/api/config?token={server.token}", json={"show_title_buttons": False}
+    ).get_json()["config"]
+    assert config["show_title_buttons"] is False
+    assert server.applied[-1].show_title_buttons is False
+
+    # 关掉之后页面回填的复选框不能再是勾上的状态。
+    body = client.get(f"/?token={server.token}").get_data(as_text=True)
+    checkbox = body.split('id="show_title_buttons"')[1].split("</label>")[0]
+    assert "checked" not in checkbox
+
+
 def test_opacity_slider_min_follows_sanitize_floor(server):
     """滑块下限曾经写死 0.2，比后端更严，20% 以下根本拖不动。"""
     body = _client(server).get(f"/?token={server.token}").get_data(as_text=True)

@@ -875,3 +875,401 @@ def test_click_through_disables_content_drag(app):
     assert moved is False
     assert window.frameGeometry().topLeft() == start
     window.close()
+
+
+def test_title_buttons_can_be_hidden(app):
+    """关掉右上角按钮后整条标题栏收起，那一行高度也还给行情内容。"""
+    from stockwidget.providers.base import Quote
+
+    quotes = [Quote.from_prices("600519", "贵州茅台", 1304.66, 1272.83)]
+
+    window = TickerWindow(Config(visible_rows=1))
+    window._sync_rows(quotes)
+    window.show()
+    app.processEvents()
+    # 行控件显示后 sizeHint 会再长一次，先按显示后的尺寸重算一遍当基准。
+    window.apply_config(Config(visible_rows=1))
+    app.processEvents()
+    assert window.title_bar.isVisible() is True
+    with_bar = window.height()
+
+    window.apply_config(Config(visible_rows=1, show_title_buttons=False))
+    app.processEvents()
+
+    assert window.title_bar.isVisible() is False
+    for button in (
+        window.title_bar.refresh_button,
+        window.title_bar.settings_button,
+        window.title_bar.grayscale_button,
+        window.title_bar.quit_button,
+    ):
+        assert button.isVisible() is False
+    # 收起的标题栏不再占位：窗口应当矮下去，而不是留一条空白。
+    assert window.height() < with_bar
+    assert window.height() == pytest.approx(
+        with_bar - window.title_bar.sizeHint().height(), abs=2
+    )
+    # 行情内容照常显示，没被一起藏掉。
+    assert window.scroll.isVisible() is True
+    assert window._rows["600519"].isVisible() is True
+
+    # 再打开就该原样回来。
+    window.apply_config(Config(visible_rows=1))
+    app.processEvents()
+    assert window.title_bar.isVisible() is True
+    assert window.title_bar.quit_button.isVisible() is True
+    assert window.height() == pytest.approx(with_bar, abs=2)
+    window.close()
+
+
+def test_hidden_title_buttons_keep_window_draggable_and_point_to_tray(app):
+    """标题栏是窗口自带的拖拽把手，藏起来后内容区必须还能拖动。"""
+    window = TickerWindow(Config(show_title_buttons=False))
+    window.move(100, 120)
+    start = window.frameGeometry().topLeft()
+    press_at = start + QPoint(40, 35)
+
+    window.eventFilter(
+        window.empty_label,
+        _WindowDragEvent(QEvent.MouseButtonPress, press_at, button=Qt.LeftButton),
+    )
+    moved = window.eventFilter(
+        window.empty_label,
+        _WindowDragEvent(
+            QEvent.MouseMove, press_at + QPoint(60, 40), buttons=Qt.LeftButton
+        ),
+    )
+
+    assert moved is True
+    assert window.frameGeometry().topLeft() == start + QPoint(60, 40)
+    # 空列表的提示不能再让用户去点已经藏起来的 ⚙。
+    assert "⚙" not in window.empty_label.text()
+    assert "托盘" in window.empty_label.text()
+    window.close()
+
+
+def test_toggling_title_buttons_keeps_manual_frame_content_and_scale(app):
+    """手动尺寸下切换标题栏，不能把缩放基准搞歪。
+
+    标题栏是 chrome：外框不跟着加减那一条，内容区就凭空多／少一截高度，
+    而绝对缩放基准（_absolute_scale_reference）已经按新的 chrome 算了——
+    下一次哪怕只拖宽度，也会照着歪掉的基准把字号顶大一截。
+    """
+    from stockwidget.providers.base import Quote
+
+    window = TickerWindow(Config(visible_rows=2))
+    window._sync_rows([
+        Quote.from_prices("600519", "贵州茅台", 1304.66, 1272.83),
+        Quote.from_prices("000001", "平安银行", 12.34, 12.00),
+    ])
+    window.show()
+    app.processEvents()
+
+    def drag(size: QSize) -> None:
+        window._on_grip_drag_started(window.size())
+        window._on_grip_dragged(size)
+        window._on_grip_drag_finished()
+        window._apply_scale()
+        app.processEvents()
+
+    drag(QSize(window.width(), window.height() + 60))  # 拖出一个手动尺寸
+    assert window._manual_size is True
+    frame = window.height()
+    viewport = window.scroll.viewport().height()
+    scale = window._scale
+    font = window.scaled_config().stock_price_font_size
+
+    window.apply_config(Config(visible_rows=2, show_title_buttons=False))
+    app.processEvents()
+
+    # 外框少掉标题栏那一条，内容区一个像素都不动。
+    assert window.height() == pytest.approx(frame - window.title_bar.height(), abs=2)
+    assert window.scroll.viewport().height() == pytest.approx(viewport, abs=2)
+    assert window.scaled_config().stock_price_font_size == font
+
+    # 原样开回来：外框回到原值，字号和缩放都不该被这一趟顶动。
+    window.apply_config(Config(visible_rows=2))
+    app.processEvents()
+    assert window.height() == pytest.approx(frame, abs=2)
+    assert window._scale == pytest.approx(scale)
+    assert window.scaled_config().stock_price_font_size == font
+
+    # 再开开关关也不能一次比一次跑偏：加回来的必须正好是减掉的那一条。
+    settled = (window.height(), window.scroll.viewport().height())
+    for _ in range(2):
+        window.apply_config(Config(visible_rows=2, show_title_buttons=False))
+        app.processEvents()
+        hidden = (window.height(), window.scroll.viewport().height())
+        window.apply_config(Config(visible_rows=2))
+        app.processEvents()
+        assert (window.height(), window.scroll.viewport().height()) == settled
+    assert hidden[0] < settled[0]
+    assert hidden[1] == settled[1]  # 内容区始终不变，少掉的只有 chrome
+
+    # 藏起来之后只拖宽度、高度不动，缩放就该基本留在原地：修之前这里会照着
+    # 少了一条 chrome 的基准算，scale 直接涨 25%，字号 19→24。
+    window.apply_config(Config(visible_rows=2, show_title_buttons=False))
+    app.processEvents()
+    drag(QSize(window.width() + 120, window.height()))
+    assert window._scale == pytest.approx(scale, rel=0.08)
+    assert abs(window.scaled_config().stock_price_font_size - font) <= 1
+    window.close()
+
+
+def test_context_menu_can_restore_title_buttons_without_a_tray(app):
+    """系统托盘不是哪儿都有，右键菜单必须能把藏起来的按钮找回来。"""
+    from PySide6.QtGui import QContextMenuEvent
+
+    window = TickerWindow(Config(show_title_buttons=False))
+    menu = window.build_menu()
+
+    assert [action.text() for action in menu.actions() if action.text()] == [
+        "立即刷新",
+        "显示标题栏按钮",
+        "设置…",
+        "退出",
+    ]
+    toggle = next(a for a in menu.actions() if a.text() == "显示标题栏按钮")
+    assert toggle.isCheckable() is True
+    assert toggle.isChecked() is False  # 当前是藏起来的状态
+
+    asked: list[bool] = []
+    window.title_buttons_requested.connect(lambda: asked.append(True))
+    toggle.trigger()
+    assert asked == [True]
+
+    # 行情文字上按右键也要能唤出菜单，而不是只有窗口空白处才行。
+    popped: list[QPoint] = []
+    window.popup_menu = popped.append
+    app.sendEvent(
+        window.empty_label,
+        QContextMenuEvent(QContextMenuEvent.Mouse, QPoint(5, 5), QPoint(105, 105)),
+    )
+    assert popped == [QPoint(105, 105)]
+
+    assert window.build_menu().actions()[0].text() == "立即刷新"
+    window.close()
+
+
+def test_hiding_title_bar_at_minimum_height_still_round_trips(app):
+    """外框已经贴着最小高度时，减不动的那几像素不能在开回来时凭空多出来。"""
+    from stockwidget.providers.base import Quote
+
+    window = TickerWindow(Config(visible_rows=2))
+    window._sync_rows([Quote.from_prices("600519", "贵州茅台", 1304.66, 1272.83)])
+    window.show()
+    window._manual_size = True
+    window.resize(window.width(), 80)
+    app.processEvents()
+    frame = window.height()
+
+    window.apply_config(Config(visible_rows=2, show_title_buttons=False))
+    app.processEvents()
+    assert window.height() == 56  # 夹到下限，只减掉了 24 而不是整条标题栏
+
+    window.apply_config(Config(visible_rows=2))
+    app.processEvents()
+    assert window.height() == frame  # 加回来的也只有 24，不是 80 → 88
+    window.close()
+
+
+def test_font_size_change_while_hidden_restores_the_new_title_height(app):
+    """藏着的时候改字号，标题栏会变高；开回来要按新高度补，不是旧的那条。"""
+    from stockwidget.providers.base import Quote
+
+    window = TickerWindow(Config(visible_rows=2))
+    window._sync_rows([Quote.from_prices("600519", "贵州茅台", 1304.66, 1272.83)])
+    window.show()
+    window._manual_size = True
+    window.resize(window.width(), 220)
+    app.processEvents()
+    frame = window.height()
+
+    window.apply_config(Config(visible_rows=2, show_title_buttons=False))
+    app.processEvents()
+    removed = frame - window.height()
+    hidden_frame = window.height()
+
+    window.apply_config(Config(visible_rows=2, show_title_buttons=False, font_size=22))
+    app.processEvents()
+    window.apply_config(Config(visible_rows=2, font_size=22))
+    app.processEvents()
+
+    restored = window.height() - hidden_frame
+    assert restored > removed  # 字大了，标题栏也高了
+    assert restored == pytest.approx(window.title_bar.height(), abs=2)
+    window.close()
+
+
+def test_drag_handle_offers_the_menu_when_click_through_hides_everything(app):
+    """穿透 + 藏起按钮 + 没有托盘：左上角把手是最后一个能右键的地方。"""
+    from PySide6.QtGui import QContextMenuEvent
+
+    window = TickerWindow(Config(click_through=True, show_title_buttons=False))
+    window.show()
+    app.processEvents()
+    assert window.handle.isVisible() is True
+
+    popped: list[QPoint] = []
+    window.popup_menu = popped.append
+    app.sendEvent(
+        window.handle,
+        QContextMenuEvent(QContextMenuEvent.Mouse, QPoint(3, 3), QPoint(77, 88)),
+    )
+    assert popped == [QPoint(77, 88)]
+    window.close()
+
+
+def test_hiding_title_bar_at_the_floor_removes_and_restores_nothing(app):
+    """外框已经贴在下限时一点都减不掉，开回来也不能凭空长出一条标题栏。"""
+    from stockwidget.providers.base import Quote
+
+    window = TickerWindow(Config(visible_rows=2))
+    window._sync_rows([Quote.from_prices("600519", "贵州茅台", 1304.66, 1272.83)])
+    window.show()
+    window._manual_size = True
+    window.resize(window.width(), 56)  # 配置里保存高度的下限
+    app.processEvents()
+
+    window.apply_config(Config(visible_rows=2, show_title_buttons=False))
+    app.processEvents()
+    assert window.height() == 56  # 减不动
+
+    window.apply_config(Config(visible_rows=2))
+    app.processEvents()
+    assert window.height() == 56  # 当初减掉 0，就该加回 0，而不是 56 → 88
+    window.close()
+
+
+def test_hiding_and_resizing_text_in_one_update_still_restores_correctly(app):
+    """一次配置更新里既藏标题栏又改字号（WebUI 一次 POST 就能做到）。
+
+    此刻 title_bar 的 sizeHint 已经是新字号的，和正在消失的那条没关系；
+    把「减掉的高度」和新 hint 配成一对，开回来时比例换算就会当成没变过，
+    只补回旧的那点高度，内容区平白被新的大标题栏吃掉一截。
+    """
+    from stockwidget.providers.base import Quote
+
+    window = TickerWindow(Config(visible_rows=2))
+    window._sync_rows([
+        Quote.from_prices("600519", "贵州茅台", 1304.66, 1272.83),
+        Quote.from_prices("000001", "平安银行", 12.34, 12.00),
+    ])
+    window.show()
+    window._manual_size = True
+    window.resize(window.width(), 220)
+    app.processEvents()
+    viewport = window.scroll.viewport().height()
+
+    # 同一次更新：藏起标题栏 + 把字号从 13 调到 22
+    window.apply_config(Config(visible_rows=2, show_title_buttons=False, font_size=22))
+    app.processEvents()
+    hidden_frame = window.height()
+    assert window.scroll.viewport().height() == pytest.approx(viewport, abs=2)
+
+    window.apply_config(Config(visible_rows=2, font_size=22))
+    app.processEvents()
+
+    # 补回来的要是「新字号下标题栏该占的高度」，内容区因此一点不变。
+    assert window.height() - hidden_frame == pytest.approx(window.title_bar.height(), abs=2)
+    assert window.scroll.viewport().height() == pytest.approx(viewport, abs=2)
+    window.close()
+
+
+def test_resizing_while_hidden_drops_the_clamped_bookkeeping(app):
+    """藏着的时候用户重新拉过窗口，之前那次夹取过的记账就不作数了。"""
+    from stockwidget.providers.base import Quote
+
+    window = TickerWindow(Config(visible_rows=2))
+    window._sync_rows([Quote.from_prices("600519", "贵州茅台", 1304.66, 1272.83)])
+    window.show()
+    window._manual_size = True
+    window.resize(window.width(), 80)
+    app.processEvents()
+
+    window.apply_config(Config(visible_rows=2, show_title_buttons=False))
+    app.processEvents()
+    assert window._hidden_title_height > 0  # 贴着下限，只减掉了一部分
+
+    # 藏着的时候把窗口拉高，空间够了，那份残缺的记账就该失效
+    window._on_grip_drag_started(window.size())
+    window._on_grip_dragged(QSize(window.width(), 200))
+    window._on_grip_drag_finished()
+    window._apply_scale()
+    app.processEvents()
+    # 判定方式是「外框还是不是减完时那个高度」，而不是逐个路径去清
+    assert window._hidden_title_frame != window.height()
+    grown, viewport = window.height(), window.scroll.viewport().height()
+
+    window.apply_config(Config(visible_rows=2))
+    app.processEvents()
+
+    # 补的是标题栏此刻该占的整条高度，新选的内容区一点不被抠。
+    assert window.height() - grown == pytest.approx(window.title_bar.height(), abs=2)
+    assert window.scroll.viewport().height() == pytest.approx(viewport, abs=2)
+    window.close()
+
+
+def test_pressing_the_grip_without_dragging_keeps_the_bookkeeping(app):
+    """只按一下右下角把手又松开，什么都没改，记账不该作废。"""
+    from stockwidget.providers.base import Quote
+
+    window = TickerWindow(Config(visible_rows=2))
+    window._sync_rows([Quote.from_prices("600519", "贵州茅台", 1304.66, 1272.83)])
+    window.show()
+    window._manual_size = True
+    window.resize(window.width(), 80)
+    app.processEvents()
+    frame = window.height()
+
+    window.apply_config(Config(visible_rows=2, show_title_buttons=False))
+    app.processEvents()
+    cached = window._hidden_title_height
+    assert cached > 0
+
+    # 按下把手、没拖动就松开：外框没变，记账要留着
+    window._on_grip_drag_started(window.size())
+    window._on_grip_drag_finished()
+    app.processEvents()
+    assert window._hidden_title_height == cached
+
+    window.apply_config(Config(visible_rows=2))
+    app.processEvents()
+    assert window.height() == frame  # 补回当初减掉的 24，而不是整条 32
+    window.close()
+
+
+def test_chart_height_growth_while_hidden_invalidates_the_bookkeeping(app):
+    """藏着的时候 K 线高度把外框撑高了，也算「外框被动过」。
+
+    这条路径不经过右下角把手（走 _resize_to_grid 的 ensure_chart_height），
+    所以记账的作废不能挂在拖拽上，只能按「外框还是不是减完时那个高度」判定。
+    """
+    from stockwidget.providers.base import Quote
+
+    window = TickerWindow(Config(visible_rows=2))
+    window._sync_rows([Quote.from_prices("600519", "贵州茅台", 1304.66, 1272.83)])
+    window.show()
+    window._manual_size = True
+    window.resize(window.width(), 80)
+    app.processEvents()
+
+    window.apply_config(Config(visible_rows=2, show_title_buttons=False))
+    app.processEvents()
+    assert 0 < window._hidden_title_height < window.title_bar.sizeHint().height()
+
+    # K 线高度撑高外框，中途没有任何拖拽手势
+    window.apply_config(
+        Config(visible_rows=2, show_title_buttons=False, chart_height=160)
+    )
+    app.processEvents()
+    grown, viewport = window.height(), window.scroll.viewport().height()
+    assert grown > 80
+
+    window.apply_config(Config(visible_rows=2, chart_height=160))
+    app.processEvents()
+
+    # 补的是标题栏整条高度，撑高后的内容区不被抠。
+    assert window.height() - grown == pytest.approx(window.title_bar.height(), abs=2)
+    assert window.scroll.viewport().height() == pytest.approx(viewport, abs=2)
+    window.close()

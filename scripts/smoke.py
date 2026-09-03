@@ -292,6 +292,37 @@ def main() -> int:
             "关掉穿透后把手收起", not app.window.handle.isVisible()
         ))
 
+    def step_title_buttons() -> None:
+        """右上角按钮藏起来后，外框跟着少掉标题栏那一条，内容区一点不变。
+
+        这一步跑在拖拽缩放之后，窗口已经是手动尺寸。标题栏是 chrome 不是内容，
+        所以这里破例动外框：内容区高度保持不变，缩放基准也就还对得上，
+        下次拖右下角不会把字号顶大一截。
+        """
+        before_frame = app.window.height()
+        before_viewport = app.window.scroll.viewport().height()
+        app._apply_config(store.update({"show_title_buttons": False}))
+        QTimer.singleShot(700, lambda: (
+            check("关掉后右上角按钮不再显示", not app.window.title_bar.isVisible()),
+            check("外框跟着少掉标题栏那一条", app.window.height() < before_frame,
+                  f"{before_frame} -> {app.window.height()}"),
+            check("内容区高度保持不变",
+                  abs(app.window.scroll.viewport().height() - before_viewport) <= 2,
+                  f"{before_viewport} -> {app.window.scroll.viewport().height()}"),
+            check("行情内容没被一起藏掉", app.window.scroll.isVisible()),
+            shot("shot-no-title-buttons"),
+        ))
+        # 走右键菜单把按钮开回来：没有系统托盘的机器上，这是唯一的找回入口。
+        QTimer.singleShot(900, lambda: next(
+            a for a in app.window.build_menu().actions() if a.text() == "显示标题栏按钮"
+        ).trigger())
+        QTimer.singleShot(1100, lambda: (
+            check("右键菜单能把按钮开回来", app.window.title_bar.isVisible()),
+            check("开回来后外框也复原", abs(app.window.height() - before_frame) <= 2,
+                  f"{before_frame} -> {app.window.height()}"),
+            check("配置也跟着写回去", store.get().show_title_buttons is True),
+        ))
+
     def step_single() -> None:
         drag_to(QSize(300, app.window.height()))  # 先把缩放拖回基准
         app._apply_config(store.update({"layout": "single", "font_size": 13}))
@@ -342,6 +373,7 @@ def main() -> int:
         step_scale,
         step_background,
         step_click_through,
+        step_title_buttons,
         step_single,
         step_webui,
         step_webui_applies,

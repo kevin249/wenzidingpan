@@ -7,6 +7,7 @@ const api = (path) => `${path}${path.includes('?') ? '&' : '?'}token=${encodeURI
 const CHECKBOXES = [
   'always_on_top',
   'click_through',
+  'show_title_buttons',
   'show_dark_trade',
   'show_sparkline',
   'show_sparkline_fill',

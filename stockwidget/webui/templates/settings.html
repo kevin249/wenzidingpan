@@ -221,6 +221,9 @@
           <label><input id="click_through" name="click_through" type="checkbox"
                         {% if config.click_through %}checked{% endif %} />
             鼠标穿透（点击落到下层程序，只留左上角把手可拖动）</label>
+          <label><input id="show_title_buttons" name="show_title_buttons" type="checkbox"
+                        {% if config.show_title_buttons %}checked{% endif %} />
+            显示右上角按钮（刷新 / 设置 / 灰度 / 退出；关掉后整条标题栏收起，在组件上点右键或从托盘菜单都能开回来）</label>
           <label><input id="show_dark_trade" name="show_dark_trade" type="checkbox"
                         {% if config.show_dark_trade %}checked{% endif %} /> 显示东方财富暗盘资金</label>
           <label><input id="show_sparkline" name="show_sparkline" type="checkbox"
