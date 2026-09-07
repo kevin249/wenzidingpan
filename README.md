@@ -116,6 +116,20 @@ Linux ARM64 的 glibc 2.39 门槛则退不了——上游从 6.9 到 6.11 的 aa
 > Linux 上如果 Qt 报 `Could not load the Qt platform plugin "xcb"`，
 > 装一下系统库：`sudo apt install libegl1 libxkbcommon-x11-0 libxcb-cursor0`。
 
+### 平台差异
+
+组件是一个「悬浮在别人窗口上方、自己决定摆在哪」的窗口，这类窗口恰好踩中各平台
+差异最大的几处。下面这些补偿都由程序自动完成，无需配置：
+
+| 平台 | 做了什么 |
+| --- | --- |
+| macOS | 无边框悬浮窗用的是 `Qt.Tool`，在 macOS 上对应 NSPanel —— **默认会随应用失焦一起隐藏**。组件几乎永远不是当前应用，所以显式设了 `WA_MacAlwaysShowToolWindow`，切到别的程序也照常显示 |
+| macOS | 启动时把进程降成附属应用（`NSApplicationActivationPolicyAccessory`）：不占 Dock、不出现在 ⌘-Tab 里，和其他菜单栏小工具一致。想让它回到 Dock，用 `STOCK_TICKER_NO_MACOS_ACCESSORY=1` 启动 |
+| Linux · Wayland | Wayland 不允许客户端自己摆窗口，`move()` 是空操作 —— 拖动、位置记忆、穿透时的左上角把手会一起失灵。检测到 Wayland 会话且 XWayland 真的能连上时，自动改用 `xcb` 插件，行为与 X11 会话一致；显式设过 `QT_QPA_PLATFORM` 则完全尊重 |
+| Linux · Wayland | 没有 XWayland 时不强行切（那会让 Qt 直接 abort），而是照常启动并打印一行提示说明哪些交互不可用 |
+| Linux | 设置了 `desktopFileName`，桌面环境据此把窗口和 `.desktop` 条目对应起来（任务栏 / 切换器里的图标） |
+| 全平台 | 系统托盘不可用时启动会提示：刷新 / 设置 / 退出都能从组件上的右键菜单进 |
+
 ## WebUI 设置
 
 ![设置页](docs/screenshot-webui.png)
@@ -284,6 +298,7 @@ WebUI 的鉴权与读写。冒烟脚本会真正把 Qt 窗口和 Flask 服务跑
 - 托盘图标在部分 Linux 桌面环境需要 `libappindicator` / dbus 支持，缺失时托盘不显示，组件窗口本身不受影响
 - 半透明窗口需要桌面开启混成（compositing），未开启时背景会呈不透明纯色
 - 鼠标穿透依赖 Qt 的 `WindowTransparentForInput`；少数 Linux 窗口管理器可能不生效，此时用托盘菜单关掉即可
+- 纯 Wayland 会话（没装 XWayland）下窗口位置归合成器管：拖动、位置记忆和左上角把手不生效，其余功能正常
 - 关掉右上角按钮后，刷新 / 设置 / 退出走组件上的右键菜单（或托盘菜单）；鼠标穿透同时开启时，右键左上角的小把手
 - 尚未接入打包（PyInstaller 等），目前以源码方式运行
 
