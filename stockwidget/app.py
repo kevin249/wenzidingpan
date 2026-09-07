@@ -9,7 +9,7 @@ from PySide6.QtCore import QObject, QUrl, Qt, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QApplication, QSystemTrayIcon
 
-from . import providers
+from . import desktop, providers
 from .config import Config, Store
 from .poller import Poller, Snapshot
 from .ui.icon import tray_icon
@@ -26,10 +26,16 @@ class ConfigBridge(QObject):
 
 class WidgetApp:
     def __init__(self, argv: list[str] | None = None, store: Store | None = None) -> None:
+        # 选平台插件必须赶在 QApplication 之前——它一建好就定了。
+        desktop.apply_qt_platform()
         self.qt = QApplication(argv if argv is not None else sys.argv)
         self.qt.setApplicationName("stock-ticker-widget")
+        # Linux 桌面靠这个把窗口和 .desktop 条目对上，否则任务栏/切换器里没有图标。
+        self.qt.setDesktopFileName("stock-ticker-widget")
         self.qt.setQuitOnLastWindowClosed(False)  # 组件常驻托盘
         self.qt.setWindowIcon(tray_icon())
+        # macOS 上降成附属应用：不占 Dock，也不出现在 ⌘-Tab 里。
+        desktop.use_accessory_activation_policy()
 
         # store 可注入，便于冒烟脚本用临时配置跑，不污染用户真实配置。
         self.store = store or Store()
@@ -129,12 +135,21 @@ class WidgetApp:
 
     # ------------------------------------------------------------ 启动
 
+    def startup_notes(self) -> list[str]:
+        """当前平台上会影响使用的限制，启动时打一行提示。"""
+        return desktop.startup_notes(
+            platform_name=self.qt.platformName(),
+            tray_available=self.tray is not None,
+        )
+
     def run(self) -> int:
         # 让 Ctrl+C 能中断 Qt 事件循环
         signal.signal(signal.SIGINT, lambda *_: self.quit())
 
         url = self.server.start()
         print(f"设置页：{url}")
+        for note in self.startup_notes():
+            print(f"[提示] {note}")
         self.window.show()
         if self.tray is not None:
             self.tray.show()

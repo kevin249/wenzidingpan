@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..config import Bounds, Config
+from ..desktop import keep_visible_when_inactive
 from ..poller import Snapshot
 from .marquee import Marquee
 from .quote_row import QuoteRow
@@ -159,6 +160,7 @@ class DragHandle(QWidget):
 
     def __init__(self) -> None:
         super().__init__(None, Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint)
+        keep_visible_when_inactive(self)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setFixedSize(HANDLE_SIZE, HANDLE_SIZE)
         self.setCursor(Qt.SizeAllCursor)
@@ -244,6 +246,8 @@ class TickerWindow(QWidget):
         self._move_drag_active = False
 
         self.setAttribute(Qt.WA_TranslucentBackground)
+        # 主窗口用的也是 Qt.Tool（不进任务栏），macOS 上同样要盯住这条。
+        keep_visible_when_inactive(self)
         self.setWindowTitle("股票行情组件")
 
         self.handle = DragHandle()

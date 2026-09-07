@@ -1305,3 +1305,22 @@ def test_clamped_removal_plus_font_change_adds_the_title_growth(app):
     assert hint_now > hint_then  # 字号变大，标题栏也变高
     assert window.height() - hidden == removed + (hint_now - hint_then)
     window.close()
+
+
+def test_tool_windows_stay_visible_when_the_app_is_inactive(app):
+    """macOS 把 Qt.Tool 映射成 NSPanel，默认随应用失焦一起隐藏。
+
+    盯盘组件几乎永远不是当前应用，不设这条属性在 macOS 上基本看不见。
+    属性在别的平台是空操作，所以这里能在任何平台上验证它确实被设上了。
+    """
+    window = TickerWindow(Config())
+
+    assert window.testAttribute(Qt.WA_MacAlwaysShowToolWindow) is True
+    assert window.handle.testAttribute(Qt.WA_MacAlwaysShowToolWindow) is True
+
+    # apply_config 会因为最前显示/鼠标穿透重设 windowFlags，属性不能跟着掉。
+    window.apply_config(Config(always_on_top=False, click_through=True))
+    assert window.windowFlags() & Qt.WindowTransparentForInput
+    assert window.testAttribute(Qt.WA_MacAlwaysShowToolWindow) is True
+    assert window.handle.testAttribute(Qt.WA_MacAlwaysShowToolWindow) is True
+    window.close()
