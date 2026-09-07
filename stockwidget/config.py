@@ -13,6 +13,7 @@ import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from .providers import DEFAULT_PROVIDER
 
@@ -121,6 +122,9 @@ class Config:
     stock_price_bold: bool = True
     stock_percent_bold: bool = False
     dark_trade_bold: bool = False
+    mcp_notifications_enabled: bool = False
+    mcp_url: str = "http://127.0.0.1:8801/mcp"
+    mcp_api_key: str = ""
     bounds: Bounds | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -222,6 +226,17 @@ def sanitize(raw: Any) -> Config:
     if isinstance(font, str) and FONT_FAMILY_RE.match(font.strip()):
         out.font_family = font.strip()
 
+    mcp_url = raw.get("mcp_url")
+    if isinstance(mcp_url, str):
+        candidate = mcp_url.strip()
+        parsed = urlsplit(candidate)
+        if len(candidate) <= 2048 and parsed.scheme in {"http", "https"} and parsed.hostname:
+            out.mcp_url = candidate
+
+    mcp_api_key = raw.get("mcp_api_key")
+    if isinstance(mcp_api_key, str):
+        out.mcp_api_key = mcp_api_key.strip()[:512]
+
     for key in (
         "always_on_top",
         "show_title_buttons",
@@ -241,6 +256,7 @@ def sanitize(raw: Any) -> Config:
         "stock_price_bold",
         "stock_percent_bold",
         "dark_trade_bold",
+        "mcp_notifications_enabled",
     ):
         if isinstance(raw.get(key), bool):
             setattr(out, key, raw[key])

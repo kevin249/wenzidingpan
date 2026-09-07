@@ -49,6 +49,20 @@ def test_quote_row_stacks_price_and_percent_in_two_rows(app):
     assert row.price_label.styleSheet() != black
 
 
+def test_window_bell_tracks_and_clears_mcp_notifications(app):
+    window = TickerWindow(Config(mcp_notifications_enabled=True))
+
+    assert window.title_bar.bell_button.isHidden() is False
+    window.show_mcp_notification("涨停提醒", "贵州茅台触发提醒")
+    window.show_mcp_notification("风险提醒", "跌破保护价")
+
+    assert window.title_bar.bell_button.text() == "BELL·2"
+    assert "风险提醒" in window.title_bar.bell_button.toolTip()
+    window.title_bar.bell_button.click()
+    assert window.title_bar.bell_button.text() == "BELL"
+    window.close()
+
+
 def test_quote_row_uses_independent_font_sizes_and_aligns_second_row(app):
     config = Config(
         stock_name_font_size=14,

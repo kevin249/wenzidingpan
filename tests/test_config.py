@@ -62,6 +62,22 @@ def test_base_font_size_below_nine_is_persisted(tmp_path):
     assert Store(path).get().font_size == 7
 
 
+def test_mcp_notification_settings_are_sanitized_and_persisted(tmp_path):
+    store = Store(tmp_path / "config.json")
+    saved = store.update(
+        {
+            "mcp_notifications_enabled": True,
+            "mcp_url": "http://127.0.0.1:8801/mcp",
+            "mcp_api_key": "gmk_test-key",
+        }
+    )
+
+    assert saved.mcp_notifications_enabled is True
+    assert saved.mcp_api_key == "gmk_test-key"
+    assert Store(store.path).get().mcp_notifications_enabled is True
+    assert sanitize({"mcp_url": "file:///secret"}).mcp_url == "http://127.0.0.1:8801/mcp"
+
+
 def test_row_style_falls_back_to_left_middle_right():
     assert sanitize({}).row_style == "sides"
     assert sanitize({"row_style": "stacked"}).row_style == "stacked"

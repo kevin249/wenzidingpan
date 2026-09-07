@@ -41,6 +41,11 @@ QPushButton:hover { background: rgba(255,255,255,0.08); color: #e8eaf0; }
 QUIT_BUTTON_STYLE = BUTTON_STYLE + """
 QPushButton:hover { background: rgba(240,79,90,0.18); color: #f04f5a; }
 """
+BELL_ALERT_STYLE = """
+QPushButton { border: 1px solid rgba(240,79,90,0.65); border-radius: 6px;
+              background: rgba(240,79,90,0.18); color: #f04f5a; }
+QPushButton:hover { background: rgba(240,79,90,0.28); color: #ff6b75; }
+"""
 
 
 class TitleBar(QWidget):
@@ -54,8 +59,12 @@ class TitleBar(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._drag_offset: QPoint | None = None
+        self._bell_unread = 0
 
         self.refresh_button = self._button("⟳", "立即刷新", self.refresh_requested)
+        self.bell_button = self._button("BELL", "暂无 MCP 提醒", None)
+        self.bell_button.setAccessibleName("MCP 实时提醒")
+        self.bell_button.clicked.connect(self.clear_bell)
         self.settings_button = self._button("⚙", "在浏览器中打开设置", self.settings_requested)
         self.grayscale_button = self._button("灰", "切换彩色 / 灰度显示", self.grayscale_requested)
         self.quit_button = self._button("✕", "退出", self.quit_requested, QUIT_BUTTON_STYLE)
@@ -65,23 +74,39 @@ class TitleBar(QWidget):
         layout.setSpacing(8)
         layout.addStretch(1)
         layout.addWidget(self.refresh_button)
+        layout.addWidget(self.bell_button)
         layout.addWidget(self.settings_button)
         layout.addWidget(self.grayscale_button)
         layout.addWidget(self.quit_button)
 
-    def _button(self, text: str, tip: str, signal: Signal, style: str = BUTTON_STYLE) -> QPushButton:
+    def _button(self, text: str, tip: str, signal: Signal | None, style: str = BUTTON_STYLE) -> QPushButton:
         button = QPushButton(text)
         button.setToolTip(tip)
         button.setCursor(Qt.PointingHandCursor)
         button.setStyleSheet(style)
-        button.clicked.connect(signal.emit)
+        if signal is not None:
+            button.clicked.connect(signal.emit)
         return button
+
+    def push_bell(self, title: str, body: str) -> None:
+        self._bell_unread += 1
+        self.bell_button.setText(f"BELL·{min(self._bell_unread, 99)}")
+        summary = " ".join(str(body or "").split())[:240]
+        self.bell_button.setToolTip(f"{title}\n{summary}".strip())
+        self.bell_button.setStyleSheet(BELL_ALERT_STYLE)
+
+    def clear_bell(self) -> None:
+        self._bell_unread = 0
+        self.bell_button.setText("BELL")
+        self.bell_button.setStyleSheet(BUTTON_STYLE)
 
     def apply_config(self, config: Config) -> None:
         self.grayscale_button.setText("彩" if config.grayscale else "灰")
-        for button in (self.refresh_button, self.settings_button, self.grayscale_button, self.quit_button):
+        self.bell_button.setVisible(config.mcp_notifications_enabled)
+        for button in (self.refresh_button, self.bell_button, self.settings_button, self.grayscale_button, self.quit_button):
             button.setFont(make_font(config, 0.95))
             button.setFixedSize(round(config.font_size * 1.7), round(config.font_size * 1.7))
+        self.bell_button.setFixedWidth(round(config.font_size * 4.5))
 
     # 无边框窗口没有系统标题栏，拖拽要自己实现。
     def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt 命名
@@ -488,6 +513,9 @@ class TickerWindow(QWidget):
             self.marquee.set_quotes(quotes)
         else:
             self._sync_rows(quotes, snapshot.trends)
+
+    def show_mcp_notification(self, title: str, body: str) -> None:
+        self.title_bar.push_bell(title, body)
 
     def _sync_rows(self, quotes, trends: dict | None = None) -> None:
         trends = trends or {}
