@@ -11,6 +11,7 @@ from PySide6.QtWidgets import QApplication, QSystemTrayIcon
 
 from . import desktop, providers
 from .config import Config, Store
+from .mcp_notifications import McpNotification, McpNotificationListener
 from .poller import Poller, Snapshot
 from .ui.icon import tray_icon
 from .ui.tray import Tray
@@ -68,6 +69,11 @@ class WidgetApp:
 
         self.poller = Poller(config)
         self.poller.snapshot_ready.connect(self._on_snapshot, Qt.QueuedConnection)
+        self.notification_listener = McpNotificationListener(config)
+        self.notification_listener.notification_ready.connect(
+            self._on_mcp_notification, Qt.QueuedConnection
+        )
+        self.notification_listener.status_changed.connect(self._on_mcp_status, Qt.QueuedConnection)
 
         self.tray: Tray | None = None
         if QSystemTrayIcon.isSystemTrayAvailable():
@@ -108,6 +114,8 @@ class WidgetApp:
         self._flush_bounds()
         self.poller.stop()
         self.poller.wait(2000)
+        self.notification_listener.stop()
+        self.notification_listener.wait(9000)
         self.server.stop()
         self.qt.quit()
 
@@ -116,6 +124,7 @@ class WidgetApp:
     def _apply_config(self, config: Config) -> None:
         self.window.apply_config(config)
         self.poller.apply_config(config)
+        self.notification_listener.apply_config(config)
         if self.tray is not None:
             self.tray.apply_config(config)
 
@@ -132,6 +141,17 @@ class WidgetApp:
             # 自动模式下把真正出数的源标出来，省得用户猜现在走的是哪家。
             label = f"自动 · {listing.get(snapshot.effective_provider, snapshot.effective_provider)}"
         self.window.update_snapshot(snapshot, label)
+
+    def _on_mcp_status(self, status: str) -> None:
+        if status != "已关闭":
+            print(f"[MCP提醒] {status}", flush=True)
+
+    def _on_mcp_notification(self, notification: McpNotification) -> None:
+        timestamp = notification.created_at or "时间未知"
+        print(f"[MCP提醒] {timestamp} | {notification.title}", flush=True)
+        if notification.body:
+            print(notification.body, flush=True)
+        self.window.show_mcp_notification(notification.title, notification.body)
 
     # ------------------------------------------------------------ 启动
 
@@ -154,6 +174,7 @@ class WidgetApp:
         if self.tray is not None:
             self.tray.show()
         self.poller.start()
+        self.notification_listener.start()
         return self.qt.exec()
 
 

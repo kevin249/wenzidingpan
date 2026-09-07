@@ -50,6 +50,8 @@ def test_settings_page_renders(server):
     assert "上中下" in body
     assert "K 线高度" in body
     assert 'id="font_size" name="font_size" type="number" min="7"' in body
+    assert "接收 gupiao_ztfx MCP 通道实时提醒" in body
+    assert 'id="mcp_api_key" name="mcp_api_key" type="password"' in body
 
 
 def test_title_buttons_switch_renders_and_persists(server):

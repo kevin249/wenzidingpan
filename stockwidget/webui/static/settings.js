@@ -23,6 +23,7 @@ const CHECKBOXES = [
   'stock_price_bold',
   'stock_percent_bold',
   'dark_trade_bold',
+  'mcp_notifications_enabled',
 ];
 const FONT_SIZES = [
   'font_size',
@@ -40,7 +41,16 @@ const NUMBERS = [
   'opacity',
   'background_alpha',
 ];
-const TEXTS = ['provider', 'layout', 'row_style', 'color_scheme', 'font_family', 'background_color'];
+const TEXTS = [
+  'provider',
+  'layout',
+  'row_style',
+  'color_scheme',
+  'font_family',
+  'background_color',
+  'mcp_url',
+  'mcp_api_key',
+];
 const FONT_COLORS = [
   'stock_name_color',
   'stock_price_color',
@@ -297,7 +307,14 @@ for (const id of FONT_SIZES) {
     apply('已应用');
   });
 }
-for (const id of ['visible_rows', 'chart_height', 'font_family', 'refresh_seconds']) {
+for (const id of [
+  'visible_rows',
+  'chart_height',
+  'font_family',
+  'refresh_seconds',
+  'mcp_url',
+  'mcp_api_key',
+]) {
   el(id).addEventListener('blur', () => apply('已应用'));
 }
 el('apply').addEventListener('click', () => apply());
