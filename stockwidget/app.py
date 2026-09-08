@@ -138,8 +138,9 @@ class WidgetApp:
 
     def _apply_config(self, config: Config) -> None:
         self.config = config
-        # 这一路关掉时别把告警色留在通知区上。
-        if not config.mcp_bell_tray_icon:
+        # 总开关或这一路自己的开关只要关掉，就别把告警色留在通知区上——监听一停，
+        # 之后再没有提醒能把它清掉，图标会一直红着。判据和窗口 BELL 那边保持一致。
+        if not (config.mcp_notifications_enabled and config.mcp_bell_tray_icon):
             self._clear_unread()
         self.window.apply_config(config)
         self.poller.apply_config(config)

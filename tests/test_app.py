@@ -38,6 +38,9 @@ class _FakeWindow:
     def clear_mcp_notifications(self) -> None:
         self.cleared += 1
 
+    def apply_config(self, config: Config) -> None:
+        pass
+
 
 class _FakeTray:
     def __init__(self) -> None:
@@ -51,6 +54,9 @@ class _FakeTray:
     def set_unread(self, count: int) -> int:
         self.unread = count
         return count
+
+    def apply_config(self, config: Config) -> None:
+        pass
 
 
 @pytest.fixture()
@@ -148,6 +154,36 @@ def test_tray_click_acknowledges_both_indicators():
 
     assert (stub._unread, tray.unread, window.cleared) == (0, 0, 1)
     assert toggled == [True]
+
+
+@pytest.mark.parametrize(
+    "config, cleared",
+    [
+        (Config(mcp_notifications_enabled=True), False),  # 都开着，未读留着
+        (Config(mcp_notifications_enabled=False), True),  # 总开关关掉
+        (Config(mcp_notifications_enabled=True, mcp_bell_tray_icon=False), True),  # 单独关掉
+    ],
+)
+def test_tray_indicator_follows_both_the_master_and_its_own_switch(config, cleared):
+    """总开关一关监听就停，之后再没有提醒能清掉告警色——图标会一直红着。
+
+    判据要和窗口 BELL 那边一致：总开关 and 自己那一路的开关。
+    """
+    window, tray = _FakeWindow(), _FakeTray()
+    tray.unread = 2
+    stub = SimpleNamespace(
+        window=window,
+        tray=tray,
+        _unread=2,
+        poller=SimpleNamespace(apply_config=lambda c: None),
+        notification_listener=SimpleNamespace(apply_config=lambda c: None),
+    )
+    stub._clear_unread = lambda: app_module.WidgetApp._clear_unread(stub)
+
+    app_module.WidgetApp._apply_config(stub, config)
+
+    assert (stub._unread == 0) is cleared
+    assert (tray.unread == 0) is cleared
 
 
 def test_tray_right_click_is_not_an_acknowledgement():
