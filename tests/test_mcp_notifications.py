@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
+from typing import Any
 
 from stockwidget import mcp_notifications
 from stockwidget.mcp_notifications import (
@@ -71,7 +72,11 @@ def test_bounded_lets_a_fast_call_through_untouched():
 
 
 def test_bounded_times_out_and_actually_cancels_a_stuck_call(monkeypatch):
-    """超时不能只是"不再等它"——底层协程必须被真的取消，不能留着一直挂在后台。"""
+    """超时不能只是"不再等它"——底层协程必须被真的取消，不能留着一直挂在后台。
+
+    这里不传 cancel_event：验证的是"没人喊停、请求也没完成"这一支，超时数字
+    本身仍然要生效。
+    """
     monkeypatch.setattr(mcp_notifications, "REQUEST_TIMEOUT_SECONDS", 0.02)
     cancelled = []
 
@@ -96,15 +101,89 @@ def test_bounded_times_out_and_actually_cancels_a_stuck_call(monkeypatch):
     assert cancelled == [True]
 
 
+def test_bounded_is_interrupted_by_an_already_set_cancel_event(monkeypatch):
+    """Codex 在 #18 上指出：只缩短超时数字解决不了 stop()/apply_config() 打断不了
+    正在等待的请求这件事——网关卡住时，就算超时缩到几秒，也还是要真等那么久。
+
+    这是这条 review 意见对应的核心行为：cancel_event 在调用前就已经设置时，必须
+    近乎立刻返回，不能等到 REQUEST_TIMEOUT_SECONDS。超时给得很宽（5 秒），一旦
+    退化成"只是缩短了超时"，这条测试会因为等了 5 秒才返回而在 timeout=1.0 上失败，
+    足够把回归和"提前打断"区分开。
+    """
+    monkeypatch.setattr(mcp_notifications, "REQUEST_TIMEOUT_SECONDS", 5.0)
+    cancelled = []
+    cancel_event = asyncio.Event()
+    cancel_event.set()
+
+    async def stuck():
+        try:
+            await asyncio.sleep(999)
+        except asyncio.CancelledError:
+            cancelled.append(True)
+            raise
+        return "never"  # pragma: no cover
+
+    async def scenario():
+        try:
+            await mcp_notifications._bounded(stuck(), cancel_event)
+        except asyncio.CancelledError:
+            pass
+        else:
+            raise AssertionError("cancel_event 已设置时应该抛 CancelledError")
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=1.0))
+    assert cancelled == [True]
+
+
+def test_bounded_is_interrupted_when_cancel_event_fires_mid_flight(monkeypatch):
+    """更贴近真实场景：调用发出去之后，stop()/apply_config() 才在中途喊停。"""
+    monkeypatch.setattr(mcp_notifications, "REQUEST_TIMEOUT_SECONDS", 5.0)
+    cancel_event = asyncio.Event()
+
+    async def stuck():
+        await asyncio.sleep(999)
+        return "never"  # pragma: no cover
+
+    async def fire_soon():
+        await asyncio.sleep(0.05)
+        cancel_event.set()
+
+    async def scenario():
+        try:
+            await asyncio.gather(
+                mcp_notifications._bounded(stuck(), cancel_event),
+                fire_soon(),
+            )
+        except asyncio.CancelledError:
+            pass
+        else:
+            raise AssertionError("中途设置 cancel_event 应该抛 CancelledError")
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=1.0))
+
+
+def test_bounded_with_an_unset_cancel_event_behaves_like_plain_timeout():
+    """传了 cancel_event 但它没被设置：不该影响正常的超时 / 正常返回。"""
+    cancel_event = asyncio.Event()  # 一直不 set
+
+    async def fast():
+        await asyncio.sleep(0.01)
+        return "ok"
+
+    assert asyncio.run(_bounded(fast(), cancel_event)) == "ok"
+
+
 class _ListenerStub:
     """轻量替身：只给 ``_consume`` 需要的那几个协作方法，不碰 QThread / Qt 信号，
     测试不用起 QApplication。"""
 
     def __init__(self) -> None:
         self.delivered: list[str] = []
+        self.cancel_events_seen: list[Any] = []
 
-    async def _deliver_resource(self, session, uri: str) -> None:
+    async def _deliver_resource(self, session, uri: str, cancel_event=None) -> None:
         self.delivered.append(uri)
+        self.cancel_events_seen.append(cancel_event)
 
 
 class _FakeSession:
@@ -133,6 +212,32 @@ def test_consume_delivers_when_a_matching_push_arrives():
 
     stub = asyncio.run(asyncio.wait_for(scenario(), timeout=2.0))
     assert stub.delivered == ["uri://target"]
+
+
+def test_consume_threads_cancel_event_into_deliver_resource():
+    """_deliver_resource 内部会拿 cancel_event 去跟 read_resource 赛跑——传漏了
+    的话，网关卡在轮询兜底那一读时，stop()/apply_config() 照样打断不了它，等于
+    白加了 _bounded() 的赛跑机制。"""
+
+    async def scenario():
+        stub = _ListenerStub()
+        updates: asyncio.Queue[str] = asyncio.Queue(maxsize=1)
+        cancel_event = asyncio.Event()
+        updates.put_nowait("uri://target")
+
+        async def stop_after_delivery():
+            while not stub.delivered:
+                await asyncio.sleep(0)
+            cancel_event.set()
+
+        await asyncio.gather(
+            McpNotificationListener._consume(stub, updates, _FakeSession(), "uri://target", cancel_event),
+            stop_after_delivery(),
+        )
+        return stub, cancel_event
+
+    stub, cancel_event = asyncio.run(asyncio.wait_for(scenario(), timeout=2.0))
+    assert stub.cancel_events_seen == [cancel_event]
 
 
 def test_consume_ignores_pushes_for_a_different_resource():
@@ -209,7 +314,7 @@ def test_consume_propagates_deliver_errors_so_the_listener_can_reconnect():
     触发重连；吞掉的话又会变回"看着已连接、实际收不到任何东西"。"""
 
     class _FailingStub(_ListenerStub):
-        async def _deliver_resource(self, session, uri: str) -> None:
+        async def _deliver_resource(self, session, uri: str, cancel_event=None) -> None:
             raise RuntimeError("网关不可达")
 
     async def scenario():

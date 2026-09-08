@@ -38,11 +38,10 @@ POLL_SECONDS = 60
 # SSE_TIMEOUT 是这个 httpx 客户端的默认超时，GET 长连接和 initialize / call_tool /
 # read_resource / subscribe_resource / unsubscribe_resource 这些普通请求走的是
 # 同一个 client，会一起吃到那个 300 秒的读超时。普通请求不该跟着等这么久——网关
-# 卡住某次响应时，stop() / apply_config() 设的 cancel_event 拦不住一个已经在等
-# 的 await，quit() 只给监听线程 9 秒（见 app.py::WidgetApp.quit），够不着 300 秒
-# 的等待。这些调用单独用 asyncio.wait_for 兜一个短得多的上限：超时会取消底层
-# 请求并抛 TimeoutError，冒泡出去要么被 run() 的 except 捕到走重连，要么走进
-# 那个 finally 的 suppress(Exception)，两边都不会真的卡住。
+# 卡住某次响应时，quit() 只给监听线程 9 秒（见 app.py::WidgetApp.quit），够不着
+# 300 秒的等待。这里给它们兜一个短得多的上限；真正让 stop()/apply_config() 能
+# 立刻打断的，是 _bounded() 把这些调用和 cancel_event 一起赛跑，不是这个数字
+# 本身——把它当成"网关没反应、也没人喊停时最多等多久"来读，而不是关闭的时限。
 REQUEST_TIMEOUT_SECONDS = 15.0
 
 
@@ -111,9 +110,33 @@ def _resource_payload(result: Any) -> dict[str, Any]:
     return _json_text_payload(getattr(result, "contents", ()))
 
 
-async def _bounded(coro: Any) -> Any:
-    """给普通请求单独兜一个短超时，别被 client 那个为 SSE 长连接留的长读超时拖住。"""
-    return await asyncio.wait_for(coro, timeout=REQUEST_TIMEOUT_SECONDS)
+async def _bounded(coro: Any, cancel_event: asyncio.Event | None = None) -> Any:
+    """给普通请求单独兜一个短超时，别被 client 那个为 SSE 长连接留的长读超时拖住。
+
+    只缩短超时数字解决不了 stop()/apply_config() 打断不了正在等待的请求这件
+    事——网关卡住时，就算超时缩到几秒，quit() 也还是要真等那么久，而且清理路径
+    里如果连续有两次这样的调用（读资源卡住、finally 里的退订又卡住），等待还会
+    叠加。真正的修法是把请求和 cancel_event 一起放进 asyncio.wait 赛跑：
+    cancel_event 先被设置，请求立刻取消，不用等超时；没传 cancel_event（不需要
+    响应关闭的场合）或者请求本身先完成/超时，行为和只用 asyncio.wait_for 一样。
+    """
+    request_task = asyncio.ensure_future(coro)
+    waiters = {request_task}
+    cancel_task = asyncio.ensure_future(cancel_event.wait()) if cancel_event is not None else None
+    if cancel_task is not None:
+        waiters.add(cancel_task)
+    done, pending = await asyncio.wait(
+        waiters, timeout=REQUEST_TIMEOUT_SECONDS, return_when=asyncio.FIRST_COMPLETED
+    )
+    for task in pending:
+        task.cancel()
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
+    if cancel_task is not None and cancel_task in done:
+        raise asyncio.CancelledError("MCP 监听器正在关闭")
+    if request_task not in done:
+        raise asyncio.TimeoutError()
+    return request_task.result()
 
 
 def _notifications(payload: dict[str, Any]) -> list[McpNotification]:
@@ -249,26 +272,41 @@ class McpNotificationListener(QThread):
                     write_stream,
                     message_handler=handle_message,
                 ) as session:
-                    await _bounded(session.initialize())
-                    info = _tool_payload(await _bounded(session.call_tool("get_notification_stream")))
+                    await _bounded(session.initialize(), cancel_event)
+                    info = _tool_payload(
+                        await _bounded(session.call_tool("get_notification_stream"), cancel_event)
+                    )
                     uri = str(info.get("resource_uri") or "")
                     if not uri:
                         raise RuntimeError("MCP 未返回通知资源地址")
                     with warnings.catch_warnings():
                         warnings.simplefilter("ignore", MCPDeprecationWarning)
-                        await _bounded(session.subscribe_resource(uri))
+                        await _bounded(session.subscribe_resource(uri), cancel_event)
                     try:
-                        await self._establish_baseline(session, uri)
+                        await self._establish_baseline(session, uri, cancel_event)
                         self._emit_status("已连接 · 实时订阅")
                         await self._consume(updates, session, uri, cancel_event)
                     finally:
+                        # 这里恰恰是 Codex 点名的那处：走到这个 finally 基本上就
+                        # 是因为 cancel_event 已经被设置（_consume 只在它被设置
+                        # 后才返回），不传 cancel_event 的话，网关这次真卡住，
+                        # 退订请求还是会把关闭拖到 REQUEST_TIMEOUT_SECONDS——跟
+                        # 前面几处调用一样必须赛跑。退订只是「礼貌通知网关」，
+                        # 已经包在 suppress(Exception) 里；关闭时 cancel_event
+                        # 通常已经设过，这里多半直接判定取消、请求连发都不发，
+                        # 网关那边靠自己的会话过期机制收尾——用户主动退出/重连时
+                        # 这样换稳妥值得。真正的异常路径（cancel_event 还没设，
+                        # 是别的原因触发的清理）不受影响，退订依旧有完整的
+                        # REQUEST_TIMEOUT_SECONDS 可用。
                         with suppress(Exception):
                             with warnings.catch_warnings():
                                 warnings.simplefilter("ignore", MCPDeprecationWarning)
-                                await _bounded(session.unsubscribe_resource(uri))
+                                await _bounded(session.unsubscribe_resource(uri), cancel_event)
 
-    async def _establish_baseline(self, session: ClientSession, uri: str) -> None:
-        payload = _resource_payload(await _bounded(session.read_resource(uri)))
+    async def _establish_baseline(
+        self, session: ClientSession, uri: str, cancel_event: asyncio.Event | None = None
+    ) -> None:
+        payload = _resource_payload(await _bounded(session.read_resource(uri), cancel_event))
         with self._lock:
             baseline_ready = self._baseline_ready
         if baseline_ready:
@@ -279,8 +317,10 @@ class McpNotificationListener(QThread):
         with self._lock:
             self._baseline_ready = True
 
-    async def _deliver_resource(self, session: ClientSession, uri: str) -> None:
-        payload = _resource_payload(await _bounded(session.read_resource(uri)))
+    async def _deliver_resource(
+        self, session: ClientSession, uri: str, cancel_event: asyncio.Event | None = None
+    ) -> None:
+        payload = _resource_payload(await _bounded(session.read_resource(uri), cancel_event))
         self._deliver(_notifications(payload))
 
     async def _consume(
@@ -305,7 +345,7 @@ class McpNotificationListener(QThread):
                 return
             if event_task in done:
                 if event_task.result() == uri:
-                    await self._deliver_resource(session, uri)
+                    await self._deliver_resource(session, uri, cancel_event)
                 continue
             # 等满 POLL_SECONDS 也没等到推送、也没被取消——可能只是网关真的安静，
             # 也可能是长连接已经无声断掉（mcp 传输层的 handle_get_stream 重连耗尽
@@ -313,7 +353,7 @@ class McpNotificationListener(QThread):
             # 定期主动读一次资源兜底：真安静时这一读没有新事件，白读一次；连接
             # 真断了则靠这一读把漏掉的通知捞回来，staleness 上限就是 POLL_SECONDS，
             # 不会像以前那样永久失聪却还显示「已连接」。
-            await self._deliver_resource(session, uri)
+            await self._deliver_resource(session, uri, cancel_event)
 
     def _deliver(self, notifications: list[McpNotification]) -> None:
         for notification in notifications:
