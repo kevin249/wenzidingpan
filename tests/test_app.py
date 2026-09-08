@@ -126,6 +126,15 @@ def test_all_switches_off_still_prints_the_body(dispatch, capsys):
     assert "盯盘提醒" in printed and "600519 涨停封板" in printed
 
 
+def test_consecutive_notifications_get_a_blank_divider_between_them(dispatch, capsys):
+    """连着来的两条推送不能在终端里挤成一坨——中间要能一眼看出分界。"""
+    dispatch(Config(), times=2)
+
+    printed = capsys.readouterr().out
+    # 上一条正文之后紧跟 2 个空行 + 一行 ======，再是下一条的标题行。
+    assert "600519 涨停封板\n\n\n======\n[MCP提醒]" in printed
+
+
 def test_tray_channels_are_skipped_without_a_tray(dispatch):
     """没有系统托盘的桌面上，气泡和图标两路都得安静跳过，不能抛异常。"""
     assert _channels(dispatch(Config(), tray=False)) == (1, 0, 0, 1)
