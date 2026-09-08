@@ -123,6 +123,11 @@ class Config:
     stock_percent_bold: bool = False
     dark_trade_bold: bool = False
     mcp_notifications_enabled: bool = False
+    # 提醒到达时走哪几路提示，三路互不影响，都受上面那个总开关约束。
+    # 正文打印到 CMD 不在此列——那是排查用的，始终打印。
+    mcp_bell_terminal: bool = True  # 往终端敲 BEL：响一声，并让终端去闪任务栏
+    mcp_bell_toast: bool = True  # 系统通知气泡 / Toast
+    mcp_bell_window: bool = True  # 在窗口标题栏 BELL 按钮上累计未读数
     mcp_url: str = "http://127.0.0.1:8801/mcp"
     mcp_api_key: str = ""
     bounds: Bounds | None = None
@@ -257,6 +262,9 @@ def sanitize(raw: Any) -> Config:
         "stock_percent_bold",
         "dark_trade_bold",
         "mcp_notifications_enabled",
+        "mcp_bell_terminal",
+        "mcp_bell_toast",
+        "mcp_bell_window",
     ):
         if isinstance(raw.get(key), bool):
             setattr(out, key, raw[key])

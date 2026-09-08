@@ -40,7 +40,8 @@ class WidgetApp:
 
         # store 可注入，便于冒烟脚本用临时配置跑，不污染用户真实配置。
         self.store = store or Store()
-        config = self.store.get()
+        # 手上留一份当前配置：提醒回调要按开关分发，不能每来一条就回 store 重新校验一遍。
+        self.config = config = self.store.get()
 
         self.window = TickerWindow(config)
         self.window.restore_bounds(
@@ -122,6 +123,7 @@ class WidgetApp:
     # ------------------------------------------------------------ 回调
 
     def _apply_config(self, config: Config) -> None:
+        self.config = config
         self.window.apply_config(config)
         self.poller.apply_config(config)
         self.notification_listener.apply_config(config)
@@ -151,12 +153,15 @@ class WidgetApp:
         print(f"[MCP提醒] {timestamp} | {notification.title}", flush=True)
         if notification.body:
             print(notification.body, flush=True)
+        # 三路提示各有开关，全关就只剩上面这几行正文。
         # 正文本身只是普通输出，终端不会当成提示。得单独敲一下 BEL，
         # Windows Terminal 才会点亮标签铃铛、按 bellStyle 闪任务栏。
-        desktop.ring_terminal_bell()
-        if self.tray is not None:
+        if self.config.mcp_bell_terminal:
+            desktop.ring_terminal_bell()
+        if self.config.mcp_bell_toast and self.tray is not None:
             self.tray.notify(notification.title, notification.body)
-        self.window.show_mcp_notification(notification.title, notification.body)
+        if self.config.mcp_bell_window:
+            self.window.show_mcp_notification(notification.title, notification.body)
 
     # ------------------------------------------------------------ 启动
 

@@ -102,7 +102,11 @@ class TitleBar(QWidget):
 
     def apply_config(self, config: Config) -> None:
         self.grayscale_button.setText("彩" if config.grayscale else "灰")
-        self.bell_button.setVisible(config.mcp_notifications_enabled)
+        # BELL 这一路单独可关；藏起来之前先清掉未读数，免得下次开回来还挂着过期计数。
+        show_bell = config.mcp_notifications_enabled and config.mcp_bell_window
+        if not show_bell:
+            self.clear_bell()
+        self.bell_button.setVisible(show_bell)
         for button in (self.refresh_button, self.bell_button, self.settings_button, self.grayscale_button, self.quit_button):
             button.setFont(make_font(config, 0.95))
             button.setFixedSize(round(config.font_size * 1.7), round(config.font_size * 1.7))

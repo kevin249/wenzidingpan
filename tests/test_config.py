@@ -78,6 +78,26 @@ def test_mcp_notification_settings_are_sanitized_and_persisted(tmp_path):
     assert sanitize({"mcp_url": "file:///secret"}).mcp_url == "http://127.0.0.1:8801/mcp"
 
 
+def test_mcp_bell_channels_default_on_and_toggle_independently(tmp_path):
+    """三路提示各有开关；老配置里没有这几个键，得默认全开。"""
+    fresh = sanitize({})
+    assert (fresh.mcp_bell_terminal, fresh.mcp_bell_toast, fresh.mcp_bell_window) == (
+        True,
+        True,
+        True,
+    )
+
+    store = Store(tmp_path / "config.json")
+    saved = store.update({"mcp_bell_terminal": False, "mcp_bell_toast": False})
+    assert saved.mcp_bell_terminal is False
+    assert saved.mcp_bell_toast is False
+    assert saved.mcp_bell_window is True  # 没动的那一路不受影响
+    assert Store(store.path).get().mcp_bell_terminal is False
+
+    # 非布尔值一律不认，回落到默认
+    assert sanitize({"mcp_bell_window": "no"}).mcp_bell_window is True
+
+
 def test_row_style_falls_back_to_left_middle_right():
     assert sanitize({}).row_style == "sides"
     assert sanitize({"row_style": "stacked"}).row_style == "stacked"

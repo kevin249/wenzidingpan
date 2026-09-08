@@ -72,6 +72,29 @@ def test_title_buttons_switch_renders_and_persists(server):
     assert "checked" not in checkbox
 
 
+def test_mcp_bell_switches_render_and_persist_independently(server):
+    client = _client(server)
+    body = client.get(f"/?token={server.token}").get_data(as_text=True)
+    for name in ("mcp_bell_terminal", "mcp_bell_toast", "mcp_bell_window"):
+        assert f'id="{name}" name="{name}" type="checkbox"' in body
+        # 默认全开，页面回填时三个都该是勾上的
+        assert "checked" in body.split(f'id="{name}"')[1].split("</label>")[0]
+    assert "敲响终端铃铛" in body
+    assert "弹出系统通知" in body
+    assert "在窗口 BELL 按钮上累计未读数" in body
+
+    config = client.post(
+        f"/api/config?token={server.token}", json={"mcp_bell_terminal": False}
+    ).get_json()["config"]
+    assert config["mcp_bell_terminal"] is False
+    # 只关一路，另外两路不受牵连
+    assert config["mcp_bell_toast"] is True and config["mcp_bell_window"] is True
+    assert server.applied[-1].mcp_bell_terminal is False
+
+    body = client.get(f"/?token={server.token}").get_data(as_text=True)
+    assert "checked" not in body.split('id="mcp_bell_terminal"')[1].split("</label>")[0]
+
+
 def test_opacity_slider_min_follows_sanitize_floor(server):
     """滑块下限曾经写死 0.2，比后端更严，20% 以下根本拖不动。"""
     body = _client(server).get(f"/?token={server.token}").get_data(as_text=True)

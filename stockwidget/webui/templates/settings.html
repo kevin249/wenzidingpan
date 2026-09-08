@@ -256,6 +256,20 @@
                         type="checkbox" {% if config.mcp_notifications_enabled %}checked{% endif %} />
             接收 gupiao_ztfx MCP 通道实时提醒</label>
         </div>
+        <div class="sub-checks">
+          <p class="sub-checks-title">提醒到达时</p>
+          <div class="checks">
+            <label><input id="mcp_bell_terminal" name="mcp_bell_terminal" type="checkbox"
+                          {% if config.mcp_bell_terminal %}checked{% endif %} />
+              敲响终端铃铛（响一声，并让终端去闪任务栏）</label>
+            <label><input id="mcp_bell_toast" name="mcp_bell_toast" type="checkbox"
+                          {% if config.mcp_bell_toast %}checked{% endif %} />
+              弹出系统通知</label>
+            <label><input id="mcp_bell_window" name="mcp_bell_window" type="checkbox"
+                          {% if config.mcp_bell_window %}checked{% endif %} />
+              在窗口 BELL 按钮上累计未读数</label>
+          </div>
+        </div>
         <div class="grid">
           <div class="field">
             <label for="mcp_url">MCP 地址</label>
@@ -267,7 +281,7 @@
                    autocomplete="off" value="{{ config.mcp_api_key }}" />
           </div>
         </div>
-        <p class="hint">默认连接本机 8801 端口。Key 也可通过 GUPIAO_MCP_API_KEY 环境变量提供；事件通过 MCP 实时订阅直达，正文会打印到启动程序的 CMD 并敲一声终端铃铛，同时弹出系统通知，并在窗口 BELL 上累计未读数。Windows Terminal 需在设置里把「铃声」勾上「任务栏」或「窗口」，任务栏图标才会闪。</p>
+        <p class="hint">默认连接本机 8801 端口。Key 也可通过 GUPIAO_MCP_API_KEY 环境变量提供；事件通过 MCP 实时订阅直达，正文始终打印到启动程序的 CMD，上面三路提示可分别开关，全关就只剩 CMD 里的正文。终端铃铛还需在 Windows Terminal 的「铃声」里勾上「任务栏」或「窗口」，任务栏图标才会闪。</p>
       </section>
 
       <footer class="bar">
