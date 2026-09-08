@@ -131,8 +131,8 @@ def test_consecutive_notifications_get_a_blank_divider_between_them(dispatch, ca
     dispatch(Config(), times=2)
 
     printed = capsys.readouterr().out
-    # 上一条正文之后紧跟 2 个空行 + 一行 ======，再是下一条的标题行。
-    assert "600519 涨停封板\n\n\n======\n[MCP提醒]" in printed
+    # 上一条正文之后：1 个空行、一行 ======、再 1 个空行，然后才是下一条的标题行。
+    assert "600519 涨停封板\n\n======\n\n[MCP提醒]" in printed
 
 
 def test_tray_channels_are_skipped_without_a_tray(dispatch):
