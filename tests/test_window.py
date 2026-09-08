@@ -63,6 +63,22 @@ def test_window_bell_tracks_and_clears_mcp_notifications(app):
     window.close()
 
 
+def test_window_bell_announces_when_it_is_cleared(app):
+    """点掉窗口 BELL 等于看过了，托盘图标要跟着一起消——所以得发信号出来。"""
+    window = TickerWindow(Config(mcp_notifications_enabled=True))
+    cleared: list[bool] = []
+    window.bell_cleared.connect(lambda: cleared.append(True))
+
+    # 本来就没有未读时点它，不该惊动托盘
+    window.title_bar.bell_button.click()
+    assert cleared == []
+
+    window.show_mcp_notification("涨停提醒", "贵州茅台触发提醒")
+    window.title_bar.bell_button.click()
+    assert cleared == [True]
+    window.close()
+
+
 def test_window_bell_hides_on_its_own_switch_without_leaving_a_stale_count(app):
     """BELL 这一路单独关掉时按钮要收起，未读数也不能留到下次开回来。"""
     window = TickerWindow(Config(mcp_notifications_enabled=True))

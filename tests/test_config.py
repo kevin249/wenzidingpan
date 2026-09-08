@@ -81,11 +81,12 @@ def test_mcp_notification_settings_are_sanitized_and_persisted(tmp_path):
 def test_mcp_bell_channels_default_on_and_toggle_independently(tmp_path):
     """三路提示各有开关；老配置里没有这几个键，得默认全开。"""
     fresh = sanitize({})
-    assert (fresh.mcp_bell_terminal, fresh.mcp_bell_toast, fresh.mcp_bell_window) == (
-        True,
-        True,
-        True,
-    )
+    assert (
+        fresh.mcp_bell_terminal,
+        fresh.mcp_bell_toast,
+        fresh.mcp_bell_tray_icon,
+        fresh.mcp_bell_window,
+    ) == (True, True, True, True)
 
     store = Store(tmp_path / "config.json")
     saved = store.update({"mcp_bell_terminal": False, "mcp_bell_toast": False})
@@ -96,6 +97,7 @@ def test_mcp_bell_channels_default_on_and_toggle_independently(tmp_path):
 
     # 非布尔值一律不认，回落到默认
     assert sanitize({"mcp_bell_window": "no"}).mcp_bell_window is True
+    assert sanitize({"mcp_bell_tray_icon": 0}).mcp_bell_tray_icon is True
 
 
 def test_row_style_falls_back_to_left_middle_right():

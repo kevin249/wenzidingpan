@@ -26,6 +26,7 @@ const CHECKBOXES = [
   'mcp_notifications_enabled',
   'mcp_bell_terminal',
   'mcp_bell_toast',
+  'mcp_bell_tray_icon',
   'mcp_bell_window',
 ];
 const FONT_SIZES = [

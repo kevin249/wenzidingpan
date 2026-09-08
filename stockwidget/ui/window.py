@@ -55,6 +55,8 @@ class TitleBar(QWidget):
     settings_requested = Signal()
     quit_requested = Signal()
     grayscale_requested = Signal()
+    # 未读清零：托盘图标的告警色要跟着一起消，两处指示不能各说各话。
+    bell_cleared = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -96,9 +98,12 @@ class TitleBar(QWidget):
         self.bell_button.setStyleSheet(BELL_ALERT_STYLE)
 
     def clear_bell(self) -> None:
+        had_unread = self._bell_unread > 0
         self._bell_unread = 0
         self.bell_button.setText("BELL")
         self.bell_button.setStyleSheet(BUTTON_STYLE)
+        if had_unread:
+            self.bell_cleared.emit()
 
     def apply_config(self, config: Config) -> None:
         self.grayscale_button.setText("彩" if config.grayscale else "灰")
@@ -253,6 +258,7 @@ class TickerWindow(QWidget):
     bounds_changed = Signal(object)
     grayscale_requested = Signal()
     title_buttons_requested = Signal()
+    bell_cleared = Signal()
 
     def __init__(self, config: Config) -> None:
         super().__init__()
@@ -288,6 +294,7 @@ class TickerWindow(QWidget):
         self.title_bar.settings_requested.connect(self.settings_requested.emit)
         self.title_bar.quit_requested.connect(self.quit_requested.emit)
         self.title_bar.grayscale_requested.connect(self.grayscale_requested.emit)
+        self.title_bar.bell_cleared.connect(self.bell_cleared.emit)
 
         # 自选按「设置里的行数」铺成网格：1 行就全部横向排开，2 行就铺两行。
         self.rows_host = QWidget()

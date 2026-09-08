@@ -42,6 +42,8 @@ class WidgetApp:
         self.store = store or Store()
         # 手上留一份当前配置：提醒回调要按开关分发，不能每来一条就回 store 重新校验一遍。
         self.config = config = self.store.get()
+        # 未读提醒数，画在通知区图标上；窗口 BELL 那边自己另记一份。
+        self._unread = 0
 
         self.window = TickerWindow(config)
         self.window.restore_bounds(
@@ -51,6 +53,8 @@ class WidgetApp:
         self.window.settings_requested.connect(self.open_settings)
         self.window.quit_requested.connect(self.quit)
         self.window.bounds_changed.connect(self._save_bounds)
+        # 点掉窗口上的 BELL 也等于看过了，托盘图标要跟着一起消。
+        self.window.bell_cleared.connect(self._clear_unread)
         self.qt.aboutToQuit.connect(self._flush_bounds)
         self.window.grayscale_requested.connect(
             lambda: self._apply_config(self.store.update({"grayscale": not self.store.get().grayscale}))
@@ -94,11 +98,7 @@ class WidgetApp:
                     self.store.update({"show_title_buttons": checked})
                 )
             )
-            self.tray.activated.connect(
-                lambda reason: self.toggle_window()
-                if reason == QSystemTrayIcon.Trigger
-                else None
-            )
+            self.tray.activated.connect(self._on_tray_activated)
 
     # ------------------------------------------------------------ 动作
 
@@ -122,8 +122,23 @@ class WidgetApp:
 
     # ------------------------------------------------------------ 回调
 
+    def _on_tray_activated(self, reason) -> None:
+        if reason != QSystemTrayIcon.Trigger:
+            return
+        # 点了托盘就算看过了，图标退回常态。
+        self._clear_unread()
+        self.toggle_window()
+
+    def _clear_unread(self) -> None:
+        self._unread = 0
+        if self.tray is not None:
+            self.tray.set_unread(0)
+
     def _apply_config(self, config: Config) -> None:
         self.config = config
+        # 这一路关掉时别把告警色留在通知区上。
+        if not config.mcp_bell_tray_icon:
+            self._clear_unread()
         self.window.apply_config(config)
         self.poller.apply_config(config)
         self.notification_listener.apply_config(config)
@@ -160,6 +175,10 @@ class WidgetApp:
             desktop.ring_terminal_bell()
         if self.config.mcp_bell_toast and self.tray is not None:
             self.tray.notify(notification.title, notification.body)
+        # 通知区图标转告警色：这一路归组件自己管，不看终端脸色，也不怕气泡被错过。
+        if self.config.mcp_bell_tray_icon and self.tray is not None:
+            self._unread += 1
+            self.tray.set_unread(self._unread)
         if self.config.mcp_bell_window:
             self.window.show_mcp_notification(notification.title, notification.body)
 

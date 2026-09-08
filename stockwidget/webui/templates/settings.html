@@ -265,6 +265,9 @@
             <label><input id="mcp_bell_toast" name="mcp_bell_toast" type="checkbox"
                           {% if config.mcp_bell_toast %}checked{% endif %} />
               弹出系统通知</label>
+            <label><input id="mcp_bell_tray_icon" name="mcp_bell_tray_icon" type="checkbox"
+                          {% if config.mcp_bell_tray_icon %}checked{% endif %} />
+              任务栏通知区图标转告警色，挂住未读数直到点开</label>
             <label><input id="mcp_bell_window" name="mcp_bell_window" type="checkbox"
                           {% if config.mcp_bell_window %}checked{% endif %} />
               在窗口 BELL 按钮上累计未读数</label>
@@ -281,7 +284,7 @@
                    autocomplete="off" value="{{ config.mcp_api_key }}" />
           </div>
         </div>
-        <p class="hint">默认连接本机 8801 端口。Key 也可通过 GUPIAO_MCP_API_KEY 环境变量提供；事件通过 MCP 实时订阅直达，正文始终打印到启动程序的 CMD，上面三路提示可分别开关，全关就只剩 CMD 里的正文。终端铃铛还需在 Windows Terminal 的「铃声」里勾上「任务栏」或「窗口」，任务栏图标才会闪。</p>
+        <p class="hint">默认连接本机 8801 端口。Key 也可通过 GUPIAO_MCP_API_KEY 环境变量提供；事件通过 MCP 实时订阅直达，正文始终打印到启动程序的 CMD，上面四路提示可分别开关，全关就只剩 CMD 里的正文。想在任务栏上看到动静，认准「通知区图标」这一路——它归组件自己管，装没装 Windows Terminal 都一样。终端铃铛只是附带的一路，且仅 Windows Terminal 能闪任务栏：要在它的「铃声」里勾上「任务栏」，并且窗口不在前台时才会闪（这是 Windows 的规矩）；传统控制台和 MobaXterm 等终端只会响一声，没有任何设置能让它们闪。</p>
       </section>
 
       <footer class="bar">

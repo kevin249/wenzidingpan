@@ -75,12 +75,18 @@ def test_title_buttons_switch_renders_and_persists(server):
 def test_mcp_bell_switches_render_and_persist_independently(server):
     client = _client(server)
     body = client.get(f"/?token={server.token}").get_data(as_text=True)
-    for name in ("mcp_bell_terminal", "mcp_bell_toast", "mcp_bell_window"):
+    for name in (
+        "mcp_bell_terminal",
+        "mcp_bell_toast",
+        "mcp_bell_tray_icon",
+        "mcp_bell_window",
+    ):
         assert f'id="{name}" name="{name}" type="checkbox"' in body
         # 默认全开，页面回填时三个都该是勾上的
         assert "checked" in body.split(f'id="{name}"')[1].split("</label>")[0]
     assert "敲响终端铃铛" in body
     assert "弹出系统通知" in body
+    assert "任务栏通知区图标转告警色" in body
     assert "在窗口 BELL 按钮上累计未读数" in body
 
     config = client.post(
