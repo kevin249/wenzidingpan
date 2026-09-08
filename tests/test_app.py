@@ -6,9 +6,17 @@
 
 from __future__ import annotations
 
+import os
 from types import SimpleNamespace
 
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
 import pytest
+
+try:
+    from PySide6.QtWidgets import QSystemTrayIcon
+except (ImportError, OSError) as error:
+    pytest.skip(f"Qt 运行库不可用：{error}", allow_module_level=True)
 
 from stockwidget import app as app_module
 from stockwidget.config import Config
@@ -22,9 +30,13 @@ NOTIFICATION = McpNotification(
 class _FakeWindow:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
+        self.cleared = 0
 
     def show_mcp_notification(self, title: str, body: str) -> None:
         self.calls.append((title, body))
+
+    def clear_mcp_notifications(self) -> None:
+        self.cleared += 1
 
 
 class _FakeTray:
@@ -111,3 +123,38 @@ def test_all_switches_off_still_prints_the_body(dispatch, capsys):
 def test_tray_channels_are_skipped_without_a_tray(dispatch):
     """没有系统托盘的桌面上，气泡和图标两路都得安静跳过，不能抛异常。"""
     assert _channels(dispatch(Config(), tray=False)) == (1, 0, 0, 1)
+
+
+def _tray_click_stub(unread: int):
+    window, tray = _FakeWindow(), _FakeTray()
+    tray.unread = unread
+    toggled: list[bool] = []
+    stub = SimpleNamespace(
+        window=window, tray=tray, _unread=unread, toggle_window=lambda: toggled.append(True)
+    )
+    stub._clear_unread = lambda: app_module.WidgetApp._clear_unread(stub)
+    return stub, window, tray, toggled
+
+
+def test_tray_click_acknowledges_both_indicators():
+    """点托盘要把两处未读一起清。
+
+    只清托盘的话，同一个动作紧接着打开的窗口还挂着 BELL·N——那几条恰恰是这一
+    下刚标记成已读的。
+    """
+    stub, window, tray, toggled = _tray_click_stub(3)
+
+    app_module.WidgetApp._on_tray_activated(stub, QSystemTrayIcon.Trigger)
+
+    assert (stub._unread, tray.unread, window.cleared) == (0, 0, 1)
+    assert toggled == [True]
+
+
+def test_tray_right_click_is_not_an_acknowledgement():
+    """右键弹菜单不等于看过了，未读数得原样留着。"""
+    stub, window, tray, toggled = _tray_click_stub(2)
+
+    app_module.WidgetApp._on_tray_activated(stub, QSystemTrayIcon.Context)
+
+    assert (stub._unread, tray.unread, window.cleared) == (2, 2, 0)
+    assert toggled == []

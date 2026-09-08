@@ -125,8 +125,10 @@ class WidgetApp:
     def _on_tray_activated(self, reason) -> None:
         if reason != QSystemTrayIcon.Trigger:
             return
-        # 点了托盘就算看过了，图标退回常态。
+        # 点了托盘就算看过了：两处未读一起清，别让紧接着打开的窗口还挂着 BELL·N
+        # ——同一个动作刚把它们标记成已读。
         self._clear_unread()
+        self.window.clear_mcp_notifications()
         self.toggle_window()
 
     def _clear_unread(self) -> None:
