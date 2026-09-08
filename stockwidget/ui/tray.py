@@ -8,6 +8,16 @@ from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 from ..config import Config
 from .icon import tray_icon
 
+MESSAGE_MSECS = 10_000
+
+
+def message_body(body: str) -> str:
+    """气泡正文：折掉换行、截断到一行能看完的长度。
+
+    正文为空时给个兜底——Windows 收到空正文的通知会直接不弹。
+    """
+    return " ".join(str(body or "").split())[:240] or "收到新的实时提醒"
+
 
 class Tray(QSystemTrayIcon):
     def __init__(self, config: Config, parent=None) -> None:
@@ -37,6 +47,23 @@ class Tray(QSystemTrayIcon):
         self.setContextMenu(self._menu)
 
         self.apply_config(config)
+
+    def notify(self, title: str, body: str) -> bool:
+        """弹一条系统通知。
+
+        Windows 上这是任务栏通知区的气泡 / Toast：终端没开、组件被别的窗口压住
+        时它照样能冒出来，图标也会在通知区亮起。主窗口是 ``Qt.Tool``，没有任务栏
+        按钮可闪，系统通知是这个组件唯一的系统级提示入口。
+        """
+        if not self.supportsMessages():
+            return False
+        self.showMessage(
+            str(title or "").strip() or "MCP 提醒",
+            message_body(body),
+            QSystemTrayIcon.Information,
+            MESSAGE_MSECS,
+        )
+        return True
 
     def apply_config(self, config: Config) -> None:
         # 回填勾选状态时屏蔽信号，免得又反过来触发一次写配置。

@@ -151,6 +151,11 @@ class WidgetApp:
         print(f"[MCP提醒] {timestamp} | {notification.title}", flush=True)
         if notification.body:
             print(notification.body, flush=True)
+        # 正文本身只是普通输出，终端不会当成提示。得单独敲一下 BEL，
+        # Windows Terminal 才会点亮标签铃铛、按 bellStyle 闪任务栏。
+        desktop.ring_terminal_bell()
+        if self.tray is not None:
+            self.tray.notify(notification.title, notification.body)
         self.window.show_mcp_notification(notification.title, notification.body)
 
     # ------------------------------------------------------------ 启动
