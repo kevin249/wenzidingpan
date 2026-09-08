@@ -20,6 +20,7 @@ import json
 import sys
 import warnings
 from collections import Counter
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -51,6 +52,21 @@ def dump(label: str, value: Any) -> None:
     print(json.dumps(value, ensure_ascii=False, indent=2, default=str))
 
 
+def sse_timeout(watch: int) -> httpx2.Timeout:
+    """给 SSE 长连接留足读超时。
+
+    推送通知走的是一条 GET 长连接，它和普通请求共用这个超时。读超时一旦短于网关
+    的静默间隔，长连接就会断，而 mcp 传输层的 ``handle_get_stream`` 最多重连
+    ``MAX_RECONNECTION_ATTEMPTS``（2）次就 ``return``——只打一条 debug 日志，不抛
+    异常。此后推送通知永远收不到，探针却还在正常跑，最后会得出「网关没发通知」
+    这个正好相反的结论。
+
+    库自己推荐的默认就是 ``read=300s``（create_mcp_http_client），这里再按 --watch
+    的时长放宽，保证盯多久都不会中途失聪。
+    """
+    return httpx2.Timeout(30.0, read=max(300.0, watch + 60))
+
+
 async def probe(url: str, key: str, watch: int, grep: str) -> int:
     headers = {"Authorization": f"Bearer {key}"}
     seen_live: list[str] = []
@@ -60,7 +76,7 @@ async def probe(url: str, key: str, watch: int, grep: str) -> int:
             seen_live.append(str(message.params.uri))
             print(f"  ← 收到资源更新通知：{message.params.uri}")
 
-    async with httpx2.AsyncClient(headers=headers, timeout=httpx2.Timeout(15.0)) as client:
+    async with httpx2.AsyncClient(headers=headers, timeout=sse_timeout(watch)) as client:
         async with streamable_http_client(
             url, http_client=client, terminate_on_close=False
         ) as (read_stream, write_stream):
@@ -91,49 +107,70 @@ async def probe(url: str, key: str, watch: int, grep: str) -> int:
                     print("✗ 网关没给 resource_uri，订阅无从谈起")
                     return 1
 
-                rule("通知资源当前的完整内容")
-                payload = _resource_payload(await session.read_resource(uri))
-                dump("  raw", payload)
+                # 先订阅再取基线——和 McpNotificationListener._run_session 的顺序
+                # 一致。反过来的话，两步之间新增的事件既不在基线里、也没有对应的
+                # 推送通知（那时还没订阅），末尾会被误判成「网关漏发通知」。
+                if watch > 0:
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore", MCPDeprecationWarning)
+                        await session.subscribe_resource(uri)
+                    print(f"\n✓ 已订阅 {uri}（先订阅再取基线，避免两步之间漏账）")
 
-                items = _notifications(payload)
-                rule(f"解析出 {len(items)} 条事件")
-                if items:
-                    kinds = Counter(i.event_type or "(空)" for i in items)
-                    print(f"  event_type 分布：{dict(kinds)}")
-                    print()
-                for item in items:
-                    blob = f"{item.event_type} {item.title} {item.body}"
-                    if grep and grep.lower() not in blob.lower():
-                        continue
-                    print(f"  [{item.created_at or '时间未知'}] type={item.event_type!r} "
-                          f"prio={item.priority!r}\n    {item.title}\n    {item.body[:200]}")
-                if grep:
-                    hit = sum(1 for i in items
-                              if grep.lower() in f"{i.event_type} {i.title} {i.body}".lower())
-                    print(f"\n  含「{grep}」的事件：{hit} 条")
+                try:
+                    return await inspect_and_watch(session, uri, watch, grep, seen_live)
+                finally:
+                    # 传输层是 terminate_on_close=False，关掉客户端不会结束 MCP 会话；
+                    # 不退订的话，网关那边会一直挂着这个订阅者直到会话过期。
+                    if watch > 0:
+                        with suppress(Exception):
+                            with warnings.catch_warnings():
+                                warnings.simplefilter("ignore", MCPDeprecationWarning)
+                                await session.unsubscribe_resource(uri)
 
-                if watch <= 0:
-                    return 0
 
-                rule(f"订阅并盯 {watch} 秒，看有没有实时推送")
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore", MCPDeprecationWarning)
-                    await session.subscribe_resource(uri)
-                print(f"  已订阅 {uri}，等待中……（没有输出就是网关没推）")
-                before = {i.event_id for i in items}
-                await asyncio.sleep(watch)
+async def inspect_and_watch(
+    session: ClientSession, uri: str, watch: int, grep: str, seen_live: list[str]
+) -> int:
+    rule("通知资源当前的完整内容")
+    payload = _resource_payload(await session.read_resource(uri))
+    dump("  raw", payload)
 
-                after = _notifications(_resource_payload(await session.read_resource(uri)))
-                fresh = [i for i in after if i.event_id not in before]
-                rule("盯完了")
-                print(f"  收到资源更新通知 {len(seen_live)} 次：{seen_live or '（一次都没有）'}")
-                print(f"  这段时间新增事件 {len(fresh)} 条")
-                for item in fresh:
-                    print(f"    type={item.event_type!r}  {item.title}  {item.body[:120]}")
-                if seen_live and not fresh:
-                    print("  ⚠ 有推送通知但没有新事件——资源被更新了，内容却没变")
-                if fresh and not seen_live:
-                    print("  ⚠ 有新事件但网关没发推送通知——组件靠通知触发，这种情况它收不到")
+    items = _notifications(payload)
+    rule(f"解析出 {len(items)} 条事件")
+    if items:
+        kinds = Counter(i.event_type or "(空)" for i in items)
+        print(f"  event_type 分布：{dict(kinds)}")
+        print()
+    for item in items:
+        blob = f"{item.event_type} {item.title} {item.body}"
+        if grep and grep.lower() not in blob.lower():
+            continue
+        print(f"  [{item.created_at or '时间未知'}] type={item.event_type!r} "
+              f"prio={item.priority!r}\n    {item.title}\n    {item.body[:200]}")
+    if grep:
+        hit = sum(1 for i in items
+                  if grep.lower() in f"{i.event_type} {i.title} {i.body}".lower())
+        print(f"\n  含「{grep}」的事件：{hit} 条")
+
+    if watch <= 0:
+        return 0
+
+    rule(f"盯 {watch} 秒，看有没有实时推送")
+    print("  等待中……（没有输出就是网关没推）")
+    before = {i.event_id for i in items}
+    await asyncio.sleep(watch)
+
+    after = _notifications(_resource_payload(await session.read_resource(uri)))
+    fresh = [i for i in after if i.event_id not in before]
+    rule("盯完了")
+    print(f"  收到资源更新通知 {len(seen_live)} 次：{seen_live or '（一次都没有）'}")
+    print(f"  这段时间新增事件 {len(fresh)} 条")
+    for item in fresh:
+        print(f"    type={item.event_type!r}  {item.title}  {item.body[:120]}")
+    if seen_live and not fresh:
+        print("  ⚠ 有推送通知但没有新事件——资源被更新了，内容却没变")
+    if fresh and not seen_live:
+        print("  ⚠ 有新事件但网关没发推送通知——组件靠通知触发，这种情况它收不到")
     return 0
 
 
