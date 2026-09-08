@@ -23,6 +23,18 @@ from .config import Config
 MCP_API_KEY_ENV = "GUPIAO_MCP_API_KEY"
 RECONNECT_SECONDS = 3
 
+# 推送通知走的是一条 GET 长连接，它和普通请求共用 httpx 的超时。读超时一旦短于
+# 网关的静默间隔，长连接就会被掐断，而 mcp 传输层的 handle_get_stream 最多重连
+# MAX_RECONNECTION_ATTEMPTS（=2）次就 return——只打一条 debug 日志、不抛异常。
+# 原来通盘 10 秒的超时会让长连接在网关安静二十几秒后永久失效，而 _consume 还在
+# updates.get() 上死等，run() 里的 except 永远等不到，状态栏一直显示「已连接 ·
+# 实时订阅」，实际再也收不到任何提醒。这里用库自己推荐的 SSE 友好值
+# （mcp.shared._httpx_utils.create_mcp_http_client 的默认）。
+SSE_TIMEOUT = httpx2.Timeout(30.0, read=300.0)
+# 即便超时给够，长连接仍可能因为网络抖动、网关重启而无声断掉。兜底：没有通知也
+# 定期主动读一次资源，推送坏掉时最多迟这么久，不会变成永久失聪。
+POLL_SECONDS = 60
+
 
 @dataclass(frozen=True)
 class McpNotification:
@@ -211,7 +223,7 @@ class McpNotificationListener(QThread):
                 if updates.empty():
                     updates.put_nowait(str(message.params.uri))
 
-        async with httpx2.AsyncClient(headers=headers, timeout=httpx2.Timeout(10.0)) as client:
+        async with httpx2.AsyncClient(headers=headers, timeout=SSE_TIMEOUT) as client:
             async with streamable_http_client(
                 config.mcp_url,
                 http_client=client,
@@ -267,15 +279,26 @@ class McpNotificationListener(QThread):
             event_task = asyncio.create_task(updates.get())
             cancel_task = asyncio.create_task(cancel_event.wait())
             done, pending = await asyncio.wait(
-                {event_task, cancel_task}, return_when=asyncio.FIRST_COMPLETED
+                {event_task, cancel_task},
+                timeout=POLL_SECONDS,
+                return_when=asyncio.FIRST_COMPLETED,
             )
             for task in pending:
                 task.cancel()
             await asyncio.gather(*pending, return_exceptions=True)
             if cancel_task in done:
                 return
-            if event_task.result() == uri:
-                await self._deliver_resource(session, uri)
+            if event_task in done:
+                if event_task.result() == uri:
+                    await self._deliver_resource(session, uri)
+                continue
+            # 等满 POLL_SECONDS 也没等到推送、也没被取消——可能只是网关真的安静，
+            # 也可能是长连接已经无声断掉（mcp 传输层的 handle_get_stream 重连耗尽
+            # 后就是这样：不抛异常，只是再也不会有推送）。这里分不出是哪种，干脆
+            # 定期主动读一次资源兜底：真安静时这一读没有新事件，白读一次；连接
+            # 真断了则靠这一读把漏掉的通知捞回来，staleness 上限就是 POLL_SECONDS，
+            # 不会像以前那样永久失聪却还显示「已连接」。
+            await self._deliver_resource(session, uri)
 
     def _deliver(self, notifications: list[McpNotification]) -> None:
         for notification in notifications:
