@@ -5,9 +5,11 @@ from types import SimpleNamespace
 
 from stockwidget import mcp_notifications
 from stockwidget.mcp_notifications import (
+    REQUEST_TIMEOUT_SECONDS,
     SSE_TIMEOUT,
     McpNotification,
     McpNotificationListener,
+    _bounded,
     _notifications,
     _tool_payload,
 )
@@ -48,6 +50,50 @@ def test_sse_timeout_is_long_enough_for_a_quiet_gateway():
     assert SSE_TIMEOUT.read == 300.0
     assert SSE_TIMEOUT.read > 10.0
     assert SSE_TIMEOUT.connect == 30.0
+
+
+def test_request_timeout_stays_short_despite_the_long_sse_default():
+    """initialize / call_tool / read_resource / subscribe_resource /
+    unsubscribe_resource 和 GET 长连接共用同一个 httpx 客户端、同一份 SSE_TIMEOUT。
+    这些普通请求不该跟着等 300 秒——网关卡住一次响应时，stop()/apply_config() 设
+    的 cancel_event 拦不住一个已经在等待的 await，而 app.py::quit() 只给监听线程
+    9 秒，够不着 300 秒。这里必须明显短于 SSE_TIMEOUT.read。"""
+    assert REQUEST_TIMEOUT_SECONDS < SSE_TIMEOUT.read
+    assert REQUEST_TIMEOUT_SECONDS >= 5.0  # 也不能短到网关正常响应都摸不到
+
+
+def test_bounded_lets_a_fast_call_through_untouched():
+    async def fast():
+        await asyncio.sleep(0.01)
+        return "ok"
+
+    assert asyncio.run(_bounded(fast())) == "ok"
+
+
+def test_bounded_times_out_and_actually_cancels_a_stuck_call(monkeypatch):
+    """超时不能只是"不再等它"——底层协程必须被真的取消，不能留着一直挂在后台。"""
+    monkeypatch.setattr(mcp_notifications, "REQUEST_TIMEOUT_SECONDS", 0.02)
+    cancelled = []
+
+    async def stuck():
+        try:
+            await asyncio.sleep(999)
+        except asyncio.CancelledError:
+            cancelled.append(True)
+            raise
+        return "never"  # pragma: no cover - 不该走到这里
+
+    async def scenario():
+        try:
+            await mcp_notifications._bounded(stuck())
+        except asyncio.TimeoutError:
+            pass
+        else:
+            raise AssertionError("卡住的调用应该超时，而不是正常返回")
+        await asyncio.sleep(0.01)  # 给取消传播留一点时间
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=2.0))
+    assert cancelled == [True]
 
 
 class _ListenerStub:

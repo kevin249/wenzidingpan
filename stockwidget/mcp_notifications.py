@@ -35,6 +35,16 @@ SSE_TIMEOUT = httpx2.Timeout(30.0, read=300.0)
 # 定期主动读一次资源，推送坏掉时最多迟这么久，不会变成永久失聪。
 POLL_SECONDS = 60
 
+# SSE_TIMEOUT 是这个 httpx 客户端的默认超时，GET 长连接和 initialize / call_tool /
+# read_resource / subscribe_resource / unsubscribe_resource 这些普通请求走的是
+# 同一个 client，会一起吃到那个 300 秒的读超时。普通请求不该跟着等这么久——网关
+# 卡住某次响应时，stop() / apply_config() 设的 cancel_event 拦不住一个已经在等
+# 的 await，quit() 只给监听线程 9 秒（见 app.py::WidgetApp.quit），够不着 300 秒
+# 的等待。这些调用单独用 asyncio.wait_for 兜一个短得多的上限：超时会取消底层
+# 请求并抛 TimeoutError，冒泡出去要么被 run() 的 except 捕到走重连，要么走进
+# 那个 finally 的 suppress(Exception)，两边都不会真的卡住。
+REQUEST_TIMEOUT_SECONDS = 15.0
+
 
 @dataclass(frozen=True)
 class McpNotification:
@@ -99,6 +109,11 @@ def _json_text_payload(blocks: Any) -> dict[str, Any]:
 
 def _resource_payload(result: Any) -> dict[str, Any]:
     return _json_text_payload(getattr(result, "contents", ()))
+
+
+async def _bounded(coro: Any) -> Any:
+    """给普通请求单独兜一个短超时，别被 client 那个为 SSE 长连接留的长读超时拖住。"""
+    return await asyncio.wait_for(coro, timeout=REQUEST_TIMEOUT_SECONDS)
 
 
 def _notifications(payload: dict[str, Any]) -> list[McpNotification]:
@@ -234,14 +249,14 @@ class McpNotificationListener(QThread):
                     write_stream,
                     message_handler=handle_message,
                 ) as session:
-                    await session.initialize()
-                    info = _tool_payload(await session.call_tool("get_notification_stream"))
+                    await _bounded(session.initialize())
+                    info = _tool_payload(await _bounded(session.call_tool("get_notification_stream")))
                     uri = str(info.get("resource_uri") or "")
                     if not uri:
                         raise RuntimeError("MCP 未返回通知资源地址")
                     with warnings.catch_warnings():
                         warnings.simplefilter("ignore", MCPDeprecationWarning)
-                        await session.subscribe_resource(uri)
+                        await _bounded(session.subscribe_resource(uri))
                     try:
                         await self._establish_baseline(session, uri)
                         self._emit_status("已连接 · 实时订阅")
@@ -250,10 +265,10 @@ class McpNotificationListener(QThread):
                         with suppress(Exception):
                             with warnings.catch_warnings():
                                 warnings.simplefilter("ignore", MCPDeprecationWarning)
-                                await session.unsubscribe_resource(uri)
+                                await _bounded(session.unsubscribe_resource(uri))
 
     async def _establish_baseline(self, session: ClientSession, uri: str) -> None:
-        payload = _resource_payload(await session.read_resource(uri))
+        payload = _resource_payload(await _bounded(session.read_resource(uri)))
         with self._lock:
             baseline_ready = self._baseline_ready
         if baseline_ready:
@@ -265,7 +280,7 @@ class McpNotificationListener(QThread):
             self._baseline_ready = True
 
     async def _deliver_resource(self, session: ClientSession, uri: str) -> None:
-        payload = _resource_payload(await session.read_resource(uri))
+        payload = _resource_payload(await _bounded(session.read_resource(uri)))
         self._deliver(_notifications(payload))
 
     async def _consume(
