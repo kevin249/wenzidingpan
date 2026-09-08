@@ -155,23 +155,39 @@ async def inspect_and_watch(
     if watch <= 0:
         return 0
 
-    rule(f"盯 {watch} 秒，看有没有实时推送")
-    print("  等待中……（没有输出就是网关没推）")
+    # 订阅在读基线之前，所以取基线这段时间里就可能收到通知——那些通知对应的事件
+    # 已经在基线里了，属于基线而不属于测量区间。从这里划一条线，只统计线之后的，
+    # 否则「基线阶段的通知 + 盯守期无新事件」会被误报成「资源更新了内容却没变」。
+    mark = len(seen_live)
     before = {i.event_id for i in items}
+
+    rule(f"盯 {watch} 秒，看有没有实时推送")
+    if mark:
+        print(f"  （取基线期间已收到 {mark} 次通知，计入基线，不算在本次测量里）")
+    print("  等待中……（没有输出就是网关没推）")
     await asyncio.sleep(watch)
 
     after = _notifications(_resource_payload(await session.read_resource(uri)))
     fresh = [i for i in after if i.event_id not in before]
+    during = seen_live[mark:]
     rule("盯完了")
-    print(f"  收到资源更新通知 {len(seen_live)} 次：{seen_live or '（一次都没有）'}")
+    print(f"  收到资源更新通知 {len(during)} 次：{during or '（一次都没有）'}")
     print(f"  这段时间新增事件 {len(fresh)} 条")
     for item in fresh:
         print(f"    type={item.event_type!r}  {item.title}  {item.body[:120]}")
-    if seen_live and not fresh:
-        print("  ⚠ 有推送通知但没有新事件——资源被更新了，内容却没变")
-    if fresh and not seen_live:
-        print("  ⚠ 有新事件但网关没发推送通知——组件靠通知触发，这种情况它收不到")
+    print(f"\n  → {verdict(len(during), len(fresh))}")
     return 0
+
+
+def verdict(pushes: int, fresh: int) -> str:
+    """把「收到几次通知」和「新增几条事件」翻成一句结论。"""
+    if pushes and fresh:
+        return "推送通道正常：有通知、也有对应的新事件"
+    if pushes and not fresh:
+        return "⚠ 有推送通知但没有新事件——资源被更新了，内容却没变"
+    if fresh and not pushes:
+        return "⚠ 有新事件但网关没发推送通知——组件靠通知触发，这种情况它收不到"
+    return "这段时间网关既没推通知、也没有新事件——就是没东西可推"
 
 
 def main() -> int:
