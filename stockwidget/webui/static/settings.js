@@ -24,6 +24,9 @@ const CHECKBOXES = [
   'stock_percent_bold',
   'dark_trade_bold',
   'mcp_notifications_enabled',
+  'mcp_bell_terminal',
+  'mcp_bell_toast',
+  'mcp_bell_window',
 ];
 const FONT_SIZES = [
   'font_size',

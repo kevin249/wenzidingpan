@@ -63,6 +63,21 @@ def test_window_bell_tracks_and_clears_mcp_notifications(app):
     window.close()
 
 
+def test_window_bell_hides_on_its_own_switch_without_leaving_a_stale_count(app):
+    """BELL 这一路单独关掉时按钮要收起，未读数也不能留到下次开回来。"""
+    window = TickerWindow(Config(mcp_notifications_enabled=True))
+    window.show_mcp_notification("涨停提醒", "贵州茅台触发提醒")
+    assert window.title_bar.bell_button.text() == "BELL·1"
+
+    window.apply_config(Config(mcp_notifications_enabled=True, mcp_bell_window=False))
+    assert window.title_bar.bell_button.isHidden() is True
+
+    window.apply_config(Config(mcp_notifications_enabled=True))
+    assert window.title_bar.bell_button.isHidden() is False
+    assert window.title_bar.bell_button.text() == "BELL"
+    window.close()
+
+
 def test_quote_row_uses_independent_font_sizes_and_aligns_second_row(app):
     config = Config(
         stock_name_font_size=14,
