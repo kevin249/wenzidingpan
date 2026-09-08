@@ -168,6 +168,10 @@ class WidgetApp:
 
     def _on_mcp_notification(self, notification: McpNotification) -> None:
         timestamp = notification.created_at or "时间未知"
+        # 推送一条接一条地打，上一条的正文和这一条的标题挨在相邻两行，连着来
+        # 好几条时终端里糊成一片，分不清哪几行是同一条。每条前面先打个分隔，
+        # ====== 前后各留一行空行，一眼就能看出新的一条从哪儿开始。
+        print("\n======\n", flush=True)
         print(f"[MCP提醒] {timestamp} | {notification.title}", flush=True)
         if notification.body:
             print(notification.body, flush=True)

@@ -121,17 +121,28 @@ async def _bounded(coro: Any, cancel_event: asyncio.Event | None = None) -> Any:
     响应关闭的场合）或者请求本身先完成/超时，行为和只用 asyncio.wait_for 一样。
     """
     request_task = asyncio.ensure_future(coro)
-    waiters = {request_task}
     cancel_task = asyncio.ensure_future(cancel_event.wait()) if cancel_event is not None else None
-    if cancel_task is not None:
-        waiters.add(cancel_task)
-    done, pending = await asyncio.wait(
-        waiters, timeout=REQUEST_TIMEOUT_SECONDS, return_when=asyncio.FIRST_COMPLETED
-    )
-    for task in pending:
-        task.cancel()
-    if pending:
-        await asyncio.gather(*pending, return_exceptions=True)
+    tasks = [request_task] if cancel_task is None else [request_task, cancel_task]
+    try:
+        done, _pending = await asyncio.wait(
+            tasks, timeout=REQUEST_TIMEOUT_SECONDS, return_when=asyncio.FIRST_COMPLETED
+        )
+    finally:
+        # _bounded 自己也可能被外层取消：mcp 传输层内部是个 anyio 任务组，一个
+        # 子任务失败时会连坐取消组里其它任务（run() 那句 BaseExceptionGroup 的
+        # 注释说的就是这个），_bounded 正好挂在上面那次 await 上时会被波及——
+        # CancelledError 直接从 asyncio.wait 里扔出来，跳过 try 块里剩下的代码，
+        # 也就跳过了原本在这之后才做的清理。放进 finally 就不管 asyncio.wait 是
+        # 正常返回还是被取消，request_task / cancel_task 这两个子任务都会被
+        # 收拾干净——不然要么是 request_task 拿着正在关闭的 session 继续跑，
+        # 要么是 cancel_event 一直不被 set，cancel_task 就一直挂到事件循环
+        # 关闭那一刻。已经跑完的任务在这里只是被 gather 取走结果/异常，不会
+        # 被误伤；try 块正常返回时同样统一走这条清理路径，不用再写一遍。
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
     if cancel_task is not None and cancel_task in done:
         raise asyncio.CancelledError("MCP 监听器正在关闭")
     if request_task not in done:
