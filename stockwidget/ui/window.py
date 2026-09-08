@@ -55,6 +55,8 @@ class TitleBar(QWidget):
     settings_requested = Signal()
     quit_requested = Signal()
     grayscale_requested = Signal()
+    # 未读清零：托盘图标的告警色要跟着一起消，两处指示不能各说各话。
+    bell_cleared = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -64,7 +66,7 @@ class TitleBar(QWidget):
         self.refresh_button = self._button("⟳", "立即刷新", self.refresh_requested)
         self.bell_button = self._button("BELL", "暂无 MCP 提醒", None)
         self.bell_button.setAccessibleName("MCP 实时提醒")
-        self.bell_button.clicked.connect(self.clear_bell)
+        self.bell_button.clicked.connect(self._acknowledge_bell)
         self.settings_button = self._button("⚙", "在浏览器中打开设置", self.settings_requested)
         self.grayscale_button = self._button("灰", "切换彩色 / 灰度显示", self.grayscale_requested)
         self.quit_button = self._button("✕", "退出", self.quit_requested, QUIT_BUTTON_STYLE)
@@ -95,7 +97,20 @@ class TitleBar(QWidget):
         self.bell_button.setToolTip(f"{title}\n{summary}".strip())
         self.bell_button.setStyleSheet(BELL_ALERT_STYLE)
 
+    def _acknowledge_bell(self) -> None:
+        """用户亲手点掉 BELL：清零并广播出去，托盘图标那一路跟着一起消。"""
+        had_unread = self._bell_unread > 0
+        self.clear_bell()
+        if had_unread:
+            self.bell_cleared.emit()
+
     def clear_bell(self) -> None:
+        """程序侧清零，不广播。
+
+        关掉「窗口 BELL」这一路的开关只是把这个按钮收起来，不代表用户看过了——
+        广播出去会连带把独立开着的托盘未读数也抹掉，一个通道的设置不该动另一个
+        通道的状态。想让两处一起消的是 :meth:`_acknowledge_bell`。
+        """
         self._bell_unread = 0
         self.bell_button.setText("BELL")
         self.bell_button.setStyleSheet(BUTTON_STYLE)
@@ -253,6 +268,7 @@ class TickerWindow(QWidget):
     bounds_changed = Signal(object)
     grayscale_requested = Signal()
     title_buttons_requested = Signal()
+    bell_cleared = Signal()
 
     def __init__(self, config: Config) -> None:
         super().__init__()
@@ -288,6 +304,7 @@ class TickerWindow(QWidget):
         self.title_bar.settings_requested.connect(self.settings_requested.emit)
         self.title_bar.quit_requested.connect(self.quit_requested.emit)
         self.title_bar.grayscale_requested.connect(self.grayscale_requested.emit)
+        self.title_bar.bell_cleared.connect(self.bell_cleared.emit)
 
         # 自选按「设置里的行数」铺成网格：1 行就全部横向排开，2 行就铺两行。
         self.rows_host = QWidget()
@@ -520,6 +537,10 @@ class TickerWindow(QWidget):
 
     def show_mcp_notification(self, title: str, body: str) -> None:
         self.title_bar.push_bell(title, body)
+
+    def clear_mcp_notifications(self) -> None:
+        """把窗口上的未读数清掉；用户从托盘那边确认时走这里。"""
+        self.title_bar.clear_bell()
 
     def _sync_rows(self, quotes, trends: dict | None = None) -> None:
         trends = trends or {}

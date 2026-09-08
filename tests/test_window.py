@@ -63,6 +63,36 @@ def test_window_bell_tracks_and_clears_mcp_notifications(app):
     window.close()
 
 
+def test_window_bell_announces_only_a_real_acknowledgement(app):
+    """点掉 BELL 才算看过、才广播；藏起按钮只是设置变了，不能连累别的通道。"""
+    window = TickerWindow(Config(mcp_notifications_enabled=True))
+    cleared: list[bool] = []
+    window.bell_cleared.connect(lambda: cleared.append(True))
+
+    # 本来就没有未读时点它，不该惊动托盘
+    window.title_bar.bell_button.click()
+    assert cleared == []
+
+    window.show_mcp_notification("涨停提醒", "贵州茅台触发提醒")
+    window.title_bar.bell_button.click()
+    assert cleared == [True]
+
+    # 只关掉「窗口 BELL」这一路：按钮收起，但托盘的未读数是独立的，不能被抹掉
+    cleared.clear()
+    window.show_mcp_notification("风险提醒", "跌破保护价")
+    window.apply_config(Config(mcp_notifications_enabled=True, mcp_bell_window=False))
+    assert window.title_bar.bell_button.isHidden() is True
+    assert cleared == []
+
+    # 托盘那边确认时，窗口这边也得跟着清干净
+    window.apply_config(Config(mcp_notifications_enabled=True))
+    window.show_mcp_notification("涨停提醒", "再来一条")
+    assert window.title_bar.bell_button.text() == "BELL·1"
+    window.clear_mcp_notifications()
+    assert window.title_bar.bell_button.text() == "BELL"
+    window.close()
+
+
 def test_window_bell_hides_on_its_own_switch_without_leaving_a_stale_count(app):
     """BELL 这一路单独关掉时按钮要收起，未读数也不能留到下次开回来。"""
     window = TickerWindow(Config(mcp_notifications_enabled=True))

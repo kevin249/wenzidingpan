@@ -127,6 +127,7 @@ class Config:
     # 正文打印到 CMD 不在此列——那是排查用的，始终打印。
     mcp_bell_terminal: bool = True  # 往终端敲 BEL：响一声，并让终端去闪任务栏
     mcp_bell_toast: bool = True  # 系统通知气泡 / Toast
+    mcp_bell_tray_icon: bool = True  # 通知区（任务栏）图标转告警色并挂未读数
     mcp_bell_window: bool = True  # 在窗口标题栏 BELL 按钮上累计未读数
     mcp_url: str = "http://127.0.0.1:8801/mcp"
     mcp_api_key: str = ""
@@ -264,6 +265,7 @@ def sanitize(raw: Any) -> Config:
         "mcp_notifications_enabled",
         "mcp_bell_terminal",
         "mcp_bell_toast",
+        "mcp_bell_tray_icon",
         "mcp_bell_window",
     ):
         if isinstance(raw.get(key), bool):

@@ -9,6 +9,7 @@ from ..config import Config
 from .icon import tray_icon
 
 MESSAGE_MSECS = 10_000
+BASE_TOOLTIP = "股票行情组件"
 
 
 def message_body(body: str) -> str:
@@ -22,7 +23,8 @@ def message_body(body: str) -> str:
 class Tray(QSystemTrayIcon):
     def __init__(self, config: Config, parent=None) -> None:
         super().__init__(tray_icon(), parent)
-        self.setToolTip("股票行情组件")
+        self.setToolTip(BASE_TOOLTIP)
+        self._unread = 0
 
         self._menu = QMenu()
         self.toggle_action = QAction("显示 / 隐藏", self._menu)
@@ -64,6 +66,23 @@ class Tray(QSystemTrayIcon):
             MESSAGE_MSECS,
         )
         return True
+
+    def set_unread(self, count: int) -> int:
+        """把未读条数画到通知区图标上，返回实际生效的条数。
+
+        通知区就在任务栏上，而且这块归组件自己管——不像终端铃铛那样要看用的是
+        哪个终端、有没有开对设置、窗口是不是在前台。图标会一直挂着告警色直到
+        用户去看，比闪一下、错过就没了更可靠。
+        """
+        count = max(0, int(count))
+        if count == self._unread:
+            return count
+        self._unread = count
+        self.setIcon(tray_icon(alert=count > 0))
+        self.setToolTip(
+            f"{BASE_TOOLTIP}\n{min(count, 99)} 条未读提醒" if count else BASE_TOOLTIP
+        )
+        return count
 
     def apply_config(self, config: Config) -> None:
         # 回填勾选状态时屏蔽信号，免得又反过来触发一次写配置。

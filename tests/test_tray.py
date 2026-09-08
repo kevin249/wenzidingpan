@@ -14,7 +14,7 @@ except (ImportError, OSError) as error:
     pytest.skip(f"Qt 运行库不可用：{error}", allow_module_level=True)
 
 from stockwidget.config import Config
-from stockwidget.ui.tray import Tray, message_body
+from stockwidget.ui.tray import BASE_TOOLTIP, Tray, message_body
 
 
 @pytest.fixture(scope="module")
@@ -64,3 +64,24 @@ def test_tray_notify_sends_a_balloon_and_stays_quiet_when_unsupported(app, monke
     monkeypatch.setattr(tray, "supportsMessages", lambda: False)
     assert tray.notify("标题", "正文") is False
     assert sent == []
+
+
+def test_tray_unread_switches_the_icon_and_tooltip(app):
+    """通知区图标是唯一不看终端脸色的任务栏提示，未读数要挂到用户点开为止。"""
+    tray = Tray(Config())
+    calm = tray.icon().pixmap(64, 64).toImage()
+    assert tray.toolTip() == BASE_TOOLTIP
+
+    assert tray.set_unread(2) == 2
+    assert tray.icon().pixmap(64, 64).toImage() != calm  # 换了告警色
+    assert "2 条未读提醒" in tray.toolTip()
+
+    # 点开看过之后退回常态
+    tray.set_unread(0)
+    assert tray.icon().pixmap(64, 64).toImage() == calm
+    assert tray.toolTip() == BASE_TOOLTIP
+
+    # 负数当成清零，条数上限只影响显示
+    assert tray.set_unread(-3) == 0
+    assert tray.set_unread(150) == 150
+    assert "99 条未读提醒" in tray.toolTip()
