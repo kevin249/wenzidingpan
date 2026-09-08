@@ -80,6 +80,31 @@ def keep_visible_when_inactive(widget: Any) -> None:
     widget.setAttribute(Qt.WA_MacAlwaysShowToolWindow, True)
 
 
+def ring_terminal_bell(stream: Any = None) -> bool:
+    """往终端写一个 BEL（0x07），让终端按自己的设置去提示用户。
+
+    终端只认这一个字符：Windows Terminal 收到 BEL 才会点亮标签上的铃铛，并按
+    ``bellStyle`` 里的 ``taskbar`` / ``window`` 闪任务栏图标。光把提醒正文 print
+    出去，它一个字符都不会当成提示——那就只是普通输出。
+
+    组件主窗口建在 ``Qt.Tool`` 上，在 Windows 上压根没有任务栏按钮，
+    ``QApplication.alert()`` 无处可闪，所以终端这一下是唯一能动到任务栏的信号。
+
+    输出重定向到文件时不写，免得往日志里塞控制字符；用 pythonw 启动时根本没有
+    控制台，``sys.stdout`` 会是 ``None``。
+    """
+    stream = sys.stdout if stream is None else stream
+    try:
+        if stream is None or not stream.isatty():
+            return False
+        stream.write("\a")
+        stream.flush()
+    except (AttributeError, OSError, ValueError):
+        # 管道断了、流已经关掉，或者被换成了不像文件的东西——响不了铃也不能崩。
+        return False
+    return True
+
+
 def use_accessory_activation_policy(env: Mapping[str, str] | None = None) -> bool:
     """macOS：把进程降成附属应用——不占 Dock、不进 ⌘-Tab，像其他菜单栏小工具一样。
 

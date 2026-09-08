@@ -90,6 +90,50 @@ def test_apply_qt_platform_only_writes_when_it_decided_something(monkeypatch, x1
     assert "QT_QPA_PLATFORM" not in env
 
 
+class _FakeStream:
+    def __init__(self, tty: bool = True) -> None:
+        self.tty = tty
+        self.written: list[str] = []
+        self.flushed = 0
+
+    def isatty(self) -> bool:
+        return self.tty
+
+    def write(self, text: str) -> int:
+        self.written.append(text)
+        return len(text)
+
+    def flush(self) -> None:
+        self.flushed += 1
+
+
+def test_terminal_bell_writes_bel_only_to_a_real_terminal(monkeypatch):
+    """终端只认 BEL：不写这个字符，Windows Terminal 的标签铃铛和任务栏都不会动。"""
+    tty = _FakeStream()
+    assert desktop.ring_terminal_bell(tty) is True
+    assert tty.written == ["\a"]
+    assert tty.flushed == 1  # 不 flush 的话要等到下次输出才响
+
+    # 重定向到文件：别往日志里塞控制字符
+    redirected = _FakeStream(tty=False)
+    assert desktop.ring_terminal_bell(redirected) is False
+    assert redirected.written == []
+
+    # pythonw 启动时没有控制台，sys.stdout 是 None
+    monkeypatch.setattr(desktop.sys, "stdout", None)
+    assert desktop.ring_terminal_bell() is False
+
+
+def test_terminal_bell_survives_a_dead_stream():
+    """管道断了、流关掉了也只是没铃可响，不能把提醒回调带崩。"""
+
+    class Closed(_FakeStream):
+        def write(self, text: str) -> int:
+            raise ValueError("I/O operation on closed file")
+
+    assert desktop.ring_terminal_bell(Closed()) is False
+
+
 def test_accessory_policy_is_a_no_op_off_macos(monkeypatch):
     monkeypatch.setattr(desktop.sys, "platform", "linux")
     assert desktop.use_accessory_activation_policy({}) is False

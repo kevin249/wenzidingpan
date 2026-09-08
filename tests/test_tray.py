@@ -14,7 +14,7 @@ except (ImportError, OSError) as error:
     pytest.skip(f"Qt 运行库不可用：{error}", allow_module_level=True)
 
 from stockwidget.config import Config
-from stockwidget.ui.tray import Tray
+from stockwidget.ui.tray import Tray, message_body
 
 
 @pytest.fixture(scope="module")
@@ -40,3 +40,27 @@ def test_tray_can_bring_back_hidden_title_buttons(app):
     tray.apply_config(Config(show_title_buttons=True))
     assert tray.title_buttons_action.isChecked() is True
     assert emitted == []
+
+
+def test_notification_body_is_flattened_and_never_empty():
+    """Windows 收到空正文的通知会直接不弹，必须有兜底。"""
+    assert message_body("600519\n  涨停  ") == "600519 涨停"
+    assert message_body("") == "收到新的实时提醒"
+    assert len(message_body("长" * 500)) == 240
+
+
+def test_tray_notify_sends_a_balloon_and_stays_quiet_when_unsupported(app, monkeypatch):
+    tray = Tray(Config())
+    sent: list[tuple] = []
+    monkeypatch.setattr(tray, "showMessage", lambda *args: sent.append(args))
+
+    monkeypatch.setattr(tray, "supportsMessages", lambda: True)
+    assert tray.notify("  盯盘提醒  ", "600519\n涨停") is True
+    assert sent[0][0] == "盯盘提醒"
+    assert sent[0][1] == "600519 涨停"
+
+    # 平台不支持气泡就安静收手，不能让提醒回调抛异常
+    sent.clear()
+    monkeypatch.setattr(tray, "supportsMessages", lambda: False)
+    assert tray.notify("标题", "正文") is False
+    assert sent == []
