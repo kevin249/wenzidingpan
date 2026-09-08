@@ -162,6 +162,56 @@ def test_bounded_is_interrupted_when_cancel_event_fires_mid_flight(monkeypatch):
     asyncio.run(asyncio.wait_for(scenario(), timeout=1.0))
 
 
+def test_bounded_cancels_its_own_child_tasks_when_its_host_task_is_cancelled():
+    """Codex 在 #20 上指出的下一层坑，比上面两个 cancel_event 测试更深一层。
+
+    上面两个测试里，喊停的是 cancel_event——_bounded 自己一直好好跑到
+    asyncio.wait 正常返回，只是返回结果告诉调用者"该退了"。这里测的是另一件
+    事：_bounded 所在的这个 task 本身被外部直接 cancel() 掉（mcp 传输层内部是
+    个 anyio 任务组，一个子任务失败时会连坐取消组里其它任务，run() 那句
+    BaseExceptionGroup 的注释说的就是这个）。_bounded 正好挂在
+    `await asyncio.wait(...)` 上时被牵连，CancelledError 直接从这次 await 里
+    扔出来——asyncio.wait 被取消并不会连带取消它在等的那些 task，只会让等待
+    本身提前结束。如果清理代码写在这次 await 之后（而不是 finally 里），就会
+    被跳过，request_task / cancel_task 全部留成孤儿。
+
+    这里不通过 cancel_event，直接 cancel 包着 _bounded 的 host task 本身。
+    """
+    cancel_event = asyncio.Event()  # 一直不 set——这次要试的是 host task 被取消
+    cancelled = []
+
+    async def stuck():
+        try:
+            await asyncio.sleep(999)
+        except asyncio.CancelledError:
+            cancelled.append(True)
+            raise
+        return "never"  # pragma: no cover
+
+    async def scenario():
+        # asyncio.run(asyncio.wait_for(scenario(), ...)) 本身就会带出两层脚手架
+        # task（wait_for 自己那层、scenario() 被包成的那层）——它们和 current_task()
+        # 未必是同一个 task，直接拿 all_tasks() 减 current_task() 会把这些无关的
+        # 脚手架 task 也算成"泄漏"。先在 _bounded 还没起步时拍一张基线快照，之后
+        # 只看多出来的那些，才是 request_task / cancel_task 真正有没有被收拾干净。
+        baseline = asyncio.all_tasks()
+        host = asyncio.ensure_future(mcp_notifications._bounded(stuck(), cancel_event))
+        await asyncio.sleep(0.01)  # 让 host 真的跑进 asyncio.wait 里挂住
+        host.cancel()
+        try:
+            await host
+        except asyncio.CancelledError:
+            pass
+        else:
+            raise AssertionError("host task 被外部取消时，CancelledError 应该传播出来")
+
+        leaked = asyncio.all_tasks() - baseline
+        assert leaked == set(), f"_bounded 被外层取消后留下了孤儿任务：{leaked}"
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=2.0))
+    assert cancelled == [True]  # request_task 包的协程真的被取消了，不是被晾在一边
+
+
 def test_bounded_with_an_unset_cancel_event_behaves_like_plain_timeout():
     """传了 cancel_event 但它没被设置：不该影响正常的超时 / 正常返回。"""
     cancel_event = asyncio.Event()  # 一直不 set
