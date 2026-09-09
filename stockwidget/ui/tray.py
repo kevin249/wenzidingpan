@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from PySide6.QtGui import QAction
-from PySide6.QtWidgets import QMenu, QSystemTrayIcon
+from PySide6.QtCore import Signal
+from PySide6.QtGui import QAction, QColor
+from PySide6.QtWidgets import QColorDialog, QMenu, QSystemTrayIcon
 
 from ..config import Config
 from .icon import tray_icon
@@ -21,6 +22,9 @@ def message_body(body: str) -> str:
 
 
 class Tray(QSystemTrayIcon):
+    normal_color_requested = Signal(str)
+    alert_color_requested = Signal(str)
+
     def __init__(self, config: Config, parent=None) -> None:
         self._normal_color = config.tray_icon_normal_color
         self._alert_color = config.tray_icon_alert_color
@@ -38,8 +42,13 @@ class Tray(QSystemTrayIcon):
         self.click_through_action = QAction("鼠标穿透", self._menu, checkable=True)
         # 同理：按钮藏起来之后窗口上就没有开关它的入口了，托盘得留一个。
         self.title_buttons_action = QAction("显示标题栏按钮", self._menu, checkable=True)
+        self.normal_color_action = QAction("常态图标颜色…", self._menu)
+        self.alert_color_action = QAction("提醒图标颜色…", self._menu)
         self.settings_action = QAction("设置…", self._menu)
         self.quit_action = QAction("退出", self._menu)
+
+        self.normal_color_action.triggered.connect(self._pick_normal_color)
+        self.alert_color_action.triggered.connect(self._pick_alert_color)
 
         self._menu.addAction(self.toggle_action)
         self._menu.addAction(self.refresh_action)
@@ -47,6 +56,9 @@ class Tray(QSystemTrayIcon):
         self._menu.addAction(self.on_top_action)
         self._menu.addAction(self.click_through_action)
         self._menu.addAction(self.title_buttons_action)
+        self._menu.addSeparator()
+        self._menu.addAction(self.normal_color_action)
+        self._menu.addAction(self.alert_color_action)
         self._menu.addAction(self.settings_action)
         self._menu.addSeparator()
         self._menu.addAction(self.quit_action)
@@ -65,6 +77,16 @@ class Tray(QSystemTrayIcon):
             MESSAGE_MSECS,
         )
         return True
+
+    def _pick_normal_color(self) -> None:
+        color = QColorDialog.getColor(QColor(self._normal_color), None, "选择常态托盘图标颜色")
+        if color.isValid():
+            self.normal_color_requested.emit(color.name())
+
+    def _pick_alert_color(self) -> None:
+        color = QColorDialog.getColor(QColor(self._alert_color), None, "选择提醒托盘图标颜色")
+        if color.isValid():
+            self.alert_color_requested.emit(color.name())
 
     def _refresh_icon(self) -> None:
         self.setIcon(
