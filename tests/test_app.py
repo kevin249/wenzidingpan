@@ -1,7 +1,6 @@
 """提醒分发：终端铃铛 / 系统通知 / 通知区图标 / 窗口 BELL 四路各走各的开关。
 
-直接拿未绑定的 ``_on_mcp_notification`` 配一个假的 self 来跑：分发逻辑本身
-不碰 Qt，这样测就不用去和 QApplication 单例较劲。
+直接拿未绑定的方法配假的 self 来跑，避免和 QApplication 单例较劲。
 """
 
 from __future__ import annotations
@@ -28,9 +27,14 @@ NOTIFICATION = McpNotification(
 
 
 class _FakeWindow:
-    def __init__(self) -> None:
+    def __init__(self, visible: bool = True) -> None:
         self.calls: list[tuple[str, str]] = []
         self.cleared = 0
+        self.visible = visible
+        self.shown = 0
+        self.hidden = 0
+        self.raised = 0
+        self.activated = 0
 
     def show_mcp_notification(self, title: str, body: str) -> None:
         self.calls.append((title, body))
@@ -40,6 +44,23 @@ class _FakeWindow:
 
     def apply_config(self, config: Config) -> None:
         pass
+
+    def isVisible(self) -> bool:
+        return self.visible
+
+    def show(self) -> None:
+        self.visible = True
+        self.shown += 1
+
+    def hide(self) -> None:
+        self.visible = False
+        self.hidden += 1
+
+    def raise_(self) -> None:
+        self.raised += 1
+
+    def activateWindow(self) -> None:
+        self.activated += 1
 
 
 class _FakeTray:
@@ -61,8 +82,6 @@ class _FakeTray:
 
 @pytest.fixture()
 def dispatch(monkeypatch):
-    """按给定配置跑 n 次提醒回调，返回四路各自的结果。"""
-
     def run(config: Config, *, tray: bool = True, times: int = 1):
         rung: list[bool] = []
         monkeypatch.setattr(
@@ -106,12 +125,10 @@ def test_each_switch_only_silences_its_own_channel(dispatch, switch, expected):
 
 
 def test_tray_icon_unread_accumulates_across_notifications(dispatch):
-    """图标要一直挂着未读数，不像气泡闪一下就没了。"""
     assert dispatch(Config(), times=3).tray_icon == 3
 
 
 def test_all_switches_off_still_prints_the_body(dispatch, capsys):
-    """四路全关只是不提示；正文是排查用的，照打不误。"""
     result = dispatch(
         Config(
             mcp_bell_terminal=False,
@@ -127,57 +144,70 @@ def test_all_switches_off_still_prints_the_body(dispatch, capsys):
 
 
 def test_consecutive_notifications_get_a_blank_divider_between_them(dispatch, capsys):
-    """连着来的两条推送不能在终端里挤成一坨——中间要能一眼看出分界。"""
     dispatch(Config(), times=2)
-
     printed = capsys.readouterr().out
-    # 上一条正文之后：1 个空行、一行 ======、再 1 个空行，然后才是下一条的标题行。
     assert "600519 涨停封板\n\n======\n\n[MCP提醒]" in printed
 
 
 def test_tray_channels_are_skipped_without_a_tray(dispatch):
-    """没有系统托盘的桌面上，气泡和图标两路都得安静跳过，不能抛异常。"""
     assert _channels(dispatch(Config(), tray=False)) == (1, 0, 0, 1)
 
 
-def _tray_click_stub(unread: int):
-    window, tray = _FakeWindow(), _FakeTray()
+def _tray_click_stub(unread: int, *, visible: bool = True):
+    window, tray = _FakeWindow(visible), _FakeTray()
     tray.unread = unread
     toggled: list[bool] = []
     stub = SimpleNamespace(
         window=window, tray=tray, _unread=unread, toggle_window=lambda: toggled.append(True)
     )
     stub._clear_unread = lambda: app_module.WidgetApp._clear_unread(stub)
+    stub._show_window = lambda: app_module.WidgetApp._show_window(stub)
     return stub, window, tray, toggled
 
 
-def test_tray_click_acknowledges_both_indicators():
-    """点托盘要把两处未读一起清。
-
-    只清托盘的话，同一个动作紧接着打开的窗口还挂着 BELL·N——那几条恰恰是这一
-    下刚标记成已读的。
-    """
-    stub, window, tray, toggled = _tray_click_stub(3)
+def test_tray_click_with_unread_acknowledges_and_keeps_visible_window_open():
+    """有未读时第一次点击只确认提醒并置前，不能把本来可见的窗口藏掉。"""
+    stub, window, tray, toggled = _tray_click_stub(3, visible=True)
 
     app_module.WidgetApp._on_tray_activated(stub, QSystemTrayIcon.Trigger)
 
     assert (stub._unread, tray.unread, window.cleared) == (0, 0, 1)
+    assert window.visible is True
+    assert window.hidden == 0
+    assert window.raised == 1 and window.activated == 1
+    assert toggled == []
+
+
+def test_tray_click_with_unread_shows_hidden_window_immediately():
+    """窗口原来被藏着时，有未读的第一次点击就直接显示，不必点第二次。"""
+    stub, window, tray, toggled = _tray_click_stub(2, visible=False)
+
+    app_module.WidgetApp._on_tray_activated(stub, QSystemTrayIcon.Trigger)
+
+    assert (stub._unread, tray.unread, window.cleared) == (0, 0, 1)
+    assert window.visible is True and window.shown == 1
+    assert window.raised == 1 and window.activated == 1
+    assert toggled == []
+
+
+def test_tray_click_without_unread_keeps_toggle_behavior():
+    stub, window, tray, toggled = _tray_click_stub(0)
+
+    app_module.WidgetApp._on_tray_activated(stub, QSystemTrayIcon.Trigger)
+
+    assert (stub._unread, tray.unread, window.cleared) == (0, 0, 0)
     assert toggled == [True]
 
 
 @pytest.mark.parametrize(
     "config, cleared",
     [
-        (Config(mcp_notifications_enabled=True), False),  # 都开着，未读留着
-        (Config(mcp_notifications_enabled=False), True),  # 总开关关掉
-        (Config(mcp_notifications_enabled=True, mcp_bell_tray_icon=False), True),  # 单独关掉
+        (Config(mcp_notifications_enabled=True), False),
+        (Config(mcp_notifications_enabled=False), True),
+        (Config(mcp_notifications_enabled=True, mcp_bell_tray_icon=False), True),
     ],
 )
 def test_tray_indicator_follows_both_the_master_and_its_own_switch(config, cleared):
-    """总开关一关监听就停，之后再没有提醒能清掉告警色——图标会一直红着。
-
-    判据要和窗口 BELL 那边一致：总开关 and 自己那一路的开关。
-    """
     window, tray = _FakeWindow(), _FakeTray()
     tray.unread = 2
     stub = SimpleNamespace(
@@ -196,7 +226,6 @@ def test_tray_indicator_follows_both_the_master_and_its_own_switch(config, clear
 
 
 def test_tray_right_click_is_not_an_acknowledgement():
-    """右键弹菜单不等于看过了，未读数得原样留着。"""
     stub, window, tray, toggled = _tray_click_stub(2)
 
     app_module.WidgetApp._on_tray_activated(stub, QSystemTrayIcon.Context)
