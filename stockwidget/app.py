@@ -27,22 +27,16 @@ class ConfigBridge(QObject):
 
 class WidgetApp:
     def __init__(self, argv: list[str] | None = None, store: Store | None = None) -> None:
-        # 选平台插件必须赶在 QApplication 之前——它一建好就定了。
         desktop.apply_qt_platform()
         self.qt = QApplication(argv if argv is not None else sys.argv)
         self.qt.setApplicationName("stock-ticker-widget")
-        # Linux 桌面靠这个把窗口和 .desktop 条目对上，否则任务栏/切换器里没有图标。
         self.qt.setDesktopFileName("stock-ticker-widget")
-        self.qt.setQuitOnLastWindowClosed(False)  # 组件常驻托盘
+        self.qt.setQuitOnLastWindowClosed(False)
         self.qt.setWindowIcon(tray_icon())
-        # macOS 上降成附属应用：不占 Dock，也不出现在 ⌘-Tab 里。
         desktop.use_accessory_activation_policy()
 
-        # store 可注入，便于冒烟脚本用临时配置跑，不污染用户真实配置。
         self.store = store or Store()
-        # 手上留一份当前配置：提醒回调要按开关分发，不能每来一条就回 store 重新校验一遍。
         self.config = config = self.store.get()
-        # 未读提醒数，画在通知区图标上；窗口 BELL 那边自己另记一份。
         self._unread = 0
 
         self.window = TickerWindow(config)
@@ -53,13 +47,11 @@ class WidgetApp:
         self.window.settings_requested.connect(self.open_settings)
         self.window.quit_requested.connect(self.quit)
         self.window.bounds_changed.connect(self._save_bounds)
-        # 点掉窗口上的 BELL 也等于看过了，托盘图标要跟着一起消。
         self.window.bell_cleared.connect(self._clear_unread)
         self.qt.aboutToQuit.connect(self._flush_bounds)
         self.window.grayscale_requested.connect(
             lambda: self._apply_config(self.store.update({"grayscale": not self.store.get().grayscale}))
         )
-        # 右键菜单里的开关，没有系统托盘时就靠它把标题栏按钮找回来。
         self.window.title_buttons_requested.connect(
             lambda: self._apply_config(
                 self.store.update(
@@ -111,6 +103,13 @@ class WidgetApp:
     def toggle_window(self) -> None:
         self.window.hide() if self.window.isVisible() else self.window.show()
 
+    def _show_window(self) -> None:
+        """确保窗口可见并提到前面；用于用户点击未读提醒的托盘图标。"""
+        if not self.window.isVisible():
+            self.window.show()
+        self.window.raise_()
+        self.window.activateWindow()
+
     def quit(self) -> None:
         self._flush_bounds()
         self.poller.stop()
@@ -125,10 +124,18 @@ class WidgetApp:
     def _on_tray_activated(self, reason) -> None:
         if reason != QSystemTrayIcon.Trigger:
             return
-        # 点了托盘就算看过了：两处未读一起清，别让紧接着打开的窗口还挂着 BELL·N
-        # ——同一个动作刚把它们标记成已读。
-        self._clear_unread()
-        self.window.clear_mcp_notifications()
+
+        had_unread = self._unread > 0
+        if had_unread:
+            # 有未读时，左键的首要语义是“我看到了”：清掉两处未读，并把窗口显示出来。
+            # 不能再顺手 toggle，否则窗口本来可见时第一次点击反而把它藏掉，用户还得
+            # 再点第二次才能看到行情。
+            self._clear_unread()
+            self.window.clear_mcp_notifications()
+            self._show_window()
+            return
+
+        # 没有未读时，保留原来的显示 / 隐藏快捷操作。
         self.toggle_window()
 
     def _clear_unread(self) -> None:
@@ -138,8 +145,6 @@ class WidgetApp:
 
     def _apply_config(self, config: Config) -> None:
         self.config = config
-        # 总开关或这一路自己的开关只要关掉，就别把告警色留在通知区上——监听一停，
-        # 之后再没有提醒能把它清掉，图标会一直红着。判据和窗口 BELL 那边保持一致。
         if not (config.mcp_notifications_enabled and config.mcp_bell_tray_icon):
             self._clear_unread()
         self.window.apply_config(config)
@@ -158,7 +163,6 @@ class WidgetApp:
         listing = {p["id"]: p["label"] for p in providers.listing()}
         label = listing.get(snapshot.provider_id, snapshot.provider_id)
         if snapshot.effective_provider:
-            # 自动模式下把真正出数的源标出来，省得用户猜现在走的是哪家。
             label = f"自动 · {listing.get(snapshot.effective_provider, snapshot.effective_provider)}"
         self.window.update_snapshot(snapshot, label)
 
@@ -168,21 +172,14 @@ class WidgetApp:
 
     def _on_mcp_notification(self, notification: McpNotification) -> None:
         timestamp = notification.created_at or "时间未知"
-        # 推送一条接一条地打，上一条的正文和这一条的标题挨在相邻两行，连着来
-        # 好几条时终端里糊成一片，分不清哪几行是同一条。每条前面先打个分隔，
-        # ====== 前后各留一行空行，一眼就能看出新的一条从哪儿开始。
         print("\n======\n", flush=True)
         print(f"[MCP提醒] {timestamp} | {notification.title}", flush=True)
         if notification.body:
             print(notification.body, flush=True)
-        # 三路提示各有开关，全关就只剩上面这几行正文。
-        # 正文本身只是普通输出，终端不会当成提示。得单独敲一下 BEL，
-        # Windows Terminal 才会点亮标签铃铛、按 bellStyle 闪任务栏。
         if self.config.mcp_bell_terminal:
             desktop.ring_terminal_bell()
         if self.config.mcp_bell_toast and self.tray is not None:
             self.tray.notify(notification.title, notification.body)
-        # 通知区图标转告警色：这一路归组件自己管，不看终端脸色，也不怕气泡被错过。
         if self.config.mcp_bell_tray_icon and self.tray is not None:
             self._unread += 1
             self.tray.set_unread(self._unread)
@@ -192,14 +189,12 @@ class WidgetApp:
     # ------------------------------------------------------------ 启动
 
     def startup_notes(self) -> list[str]:
-        """当前平台上会影响使用的限制，启动时打一行提示。"""
         return desktop.startup_notes(
             platform_name=self.qt.platformName(),
             tray_available=self.tray is not None,
         )
 
     def run(self) -> int:
-        # 让 Ctrl+C 能中断 Qt 事件循环
         signal.signal(signal.SIGINT, lambda *_: self.quit())
 
         url = self.server.start()
