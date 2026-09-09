@@ -90,6 +90,16 @@ class WidgetApp:
                     self.store.update({"show_title_buttons": checked})
                 )
             )
+            self.tray.normal_color_requested.connect(
+                lambda color: self._apply_config(
+                    self.store.update({"tray_icon_normal_color": color})
+                )
+            )
+            self.tray.alert_color_requested.connect(
+                lambda color: self._apply_config(
+                    self.store.update({"tray_icon_alert_color": color})
+                )
+            )
             self.tray.activated.connect(self._on_tray_activated)
 
     # ------------------------------------------------------------ 动作
