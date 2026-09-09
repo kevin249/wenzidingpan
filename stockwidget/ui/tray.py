@@ -22,7 +22,11 @@ def message_body(body: str) -> str:
 
 class Tray(QSystemTrayIcon):
     def __init__(self, config: Config, parent=None) -> None:
-        super().__init__(tray_icon(), parent)
+        self._normal_color = config.tray_icon_normal_color
+        self._alert_color = config.tray_icon_alert_color
+        super().__init__(
+            tray_icon(normal_color=self._normal_color, alert_color=self._alert_color), parent
+        )
         self.setToolTip(BASE_TOOLTIP)
         self._unread = 0
 
@@ -51,12 +55,7 @@ class Tray(QSystemTrayIcon):
         self.apply_config(config)
 
     def notify(self, title: str, body: str) -> bool:
-        """弹一条系统通知。
-
-        Windows 上这是任务栏通知区的气泡 / Toast：终端没开、组件被别的窗口压住
-        时它照样能冒出来，图标也会在通知区亮起。主窗口是 ``Qt.Tool``，没有任务栏
-        按钮可闪，系统通知是这个组件唯一的系统级提示入口。
-        """
+        """弹一条系统通知。"""
         if not self.supportsMessages():
             return False
         self.showMessage(
@@ -67,24 +66,38 @@ class Tray(QSystemTrayIcon):
         )
         return True
 
-    def set_unread(self, count: int) -> int:
-        """把未读条数画到通知区图标上，返回实际生效的条数。
+    def _refresh_icon(self) -> None:
+        self.setIcon(
+            tray_icon(
+                alert=self._unread > 0,
+                normal_color=self._normal_color,
+                alert_color=self._alert_color,
+            )
+        )
 
-        通知区就在任务栏上，而且这块归组件自己管——不像终端铃铛那样要看用的是
-        哪个终端、有没有开对设置、窗口是不是在前台。图标会一直挂着告警色直到
-        用户去看，比闪一下、错过就没了更可靠。
-        """
+    def set_unread(self, count: int) -> int:
+        """更新未读数，并在常态色 / 提醒色之间切换。"""
         count = max(0, int(count))
         if count == self._unread:
             return count
         self._unread = count
-        self.setIcon(tray_icon(alert=count > 0))
+        self._refresh_icon()
         self.setToolTip(
             f"{BASE_TOOLTIP}\n{min(count, 99)} 条未读提醒" if count else BASE_TOOLTIP
         )
         return count
 
     def apply_config(self, config: Config) -> None:
+        # 颜色可在运行中修改；保留当前未读状态，只重新着色。
+        colors_changed = (
+            self._normal_color != config.tray_icon_normal_color
+            or self._alert_color != config.tray_icon_alert_color
+        )
+        self._normal_color = config.tray_icon_normal_color
+        self._alert_color = config.tray_icon_alert_color
+        if colors_changed:
+            self._refresh_icon()
+
         # 回填勾选状态时屏蔽信号，免得又反过来触发一次写配置。
         for action, checked in (
             (self.on_top_action, config.always_on_top),
