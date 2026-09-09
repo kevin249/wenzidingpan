@@ -122,12 +122,15 @@ class Config:
     stock_price_bold: bool = True
     stock_percent_bold: bool = False
     dark_trade_bold: bool = False
+    # 通知区图标颜色：默认常态白色、收到未读提醒时蓝色。
+    tray_icon_normal_color: str = "#ffffff"
+    tray_icon_alert_color: str = "#3b82f6"
     mcp_notifications_enabled: bool = False
     # 提醒到达时走哪几路提示，三路互不影响，都受上面那个总开关约束。
     # 正文打印到 CMD 不在此列——那是排查用的，始终打印。
     mcp_bell_terminal: bool = True  # 往终端敲 BEL：响一声，并让终端去闪任务栏
     mcp_bell_toast: bool = True  # 系统通知气泡 / Toast
-    mcp_bell_tray_icon: bool = True  # 通知区（任务栏）图标转告警色并挂未读数
+    mcp_bell_tray_icon: bool = True  # 通知区（任务栏）图标转提醒色并挂未读数
     mcp_bell_window: bool = True  # 在窗口标题栏 BELL 按钮上累计未读数
     mcp_url: str = "http://127.0.0.1:8801/mcp"
     mcp_api_key: str = ""
@@ -225,6 +228,15 @@ def sanitize(raw: Any) -> Config:
                 setattr(out, key, color)
             elif HEX_COLOR_RE.match(color):
                 # HTML color 控件只接受 #rrggbb，简写 #rgb 在这里展开。
+                normalized = color if len(color) == 7 else "#" + "".join(c * 2 for c in color[1:])
+                setattr(out, key, normalized)
+
+    # 托盘颜色不支持 auto，只接受实际十六进制颜色。
+    for key in ("tray_icon_normal_color", "tray_icon_alert_color"):
+        color = raw.get(key)
+        if isinstance(color, str):
+            color = color.strip().lower()
+            if HEX_COLOR_RE.match(color):
                 normalized = color if len(color) == 7 else "#" + "".join(c * 2 for c in color[1:])
                 setattr(out, key, normalized)
 
