@@ -9,7 +9,7 @@ import threading
 import warnings
 from collections import deque
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import httpx2
@@ -19,29 +19,12 @@ from mcp.shared.exceptions import MCPDeprecationWarning
 from PySide6.QtCore import QThread, Signal
 
 from .config import Config
+from .mcp_bs import record_notification
 
 MCP_API_KEY_ENV = "GUPIAO_MCP_API_KEY"
 RECONNECT_SECONDS = 3
-
-# 推送通知走的是一条 GET 长连接，它和普通请求共用 httpx 的超时。读超时一旦短于
-# 网关的静默间隔，长连接就会被掐断，而 mcp 传输层的 handle_get_stream 最多重连
-# MAX_RECONNECTION_ATTEMPTS（=2）次就 return——只打一条 debug 日志、不抛异常。
-# 原来通盘 10 秒的超时会让长连接在网关安静二十几秒后永久失效，而 _consume 还在
-# updates.get() 上死等，run() 里的 except 永远等不到，状态栏一直显示「已连接 ·
-# 实时订阅」，实际再也收不到任何提醒。这里用库自己推荐的 SSE 友好值
-# （mcp.shared._httpx_utils.create_mcp_http_client 的默认）。
 SSE_TIMEOUT = httpx2.Timeout(30.0, read=300.0)
-# 即便超时给够，长连接仍可能因为网络抖动、网关重启而无声断掉。兜底：没有通知也
-# 定期主动读一次资源，推送坏掉时最多迟这么久，不会变成永久失聪。
 POLL_SECONDS = 60
-
-# SSE_TIMEOUT 是这个 httpx 客户端的默认超时，GET 长连接和 initialize / call_tool /
-# read_resource / subscribe_resource / unsubscribe_resource 这些普通请求走的是
-# 同一个 client，会一起吃到那个 300 秒的读超时。普通请求不该跟着等这么久——网关
-# 卡住某次响应时，quit() 只给监听线程 9 秒（见 app.py::WidgetApp.quit），够不着
-# 300 秒的等待。这里给它们兜一个短得多的上限；真正让 stop()/apply_config() 能
-# 立刻打断的，是 _bounded() 把这些调用和 cancel_event 一起赛跑，不是这个数字
-# 本身——把它当成"网关没反应、也没人喊停时最多等多久"来读，而不是关闭的时限。
 REQUEST_TIMEOUT_SECONDS = 15.0
 
 
@@ -54,6 +37,7 @@ class McpNotification:
     priority: str = "normal"
     created_at: str = ""
     link: str = ""
+    payload: dict[str, Any] = field(default_factory=dict)
 
 
 def _api_key(config: Config) -> str:
@@ -61,11 +45,6 @@ def _api_key(config: Config) -> str:
 
 
 def _describe_error(exc: BaseException, limit: int = 160) -> str:
-    """摊平 ExceptionGroup，否则状态栏只会显示 'unhandled errors in a TaskGroup'。
-
-    任务组把真正的原因（连接被拒、401、超时……）包在 exceptions 里，直接 str()
-    出来的那句话对排查毫无帮助。
-    """
     leaves: list[str] = []
 
     def walk(node: BaseException) -> None:
@@ -111,15 +90,6 @@ def _resource_payload(result: Any) -> dict[str, Any]:
 
 
 async def _bounded(coro: Any, cancel_event: asyncio.Event | None = None) -> Any:
-    """给普通请求单独兜一个短超时，别被 client 那个为 SSE 长连接留的长读超时拖住。
-
-    只缩短超时数字解决不了 stop()/apply_config() 打断不了正在等待的请求这件
-    事——网关卡住时，就算超时缩到几秒，quit() 也还是要真等那么久，而且清理路径
-    里如果连续有两次这样的调用（读资源卡住、finally 里的退订又卡住），等待还会
-    叠加。真正的修法是把请求和 cancel_event 一起放进 asyncio.wait 赛跑：
-    cancel_event 先被设置，请求立刻取消，不用等超时；没传 cancel_event（不需要
-    响应关闭的场合）或者请求本身先完成/超时，行为和只用 asyncio.wait_for 一样。
-    """
     request_task = asyncio.ensure_future(coro)
     cancel_task = asyncio.ensure_future(cancel_event.wait()) if cancel_event is not None else None
     tasks = [request_task] if cancel_task is None else [request_task, cancel_task]
@@ -128,16 +98,6 @@ async def _bounded(coro: Any, cancel_event: asyncio.Event | None = None) -> Any:
             tasks, timeout=REQUEST_TIMEOUT_SECONDS, return_when=asyncio.FIRST_COMPLETED
         )
     finally:
-        # _bounded 自己也可能被外层取消：mcp 传输层内部是个 anyio 任务组，一个
-        # 子任务失败时会连坐取消组里其它任务（run() 那句 BaseExceptionGroup 的
-        # 注释说的就是这个），_bounded 正好挂在上面那次 await 上时会被波及——
-        # CancelledError 直接从 asyncio.wait 里扔出来，跳过 try 块里剩下的代码，
-        # 也就跳过了原本在这之后才做的清理。放进 finally 就不管 asyncio.wait 是
-        # 正常返回还是被取消，request_task / cancel_task 这两个子任务都会被
-        # 收拾干净——不然要么是 request_task 拿着正在关闭的 session 继续跑，
-        # 要么是 cancel_event 一直不被 set，cancel_task 就一直挂到事件循环
-        # 关闭那一刻。已经跑完的任务在这里只是被 gather 取走结果/异常，不会
-        # 被误伤；try 块正常返回时同样统一走这条清理路径，不用再写一遍。
         for task in tasks:
             if not task.done():
                 task.cancel()
@@ -158,6 +118,7 @@ def _notifications(payload: dict[str, Any]) -> list[McpNotification]:
     for row in rows:
         if not isinstance(row, dict) or not str(row.get("event_id") or "").strip():
             continue
+        structured = row.get("payload") if isinstance(row.get("payload"), dict) else {}
         notifications.append(
             McpNotification(
                 event_id=str(row["event_id"]).strip(),
@@ -167,6 +128,7 @@ def _notifications(payload: dict[str, Any]) -> list[McpNotification]:
                 priority=str(row.get("priority") or "normal"),
                 created_at=str(row.get("created_at") or ""),
                 link=str(row.get("link") or ""),
+                payload=dict(structured),
             )
         )
     return notifications
@@ -221,7 +183,7 @@ class McpNotificationListener(QThread):
             self._last_status = status
             self.status_changed.emit(status)
 
-    def run(self) -> None:  # noqa: D102 - QThread 入口
+    def run(self) -> None:  # noqa: D102
         while not self._stopping.is_set():
             with self._lock:
                 config = self._config
@@ -234,12 +196,7 @@ class McpNotificationListener(QThread):
                 asyncio.run(self._listen(config))
             except (KeyboardInterrupt, SystemExit):
                 raise
-            except BaseException as exc:  # noqa: BLE001 - MCP 失败不能拖垮行情窗口
-                # 必须兜到 BaseException：CancelledError 继承的是 BaseException，
-                # 服务端连接被切断（网关重启等）时 anyio 的任务组会抛
-                # BaseExceptionGroup。只兜 Exception 的话它会穿透出去、while 直接
-                # 退出，监听线程就此永久死掉，而且界面上没有任何提示——表现为
-                # 开关还开着、进程还活着，但再也不重连。
+            except BaseException as exc:  # noqa: BLE001
                 if self._stopping.is_set():
                     break
                 self._emit_status(f"连接失败：{_describe_error(exc)}")
@@ -298,17 +255,6 @@ class McpNotificationListener(QThread):
                         self._emit_status("已连接 · 实时订阅")
                         await self._consume(updates, session, uri, cancel_event)
                     finally:
-                        # 这里恰恰是 Codex 点名的那处：走到这个 finally 基本上就
-                        # 是因为 cancel_event 已经被设置（_consume 只在它被设置
-                        # 后才返回），不传 cancel_event 的话，网关这次真卡住，
-                        # 退订请求还是会把关闭拖到 REQUEST_TIMEOUT_SECONDS——跟
-                        # 前面几处调用一样必须赛跑。退订只是「礼貌通知网关」，
-                        # 已经包在 suppress(Exception) 里；关闭时 cancel_event
-                        # 通常已经设过，这里多半直接判定取消、请求连发都不发，
-                        # 网关那边靠自己的会话过期机制收尾——用户主动退出/重连时
-                        # 这样换稳妥值得。真正的异常路径（cancel_event 还没设，
-                        # 是别的原因触发的清理）不受影响，退订依旧有完整的
-                        # REQUEST_TIMEOUT_SECONDS 可用。
                         with suppress(Exception):
                             with warnings.catch_warnings():
                                 warnings.simplefilter("ignore", MCPDeprecationWarning)
@@ -318,12 +264,17 @@ class McpNotificationListener(QThread):
         self, session: ClientSession, uri: str, cancel_event: asyncio.Event | None = None
     ) -> None:
         payload = _resource_payload(await _bounded(session.read_resource(uri), cancel_event))
+        notifications = _notifications(payload)
+        # 设置页的“当日订阅信息”和 MCP B/S 图层需要看见资源缓冲中已有的当天事件；
+        # 但首次连接仍不能把这些历史事件重新弹成新提醒。
+        for item in notifications:
+            record_notification(item)
         with self._lock:
             baseline_ready = self._baseline_ready
         if baseline_ready:
-            self._deliver(_notifications(payload))
+            self._deliver(notifications)
             return
-        for item in _notifications(payload):
+        for item in notifications:
             self._remember(item.event_id)
         with self._lock:
             self._baseline_ready = True
@@ -358,16 +309,11 @@ class McpNotificationListener(QThread):
                 if event_task.result() == uri:
                     await self._deliver_resource(session, uri, cancel_event)
                 continue
-            # 等满 POLL_SECONDS 也没等到推送、也没被取消——可能只是网关真的安静，
-            # 也可能是长连接已经无声断掉（mcp 传输层的 handle_get_stream 重连耗尽
-            # 后就是这样：不抛异常，只是再也不会有推送）。这里分不出是哪种，干脆
-            # 定期主动读一次资源兜底：真安静时这一读没有新事件，白读一次；连接
-            # 真断了则靠这一读把漏掉的通知捞回来，staleness 上限就是 POLL_SECONDS，
-            # 不会像以前那样永久失聪却还显示「已连接」。
             await self._deliver_resource(session, uri, cancel_event)
 
     def _deliver(self, notifications: list[McpNotification]) -> None:
         for notification in notifications:
+            record_notification(notification)
             if self._remember(notification.event_id):
                 self.notification_ready.emit(notification)
 
