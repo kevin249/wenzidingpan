@@ -1,12 +1,6 @@
 """当日分时数据。
 
-走势图画的是当日分时曲线，而不是「组件运行期间攒下来的几个采样点」——
-后者只有开着程序的那段时间，画不出完整的一天。
-
-数据源与字段口径对齐 ``gupiao_ztfx`` 的 ``trading/services/intraday_kline.py``：
-东方财富 push2his ``trends2`` 为主，腾讯分钟接口兜底。东财返回形如::
-
-    {"data": {"preClose": 10.0, "trends": ["2026-08-24 09:30,开,收,高,低,量,额,均价", ...]}}
+走势图画的是当日分时曲线，而不是「组件运行期间攒下来的几个采样点」。
 """
 
 from __future__ import annotations
@@ -17,20 +11,26 @@ from dataclasses import dataclass, field
 
 import requests
 
+from . import mcp_bs
 from .providers.base import USER_AGENT, describe_error
 from .symbols import Symbol, classify
 
 EASTMONEY_ENDPOINT = "https://push2his.eastmoney.com/api/qt/stock/trends2/get"
-# 东财网页端公开使用的固定 ut 值，不是密钥。
 EASTMONEY_UT = "7eea3edcaed734bea9cbfc24409ed989"
 TENCENT_ENDPOINT = "https://web.ifzq.gtimg.cn/appstock/app/minute/query"
 
-CACHE_TTL_SECONDS = 60  # 分钟级数据，没必要跟着行情每几秒拉一次
+CACHE_TTL_SECONDS = 60
 REQUEST_TIMEOUT = 8
-
-# A 股标准交易时段，接口偶尔会带上盘前/盘后的点，这里滤掉。
 MORNING = ("09:30", "11:30")
 AFTERNOON = ("13:00", "15:00")
+
+
+class PriceSeries(list[float]):
+    """携带股票代码的分时价格序列，供 MCP B/S 点映射使用。"""
+
+    def __init__(self, values=(), symbol: str = "") -> None:
+        super().__init__(values)
+        self.symbol = symbol
 
 
 def _is_trading_minute(text: str) -> bool:
@@ -59,19 +59,13 @@ class Trend:
 
 
 def _secid(symbol: Symbol) -> str:
-    """东财用 1 表示沪市，0 表示深市与北交所。"""
     return f"{1 if symbol.market == 'sh' else 0}.{symbol.code}"
 
 
-def calculate_bs_points(prices: list[float], reversal_percent: float = 0.005) -> list[tuple[int, str]]:
-    """按波动页的反转确认法标记 B/S 点。
-
-    从当前波段极值反向运行达到 0.5% 才确认转折：谷底为 B，峰顶为 S。
-    未确认的最后一段不标记，避免实时价格小幅抖动反复产生信号。
-    """
+def _local_bs_points(prices: list[float], reversal_percent: float = 0.005) -> list[tuple[int, str]]:
     if len(prices) < 3:
         return []
-    direction = 0  # 1 上行、-1 下行；先等第一次有效波动确认方向
+    direction = 0
     extreme_index = 0
     extreme = prices[0]
     low = high = prices[0]
@@ -106,8 +100,19 @@ def calculate_bs_points(prices: list[float], reversal_percent: float = 0.005) ->
     return signals
 
 
+def calculate_bs_points(prices: list[float], reversal_percent: float = 0.005) -> list[tuple[int, str]]:
+    """按设置选择 B/S 来源。
+
+    普通 list（含单元测试和采样回退）继续使用本地算法；只有联网分时返回的
+    :class:`PriceSeries` 带股票代码，MCP 模式才从当天 MCP 信号映射到曲线。
+    """
+    symbol = getattr(prices, "symbol", "")
+    if symbol and mcp_bs.get_source() == mcp_bs.SOURCE_MCP:
+        return mcp_bs.bs_points(symbol, prices)
+    return _local_bs_points(prices, reversal_percent)
+
+
 def parse_eastmoney(payload: object) -> Trend:
-    """``trends`` 每行是逗号分隔的「时间,开,收,高,低,量,额,均价」，取收盘价。"""
     data = payload.get("data") if isinstance(payload, dict) else None
     if not isinstance(data, dict):
         return Trend(error="返回格式异常")
@@ -118,7 +123,6 @@ def parse_eastmoney(payload: object) -> Trend:
         parts = str(item or "").split(",")
         if len(parts) < 3:
             continue
-        # 时间戳有 "YYYY-MM-DD HH:MM" 和 "YYYY-MM-DD HH:MM:SS" 两种，统一取 HH:MM。
         minute = parts[0].strip().split(" ")[-1][:5]
         close = _number(parts[2])
         if close is not None and close > 0 and _is_trading_minute(minute):
@@ -131,7 +135,6 @@ def parse_eastmoney(payload: object) -> Trend:
 
 
 def parse_tencent(payload: object, key: str) -> Trend:
-    """腾讯每行是空格分隔的「HHMM 价格 累计量 累计额」。"""
     if not isinstance(payload, dict):
         return Trend(error="返回格式异常")
     block = (((payload.get("data") or {}).get(key) or {}).get("data") or {}).get("data") or []
@@ -146,7 +149,6 @@ def parse_tencent(payload: object, key: str) -> Trend:
         if price is not None and price > 0 and _is_trading_minute(minute):
             prices.append(price)
 
-    # 腾讯这个接口没有稳定的昨收字段，留空由调用方用行情里的昨收补上。
     return Trend(prices=prices, open_price=prices[0] if prices else None)
 
 
@@ -157,8 +159,6 @@ class IntradayClient:
         self.session = session or requests.Session()
         self._cache: dict[str, tuple[float, Trend]] = {}
         self._lock = threading.Lock()
-
-    # ------------------------------------------------------------ 请求
 
     def _fetch_eastmoney(self, symbol: Symbol) -> Trend:
         response = self.session.get(
@@ -194,7 +194,6 @@ class IntradayClient:
                 return trend
         except Exception as exc:
             trend = Trend(error=describe_error(exc))
-        # 东财没数据或挂了，再试腾讯。
         try:
             fallback = self._fetch_tencent(symbol)
             if fallback:
@@ -204,10 +203,7 @@ class IntradayClient:
                 trend = Trend(error=describe_error(exc))
         return trend
 
-    # ------------------------------------------------------------ 对外
-
     def fetch(self, raw_symbol: str, now: float | None = None) -> Trend:
-        """取一只股票的当日分时；失败时返回带 error 的空 Trend，不抛异常。"""
         symbol = classify(raw_symbol)
         if symbol is None:
             return Trend(error="代码格式不正确")
@@ -219,11 +215,11 @@ class IntradayClient:
                 return cached[1]
 
         trend = self._load(symbol)
+        trend.prices = PriceSeries(trend.prices, symbol.code)
         with self._lock:
             self._cache[symbol.key] = (now, trend)
         return trend
 
     def reset_cache(self) -> None:
-        """仅供测试。"""
         with self._lock:
             self._cache.clear()
