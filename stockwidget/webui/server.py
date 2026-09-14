@@ -51,12 +51,16 @@ class SettingsServer:
         @app.get("/")
         def index():
             require_token()
-            return render_template(
+            page = render_template(
                 "settings.html",
                 token=self.token,
                 providers=providers.listing(),
                 config=self.store.get().to_dict(),
                 min_opacity=MIN_OPACITY,
+            )
+            return page.replace(
+                "</body>",
+                '<script src="/static/mcp_events.js"></script>\n  </body>',
             )
 
         @app.get("/api/config")
