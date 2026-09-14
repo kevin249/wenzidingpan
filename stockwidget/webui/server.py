@@ -1,8 +1,7 @@
 """设置用的本地 WebUI。
 
 所有参数都在浏览器里改，改完立刻下发到桌面窗口，同时写回 JSON 配置文件。
-服务只监听回环地址，并带一个随机 token——同一台机器上的其他用户
-拿不到这个 token 就改不了配置。
+服务只监听回环地址，并带一个随机 token。
 """
 
 from __future__ import annotations
@@ -14,7 +13,7 @@ from typing import Callable
 
 from flask import Flask, abort, jsonify, render_template, request
 
-from .. import providers
+from .. import mcp_bs, providers
 from ..config import MIN_OPACITY, Config, Store
 from ..search import StockSearch
 
@@ -40,8 +39,6 @@ class SettingsServer:
         self._thread: threading.Thread | None = None
         self.app = self._build_app()
 
-    # ------------------------------------------------------------ 路由
-
     def _build_app(self) -> Flask:
         app = Flask(__name__)
         app.config["JSON_AS_ASCII"] = False
@@ -54,13 +51,16 @@ class SettingsServer:
         @app.get("/")
         def index():
             require_token()
-            return render_template(
+            page = render_template(
                 "settings.html",
                 token=self.token,
                 providers=providers.listing(),
                 config=self.store.get().to_dict(),
-                # 滑块下限跟着 sanitize 的夹取区间走，免得页面比后端更严。
                 min_opacity=MIN_OPACITY,
+            )
+            return page.replace(
+                "</body>",
+                '<script src="/static/mcp_events.js"></script>\n  </body>',
             )
 
         @app.get("/api/config")
@@ -76,20 +76,40 @@ class SettingsServer:
             patch = request.get_json(silent=True)
             if not isinstance(patch, dict):
                 return jsonify({"error": "请求体必须是 JSON 对象"}), 400
-            # Store 内部会做完整校验与区间夹取，这里直接把表单原样交进去。
             config = self.store.update(patch)
             self.on_change(config)
             return jsonify({"config": config.to_dict()})
 
+        @app.get("/api/mcp-bs-source")
+        def read_mcp_bs_source():
+            require_token()
+            return jsonify({"source": mcp_bs.get_source()})
+
+        @app.post("/api/mcp-bs-source")
+        def write_mcp_bs_source():
+            require_token()
+            payload = request.get_json(silent=True)
+            if not isinstance(payload, dict):
+                return jsonify({"error": "请求体必须是 JSON 对象"}), 400
+            try:
+                source = mcp_bs.set_source(str(payload.get("source") or ""))
+            except ValueError as exc:
+                return jsonify({"error": str(exc)}), 400
+            return jsonify({"source": source})
+
+        @app.get("/api/mcp-events")
+        def mcp_events():
+            require_token()
+            rows = mcp_bs.today_records()
+            return jsonify({"events": rows, "count": len(rows)})
+
         @app.get("/api/search")
         def search():
-            """按代码/名称/拼音/首字母找股票，供自选列表的搜索框用。"""
             require_token()
             return jsonify(self.search.query(request.args.get("q", "")))
 
         @app.get("/api/watchlist")
         def watchlist():
-            """给自选里的代码补上名称，一次请求解决，拉不到就只显示代码。"""
             require_token()
             config = self.store.get()
             names: dict[str, str] = {}
@@ -103,8 +123,6 @@ class SettingsServer:
 
         return app
 
-    # ------------------------------------------------------------ 生命周期
-
     @property
     def port(self) -> int:
         return self._port
@@ -114,7 +132,6 @@ class SettingsServer:
         return f"http://{self.host}:{self._port}/?token={self.token}"
 
     def start(self) -> str:
-        """启动服务并返回带 token 的设置页地址。"""
         from werkzeug.serving import make_server
 
         logging.getLogger("werkzeug").setLevel(logging.ERROR)
