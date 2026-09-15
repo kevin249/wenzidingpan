@@ -94,19 +94,18 @@ class Tray(QSystemTrayIcon):
                 alert=self._unread > 0,
                 normal_color=self._normal_color,
                 alert_color=self._alert_color,
+                unread=self._unread,
             )
         )
 
     def set_unread(self, count: int) -> int:
-        """更新未读数，并在常态色 / 提醒色之间切换。"""
+        """更新 MCP 累计未读数；图标角标最多显示 99+，tooltip 保留真实数量。"""
         count = max(0, int(count))
         if count == self._unread:
             return count
         self._unread = count
         self._refresh_icon()
-        self.setToolTip(
-            f"{BASE_TOOLTIP}\n{min(count, 99)} 条未读提醒" if count else BASE_TOOLTIP
-        )
+        self.setToolTip(f"{BASE_TOOLTIP}\n{count} 条未读提醒（MCP）" if count else BASE_TOOLTIP)
         return count
 
     def apply_config(self, config: Config) -> None:
