@@ -14,6 +14,7 @@ except (ImportError, OSError) as error:
     pytest.skip(f"Qt 运行库不可用：{error}", allow_module_level=True)
 
 from stockwidget.config import Config
+from stockwidget.ui.icon import unread_badge_text
 from stockwidget.ui.tray import BASE_TOOLTIP, Tray, message_body
 
 
@@ -66,22 +67,37 @@ def test_tray_notify_sends_a_balloon_and_stays_quiet_when_unsupported(app, monke
     assert sent == []
 
 
+def test_unread_badge_text_caps_only_the_tiny_icon_label():
+    assert unread_badge_text(0) == ""
+    assert unread_badge_text(1) == "1"
+    assert unread_badge_text(99) == "99"
+    assert unread_badge_text(100) == "99+"
+
+
 def test_tray_unread_switches_the_icon_and_tooltip(app):
-    """通知区图标是唯一不看终端脸色的任务栏提示，未读数要挂到用户点开为止。"""
+    """未读数直接画在通知区图标上，并一直累计到用户点击确认。"""
     tray = Tray(Config())
     calm = tray.icon().pixmap(64, 64).toImage()
     assert tray.toolTip() == BASE_TOOLTIP
 
     assert tray.set_unread(2) == 2
-    assert tray.icon().pixmap(64, 64).toImage() != calm  # 换了告警色
+    badge_two = tray.icon().pixmap(64, 64).toImage()
+    assert badge_two != calm
     assert "2 条未读提醒" in tray.toolTip()
+
+    # 数字变化必须让图标本身变化，而不只是 tooltip / 告警颜色变化。
+    assert tray.set_unread(3) == 3
+    badge_three = tray.icon().pixmap(64, 64).toImage()
+    assert badge_three != badge_two
+    assert "3 条未读提醒" in tray.toolTip()
 
     # 点开看过之后退回常态
     tray.set_unread(0)
     assert tray.icon().pixmap(64, 64).toImage() == calm
     assert tray.toolTip() == BASE_TOOLTIP
 
-    # 负数当成清零，条数上限只影响显示
+    # 负数当成清零；小图标超过 99 显示 99+，tooltip 仍保留真实累计数。
     assert tray.set_unread(-3) == 0
     assert tray.set_unread(150) == 150
-    assert "99 条未读提醒" in tray.toolTip()
+    assert "150 条未读提醒" in tray.toolTip()
+    assert unread_badge_text(150) == "99+"
