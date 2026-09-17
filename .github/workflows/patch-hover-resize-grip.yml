@@ -1,0 +1,117 @@
+name: Apply hover resize grip patch
+
+on:
+  push:
+    branches:
+      - fix/hover-resize-grip
+    paths:
+      - .github/workflows/patch-hover-resize-grip.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/hover-resize-grip
+          fetch-depth: 0
+
+      - name: Patch resize grip UI
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("stockwidget/ui/window.py")
+          text = path.read_text(encoding="utf-8")
+
+          def replace_once(old: str, new: str) -> None:
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"expected one match, got {count}: {old[:80]!r}")
+              text = text.replace(old, new, 1)
+
+          replace_once(
+              '''        self.setFixedSize(14, 14)\n        self.setCursor(Qt.SizeFDiagCursor)\n        self.setToolTip("拖动缩放，字体与走势图会等比放大")\n        self._origin: QPoint | None = None\n        self._start_size = QSize()\n''',
+              '''        # 20x20 只是鼠标热区，不参与任何布局；视觉斜线默认不画。\n        self.setFixedSize(20, 20)\n        self.setCursor(Qt.SizeFDiagCursor)\n        self.setToolTip("拖动缩放，字体与走势图会等比放大")\n        self._origin: QPoint | None = None\n        self._start_size = QSize()\n        self._hovered = False\n''',
+          )
+
+          replace_once(
+              '''    def paintEvent(self, event) -> None:  # noqa: N802 - Qt 命名\n        painter = QPainter(self)\n        painter.setPen(QPen(MUTED, 1.1))\n        for offset in (3, 7, 11):\n            painter.drawLine(QPointF(offset, 12), QPointF(12, offset))\n\n    def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt 命名\n''',
+              '''    def paintEvent(self, event) -> None:  # noqa: N802 - Qt 命名\n        # 平时完全透明；只有鼠标进入右下角热区（或正在拖）才显示缩放纹理。\n        if not (self._hovered or self._origin is not None):\n            return\n        painter = QPainter(self)\n        painter.setPen(QPen(MUTED, 1.1))\n        edge = self.width() - 3\n        for offset in (5, 9, 13):\n            painter.drawLine(QPointF(edge - offset, edge), QPointF(edge, edge - offset))\n\n    def enterEvent(self, event) -> None:  # noqa: N802 - Qt 命名\n        self._hovered = True\n        self.update()\n\n    def leaveEvent(self, event) -> None:  # noqa: N802 - Qt 命名\n        if self._origin is None:\n            self._hovered = False\n            self.update()\n\n    def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt 命名\n''',
+          )
+
+          replace_once(
+              '''    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 - Qt 命名\n        self._origin = None\n        self.drag_finished.emit()\n        event.accept()\n\n\nclass DragHandle(QWidget):\n''',
+              '''    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 - Qt 命名\n        self._origin = None\n        self._hovered = self.underMouse()\n        self.update()\n        self.drag_finished.emit()\n        event.accept()\n\n\nclass DragHandle(QWidget):\n''',
+          )
+
+          replace_once(
+              '''        self.footer = QWidget()\n        footer_layout = QHBoxLayout(self.footer)\n        footer_layout.setContentsMargins(12, 2, 4, 2)\n        footer_layout.addStretch(1)\n        self.grip = ResizeGrip(self.footer)\n        self.grip.drag_started.connect(self._on_grip_drag_started)\n        self.grip.dragged.connect(self._on_grip_dragged)\n        self.grip.drag_finished.connect(self._on_grip_drag_finished)\n        footer_layout.addWidget(self.grip, 0, Qt.AlignBottom | Qt.AlignRight)\n''',
+              '''        # 缩放柄直接悬浮在主窗口右下角，不再用 footer 占据整条底部高度。\n        # 视觉上默认透明，鼠标进入 20x20 热区才出现三条斜线。\n        self.grip = ResizeGrip(self)\n        self.grip.drag_started.connect(self._on_grip_drag_started)\n        self.grip.dragged.connect(self._on_grip_dragged)\n        self.grip.drag_finished.connect(self._on_grip_drag_finished)\n        self.grip.hide()\n''',
+          )
+
+          replace_once(
+              '''        layout.addWidget(self.marquee)\n        layout.addWidget(self.footer)\n''',
+              '''        layout.addWidget(self.marquee)\n''',
+          )
+
+          replace_once(
+              '''        for surface in (self.title_bar, self.empty_label, self.rows_host, self.marquee, self.footer):\n''',
+              '''        for surface in (self.title_bar, self.empty_label, self.rows_host, self.marquee, self.grip):\n''',
+          )
+
+          replace_once(
+              '''        self.empty_label.setVisible(not single and not self._rows)\n        self.footer.setVisible(not single and not config.compact)\n\n        # 穿透时整窗不可交互，只留左上角把手能拖。\n''',
+              '''        self.empty_label.setVisible(not single and not self._rows)\n        # 多行模式始终保留右下角透明热区；鼠标穿透时它也必须一起禁用。\n        self.grip.setVisible(not single and not config.click_through)\n        self._position_grip()\n\n        # 穿透时整窗不可交互，只留左上角把手能拖。\n''',
+          )
+
+          replace_once(
+              '''        footer = self.footer.sizeHint().height() if self.footer.isVisible() else 0\n        height = chrome + sample.sizeHint().height() * rows + footer + 8\n''',
+              '''        height = chrome + sample.sizeHint().height() * rows + 8\n''',
+          )
+
+          replace_once(
+              '''    def moveEvent(self, event) -> None:  # noqa: N802 - Qt 命名\n        self._save_timer.start()\n        self._move_handle()\n\n    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt 命名\n        self._save_timer.start()\n        self._move_handle()\n''',
+              '''    def moveEvent(self, event) -> None:  # noqa: N802 - Qt 命名\n        self._save_timer.start()\n        self._move_handle()\n\n    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt 命名\n        self._save_timer.start()\n        self._move_handle()\n        self._position_grip()\n\n    def _position_grip(self) -> None:\n        """把透明缩放热区钉在右下角；它覆盖内容但不挤占任何布局高度。"""\n        if not hasattr(self, "grip"):\n            return\n        self.grip.move(\n            max(0, self.width() - self.grip.width() - 2),\n            max(0, self.height() - self.grip.height() - 2),\n        )\n        self.grip.raise_()\n''',
+          )
+
+          replace_once(
+              '''        footer = self.footer.sizeHint().height() if not base.compact else 0\n        return chrome + row_probe.sizeHint().height() * rows + footer + 8\n''',
+              '''        return chrome + row_probe.sizeHint().height() * rows + 8\n''',
+          )
+
+          path.write_text(text, encoding="utf-8")
+
+          # 这句原注释把“页脚”写成紧凑模式的一部分；页脚已删除，顺手校正说明。\n          quote = Path("stockwidget/ui/quote_row.py")
+          quote_text = quote.read_text(encoding="utf-8")
+          quote_text = quote_text.replace(
+              "# 紧凑模式只省掉暗盘和页脚，走势图照画——只是压扁一点。",
+              "# 紧凑模式只省掉暗盘，走势图照画——只是压扁一点。",
+          )
+          quote.write_text(quote_text, encoding="utf-8")
+
+          # 加一个最小回归测试：缩放柄必须是 overlay，不再占主布局；resize 后仍贴右下角。\n          tests = Path("tests/test_window.py")
+          test_text = tests.read_text(encoding="utf-8")
+          marker = "def test_resize_grip_is_overlay_and_tracks_bottom_right(app):"
+          if marker not in test_text:
+              test_text += '''\n\n\ndef test_resize_grip_is_overlay_and_tracks_bottom_right(app):\n    window = TickerWindow(Config())\n    window.resize(360, 220)\n    window.show()\n    app.processEvents()\n\n    # grip 是窗口子控件，但不在 QVBoxLayout 里，因此不会再吃掉底部整行。\n    assert window.grip.parent() is window\n    assert window.layout().indexOf(window.grip) == -1\n    assert not hasattr(window, "footer")\n    assert window.grip.width() == 20\n    assert window.grip.height() == 20\n    assert window.grip.x() == window.width() - window.grip.width() - 2\n    assert window.grip.y() == window.height() - window.grip.height() - 2\n\n    window.grip.enterEvent(None)\n    assert window.grip._hovered is True\n    window.grip.leaveEvent(None)\n    assert window.grip._hovered is False\n    window.close()\n'''
+              tests.write_text(test_text, encoding="utf-8")
+          PY
+
+      - name: Run window regression tests
+        run: pytest -q tests/test_window.py
+
+      - name: Commit patch
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add stockwidget/ui/window.py stockwidget/ui/quote_row.py tests/test_window.py
+          git diff --cached --check
+          git commit -m "fix: make resize grip a hover-only overlay"
+          git push origin HEAD:fix/hover-resize-grip
