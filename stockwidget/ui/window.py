@@ -154,17 +154,32 @@ class ResizeGrip(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setFixedSize(14, 14)
+        # 20x20 只是鼠标热区，不参与任何布局；视觉斜线默认不画。
+        self.setFixedSize(20, 20)
         self.setCursor(Qt.SizeFDiagCursor)
         self.setToolTip("拖动缩放，字体与走势图会等比放大")
         self._origin: QPoint | None = None
         self._start_size = QSize()
+        self._hovered = False
 
     def paintEvent(self, event) -> None:  # noqa: N802 - Qt 命名
+        # 平时完全透明；只有鼠标进入右下角热区（或正在拖）才显示缩放纹理。
+        if not (self._hovered or self._origin is not None):
+            return
         painter = QPainter(self)
         painter.setPen(QPen(MUTED, 1.1))
-        for offset in (3, 7, 11):
-            painter.drawLine(QPointF(offset, 12), QPointF(12, offset))
+        edge = self.width() - 3
+        for offset in (5, 9, 13):
+            painter.drawLine(QPointF(edge - offset, edge), QPointF(edge, edge - offset))
+
+    def enterEvent(self, event) -> None:  # noqa: N802 - Qt 命名
+        self._hovered = True
+        self.update()
+
+    def leaveEvent(self, event) -> None:  # noqa: N802 - Qt 命名
+        if self._origin is None:
+            self._hovered = False
+            self.update()
 
     def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt 命名
         if event.button() == Qt.LeftButton:
@@ -187,6 +202,8 @@ class ResizeGrip(QWidget):
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802 - Qt 命名
         self._origin = None
+        self._hovered = self.underMouse()
+        self.update()
         self.drag_finished.emit()
         event.accept()
 
@@ -336,15 +353,13 @@ class TickerWindow(QWidget):
         self.empty_label.setAlignment(Qt.AlignCenter)
         self.empty_label.setStyleSheet("color: #8b93a7;")
 
-        self.footer = QWidget()
-        footer_layout = QHBoxLayout(self.footer)
-        footer_layout.setContentsMargins(12, 2, 4, 2)
-        footer_layout.addStretch(1)
-        self.grip = ResizeGrip(self.footer)
+        # 缩放柄直接悬浮在主窗口右下角，不再用 footer 占据整条底部高度。
+        # 视觉上默认透明，鼠标进入 20x20 热区才出现三条斜线。
+        self.grip = ResizeGrip(self)
         self.grip.drag_started.connect(self._on_grip_drag_started)
         self.grip.dragged.connect(self._on_grip_dragged)
         self.grip.drag_finished.connect(self._on_grip_drag_finished)
-        footer_layout.addWidget(self.grip, 0, Qt.AlignBottom | Qt.AlignRight)
+        self.grip.hide()
 
         layout = QVBoxLayout(self)
         # 顶层布局不能用默认的 sizeConstraint 自动撑大窗口，否则启动恢复保存高度后，
@@ -356,12 +371,11 @@ class TickerWindow(QWidget):
         layout.addWidget(self.empty_label, 1)
         layout.addWidget(self.scroll, 1)
         layout.addWidget(self.marquee)
-        layout.addWidget(self.footer)
 
         # 顶层透明特效在 Windows 上可能漏掉使用系统调色板的 QLabel。
         # 按主要内容层分别合成，既完整覆盖子控件，又不会重复叠加透明度。
         self._opacity_effects: list[QGraphicsOpacityEffect] = []
-        for surface in (self.title_bar, self.empty_label, self.rows_host, self.marquee, self.footer):
+        for surface in (self.title_bar, self.empty_label, self.rows_host, self.marquee, self.grip):
             effect = QGraphicsOpacityEffect(surface)
             surface.setGraphicsEffect(effect)
             self._opacity_effects.append(effect)
@@ -458,7 +472,9 @@ class TickerWindow(QWidget):
         self.marquee.setVisible(single)
         self.scroll.setVisible(not single and bool(self._rows))
         self.empty_label.setVisible(not single and not self._rows)
-        self.footer.setVisible(not single and not config.compact)
+        # 多行模式始终保留右下角透明热区；鼠标穿透时它也必须一起禁用。
+        self.grip.setVisible(not single and not config.click_through)
+        self._position_grip()
 
         # 穿透时整窗不可交互，只留左上角把手能拖。
         self.handle.setVisible(config.click_through and self.isVisible())
@@ -616,8 +632,8 @@ class TickerWindow(QWidget):
         这里按标题栏在布局里真实占到的高度同步外框，内容区就一个像素都不动。
         基准仍会差一点点——它是按各部件的 sizeHint 估的，和被压扁后的实际高度
         对不齐——于是之后只拖宽度还会有约 5% 的偏移（最多一档字号）。要把这点
-        也抹平就得改动共用的缩放模型（紧凑模式藏页脚有同样的老问题），不在本
-        改动范围内，这里先保内容不跳。自动尺寸不必管——``_resize_to_grid``
+        也抹平就得改动共用的缩放模型，不在本改动范围内，这里先保内容不跳。
+        自动尺寸不必管——``_resize_to_grid``
         本来就会重算。
         """
         if not self._manual_size or self._config.layout == "single":
@@ -687,8 +703,7 @@ class TickerWindow(QWidget):
 
         sample = next(iter(self._rows.values()))
         rows, columns = self._grid_size(len(self._rows))
-        footer = self.footer.sizeHint().height() if self.footer.isVisible() else 0
-        height = chrome + sample.sizeHint().height() * rows + footer + 8
+        height = chrome + sample.sizeHint().height() * rows + 8
 
         # 宽度直接问网格要：自己按 sizeHint×列数 估会漏掉边距和滚动条，
         # 差那十几像素就会把最右一列的价格裁掉。
@@ -756,6 +771,17 @@ class TickerWindow(QWidget):
     def resizeEvent(self, event) -> None:  # noqa: N802 - Qt 命名
         self._save_timer.start()
         self._move_handle()
+        self._position_grip()
+
+    def _position_grip(self) -> None:
+        """把透明缩放热区钉在右下角；它覆盖内容但不挤占任何布局高度。"""
+        if not hasattr(self, "grip"):
+            return
+        self.grip.move(
+            max(0, self.width() - self.grip.width() - 2),
+            max(0, self.height() - self.grip.height() - 2),
+        )
+        self.grip.raise_()
 
     # ------------------------------------------------------------ 整窗拖动
 
@@ -895,8 +921,7 @@ class TickerWindow(QWidget):
         row_probe.resize(cell_width, 100)
         row_probe.apply_config(base)
 
-        footer = self.footer.sizeHint().height() if not base.compact else 0
-        return chrome + row_probe.sizeHint().height() * rows + footer + 8
+        return chrome + row_probe.sizeHint().height() * rows + 8
 
     def _sync_restored_scale_from_height(self) -> None:
         """旧配置可能保存了错误比例；首批行情出现后按实际窗口高度修正。"""

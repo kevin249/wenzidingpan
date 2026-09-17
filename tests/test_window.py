@@ -1383,3 +1383,26 @@ def test_tool_windows_stay_visible_when_the_app_is_inactive(app):
     assert window.testAttribute(Qt.WA_MacAlwaysShowToolWindow) is True
     assert window.handle.testAttribute(Qt.WA_MacAlwaysShowToolWindow) is True
     window.close()
+
+
+
+def test_resize_grip_is_overlay_and_tracks_bottom_right(app):
+    window = TickerWindow(Config())
+    window.resize(360, 220)
+    window.show()
+    app.processEvents()
+
+    # grip 是窗口子控件，但不在 QVBoxLayout 里，因此不会再吃掉底部整行。
+    assert window.grip.parent() is window
+    assert window.layout().indexOf(window.grip) == -1
+    assert not hasattr(window, "footer")
+    assert window.grip.width() == 20
+    assert window.grip.height() == 20
+    assert window.grip.x() == window.width() - window.grip.width() - 2
+    assert window.grip.y() == window.height() - window.grip.height() - 2
+
+    window.grip.enterEvent(None)
+    assert window.grip._hovered is True
+    window.grip.leaveEvent(None)
+    assert window.grip._hovered is False
+    window.close()
