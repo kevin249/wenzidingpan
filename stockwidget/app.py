@@ -6,11 +6,12 @@ import signal
 import sys
 
 from PySide6.QtCore import QObject, QUrl, Qt, Signal
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import QApplication, QSystemTrayIcon
 
 from . import desktop, providers
 from .config import Config, Store
+from .hotkey import DEFAULT_WINDOW_TOGGLE_HOTKEY, WindowsGlobalHotkey
 from .mcp_notifications import McpNotification, McpNotificationListener
 from .poller import Poller, Snapshot
 from .ui.icon import tray_icon
@@ -102,6 +103,10 @@ class WidgetApp:
             )
             self.tray.activated.connect(self._on_tray_activated)
 
+        self._local_window_shortcut: QShortcut | None = None
+        self._global_window_hotkey: WindowsGlobalHotkey | None = None
+        self._setup_window_hotkey()
+
     # ------------------------------------------------------------ 动作
 
     def refresh(self) -> None:
@@ -111,17 +116,52 @@ class WidgetApp:
         QDesktopServices.openUrl(QUrl(self.server.url))
 
     def toggle_window(self) -> None:
-        self.window.hide() if self.window.isVisible() else self.window.show()
+        if self.window.isVisible():
+            self.window.hide()
+        else:
+            self._show_window()
 
     def _show_window(self) -> None:
-        """确保窗口可见并提到前面；用于用户点击未读提醒的托盘图标。"""
+        """确保窗口可见并提到前面；用于托盘和全局快捷键恢复窗口。"""
         if not self.window.isVisible():
             self.window.show()
         self.window.raise_()
         self.window.activateWindow()
 
+    def _setup_window_hotkey(self) -> None:
+        """Windows 注册系统级 Ctrl+F2；其他平台退回 Qt 应用级快捷键。"""
+        if sys.platform == "win32":
+            hotkey = WindowsGlobalHotkey(DEFAULT_WINDOW_TOGGLE_HOTKEY)
+            hotkey.activated.connect(self.toggle_window, Qt.QueuedConnection)
+            hotkey.registration_failed.connect(
+                self._on_hotkey_registration_failed, Qt.QueuedConnection
+            )
+            hotkey.registered.connect(
+                lambda label: print(f"[快捷键] {label}：隐藏 / 显示窗口", flush=True),
+                Qt.QueuedConnection,
+            )
+            self._global_window_hotkey = hotkey
+            hotkey.start()
+            return
+        self._install_local_window_shortcut()
+
+    def _install_local_window_shortcut(self) -> None:
+        if self._local_window_shortcut is not None:
+            return
+        shortcut = QShortcut(QKeySequence(DEFAULT_WINDOW_TOGGLE_HOTKEY), self.window)
+        shortcut.setContext(Qt.ApplicationShortcut)
+        shortcut.activated.connect(self.toggle_window)
+        self._local_window_shortcut = shortcut
+
+    def _on_hotkey_registration_failed(self, reason: str) -> None:
+        print(f"[快捷键] {reason}；退回应用内 {DEFAULT_WINDOW_TOGGLE_HOTKEY}", flush=True)
+        self._install_local_window_shortcut()
+
     def quit(self) -> None:
         self._flush_bounds()
+        if self._global_window_hotkey is not None:
+            self._global_window_hotkey.stop()
+            self._global_window_hotkey.wait(1000)
         self.poller.stop()
         self.poller.wait(2000)
         self.notification_listener.stop()
