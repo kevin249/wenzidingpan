@@ -85,23 +85,29 @@ jobs:
               '''        return chrome + row_probe.sizeHint().height() * rows + 8\n''',
           )
 
+          text = text.replace(
+              "基准仍会差一点点——它是按各部件的 sizeHint 估的，和被压扁后的实际高度\n"
+              "        对不齐——于是之后只拖宽度还会有约 5% 的偏移（最多一档字号）。要把这点\n"
+              "        也抹平就得改动共用的缩放模型（紧凑模式藏页脚有同样的老问题），不在本\n"
+              "        改动范围内，这里先保内容不跳。自动尺寸不必管——``_resize_to_grid``\n",
+              "基准仍会差一点点——它是按各部件的 sizeHint 估的，和被压扁后的实际高度\n"
+              "        对不齐——于是之后只拖宽度还会有约 5% 的偏移（最多一档字号）。要把这点\n"
+              "        也抹平就得改动共用的缩放模型，不在本改动范围内，这里先保内容不跳。\n"
+              "        自动尺寸不必管——``_resize_to_grid``\n",
+          )
+
           path.write_text(text, encoding="utf-8")
 
-          # 这句原注释把“页脚”写成紧凑模式的一部分；页脚已删除，顺手校正说明。\n          quote = Path("stockwidget/ui/quote_row.py")
-          quote_text = quote.read_text(encoding="utf-8")
-          quote_text = quote_text.replace(
-              "# 紧凑模式只省掉暗盘和页脚，走势图照画——只是压扁一点。",
-              "# 紧凑模式只省掉暗盘，走势图照画——只是压扁一点。",
-          )
-          quote.write_text(quote_text, encoding="utf-8")
-
-          # 加一个最小回归测试：缩放柄必须是 overlay，不再占主布局；resize 后仍贴右下角。\n          tests = Path("tests/test_window.py")
+          tests = Path("tests/test_window.py")
           test_text = tests.read_text(encoding="utf-8")
           marker = "def test_resize_grip_is_overlay_and_tracks_bottom_right(app):"
           if marker not in test_text:
               test_text += '''\n\n\ndef test_resize_grip_is_overlay_and_tracks_bottom_right(app):\n    window = TickerWindow(Config())\n    window.resize(360, 220)\n    window.show()\n    app.processEvents()\n\n    # grip 是窗口子控件，但不在 QVBoxLayout 里，因此不会再吃掉底部整行。\n    assert window.grip.parent() is window\n    assert window.layout().indexOf(window.grip) == -1\n    assert not hasattr(window, "footer")\n    assert window.grip.width() == 20\n    assert window.grip.height() == 20\n    assert window.grip.x() == window.width() - window.grip.width() - 2\n    assert window.grip.y() == window.height() - window.grip.height() - 2\n\n    window.grip.enterEvent(None)\n    assert window.grip._hovered is True\n    window.grip.leaveEvent(None)\n    assert window.grip._hovered is False\n    window.close()\n'''
               tests.write_text(test_text, encoding="utf-8")
           PY
+
+      - name: Install test dependencies
+        run: python -m pip install -e . pytest
 
       - name: Run window regression tests
         run: pytest -q tests/test_window.py
@@ -111,7 +117,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add stockwidget/ui/window.py stockwidget/ui/quote_row.py tests/test_window.py
+          git add stockwidget/ui/window.py tests/test_window.py
           git diff --cached --check
           git commit -m "fix: make resize grip a hover-only overlay"
           git push origin HEAD:fix/hover-resize-grip
