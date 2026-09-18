@@ -275,6 +275,14 @@
         </div>
         <div class="grid">
           <div class="field">
+            <label for="tray_unread_font_size">托盘未读数字字号（px）</label>
+            <input id="tray_unread_font_size" name="tray_unread_font_size" type="number"
+                   min="7" max="32" step="1" value="{{ config.tray_unread_font_size }}" />
+            <p class="hint">只调整通知区图标里的未读数字，不影响行情窗口字体。</p>
+          </div>
+        </div>
+        <div class="grid">
+          <div class="field">
             <label for="mcp_url">MCP 地址</label>
             <input id="mcp_url" name="mcp_url" type="url" value="{{ config.mcp_url }}" />
           </div>
