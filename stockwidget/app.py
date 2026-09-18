@@ -5,7 +5,7 @@ from __future__ import annotations
 import signal
 import sys
 
-from PySide6.QtCore import QEvent, QObject, QUrl, Qt, Signal
+from PySide6.QtCore import QEvent, QObject, QTimer, QUrl, Qt, Signal
 from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import QApplication, QSystemTrayIcon
 
@@ -56,6 +56,12 @@ class WidgetApp:
         self._window_activation_filter = WindowActivationFilter(self.window)
         self._window_activation_filter.activated.connect(self._on_window_activated)
         self.window.installEventFilter(self._window_activation_filter)
+        self._terminal_was_foreground = desktop.terminal_is_foreground()
+        self._terminal_foreground_timer = QTimer(self.window)
+        self._terminal_foreground_timer.setInterval(300)
+        self._terminal_foreground_timer.timeout.connect(self._poll_terminal_foreground)
+        if sys.platform == "win32" and desktop.terminal_window_handle() is not None:
+            self._terminal_foreground_timer.start()
         self.window.restore_bounds(
             config.bounds, [screen.availableGeometry() for screen in self.qt.screens()]
         )
@@ -212,6 +218,13 @@ class WidgetApp:
         if self._unread > 0:
             self._clear_unread()
 
+    def _poll_terminal_foreground(self) -> None:
+        """Windows 下检测启动 Python 的终端从后台切回前台。"""
+        foreground = desktop.terminal_is_foreground()
+        if foreground and not self._terminal_was_foreground and self._unread > 0:
+            self._clear_unread()
+        self._terminal_was_foreground = foreground
+
     def _apply_config(self, config: Config) -> None:
         self.config = config
         if not (config.mcp_notifications_enabled and config.mcp_bell_tray_icon):
@@ -250,8 +263,12 @@ class WidgetApp:
         if self.config.mcp_bell_toast and self.tray is not None:
             self.tray.notify(notification.title, notification.body)
         if self.config.mcp_bell_tray_icon and self.tray is not None:
-            self._unread += 1
-            self.tray.set_unread(self._unread)
+            # 提醒到达时如果用户本来就在看行情窗口或启动 Python 的终端，就不制造未读。
+            if self.window.isActiveWindow() or desktop.terminal_is_foreground():
+                self._clear_unread()
+            else:
+                self._unread += 1
+                self.tray.set_unread(self._unread)
         if self.config.mcp_bell_window:
             self.window.show_mcp_notification(notification.title, notification.body)
 
