@@ -267,10 +267,18 @@
               弹出系统通知</label>
             <label><input id="mcp_bell_tray_icon" name="mcp_bell_tray_icon" type="checkbox"
                           {% if config.mcp_bell_tray_icon %}checked{% endif %} />
-              任务栏通知区图标转告警色，挂住未读数直到点开</label>
+              任务栏通知区图标转告警色，挂住未读数；点托盘、把行情窗口或运行 Python 的终端切到前台后清零</label>
             <label><input id="mcp_bell_window" name="mcp_bell_window" type="checkbox"
                           {% if config.mcp_bell_window %}checked{% endif %} />
               在窗口 BELL 按钮上累计未读数</label>
+          </div>
+        </div>
+        <div class="grid">
+          <div class="field">
+            <label for="tray_unread_font_size">托盘未读数字字号（px）</label>
+            <input id="tray_unread_font_size" name="tray_unread_font_size" type="number"
+                   min="7" max="32" step="1" value="{{ config.tray_unread_font_size }}" />
+            <p class="hint">只调整通知区图标里的未读数字，不影响行情窗口字体。</p>
           </div>
         </div>
         <div class="grid">

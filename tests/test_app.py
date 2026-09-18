@@ -35,6 +35,7 @@ class _FakeWindow:
         self.hidden = 0
         self.raised = 0
         self.activated = 0
+        self.active = False
 
     def show_mcp_notification(self, title: str, body: str) -> None:
         self.calls.append((title, body))
@@ -47,6 +48,9 @@ class _FakeWindow:
 
     def isVisible(self) -> bool:
         return self.visible
+
+    def isActiveWindow(self) -> bool:
+        return self.active
 
     def show(self) -> None:
         self.visible = True
@@ -87,6 +91,7 @@ def dispatch(monkeypatch):
         monkeypatch.setattr(
             app_module.desktop, "ring_terminal_bell", lambda: bool(rung.append(True))
         )
+        monkeypatch.setattr(app_module.desktop, "terminal_is_foreground", lambda: False)
 
         window = _FakeWindow()
         tray_icon = _FakeTray() if tray else None
@@ -232,3 +237,49 @@ def test_tray_right_click_is_not_an_acknowledgement():
 
     assert (stub._unread, tray.unread, window.cleared) == (2, 2, 0)
     assert toggled == []
+
+
+def test_window_activation_clears_tray_unread_without_clearing_window_bell():
+    """从后台切回行情窗口等同看过托盘提醒，但 BELL 历史仍保留。"""
+    window, tray = _FakeWindow(), _FakeTray()
+    tray.unread = 4
+    stub = SimpleNamespace(window=window, tray=tray, _unread=4)
+    stub._clear_unread = lambda: app_module.WidgetApp._clear_unread(stub)
+
+    app_module.WidgetApp._on_window_activated(stub)
+
+    assert stub._unread == 0
+    assert tray.unread == 0
+    assert window.cleared == 0
+
+
+def test_terminal_foreground_transition_clears_tray_unread(monkeypatch):
+    window, tray = _FakeWindow(), _FakeTray()
+    tray.unread = 5
+    stub = SimpleNamespace(
+        window=window,
+        tray=tray,
+        _unread=5,
+        _terminal_was_foreground=False,
+    )
+    stub._clear_unread = lambda: app_module.WidgetApp._clear_unread(stub)
+    monkeypatch.setattr(app_module.desktop, "terminal_is_foreground", lambda: True)
+
+    app_module.WidgetApp._poll_terminal_foreground(stub)
+
+    assert stub._unread == 0
+    assert tray.unread == 0
+    assert stub._terminal_was_foreground is True
+
+
+def test_notification_does_not_create_unread_while_terminal_is_foreground(monkeypatch):
+    window, tray = _FakeWindow(), _FakeTray()
+    stub = SimpleNamespace(config=Config(), window=window, tray=tray, _unread=0)
+    stub._clear_unread = lambda: app_module.WidgetApp._clear_unread(stub)
+    monkeypatch.setattr(app_module.desktop, "ring_terminal_bell", lambda: True)
+    monkeypatch.setattr(app_module.desktop, "terminal_is_foreground", lambda: True)
+
+    app_module.WidgetApp._on_mcp_notification(stub, NOTIFICATION)
+
+    assert stub._unread == 0
+    assert tray.unread == 0

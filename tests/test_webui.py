@@ -50,6 +50,8 @@ def test_settings_page_renders(server):
     assert "上中下" in body
     assert "K 线高度" in body
     assert 'id="font_size" name="font_size" type="number" min="7"' in body
+    assert "托盘未读数字字号" in body
+    assert 'id="tray_unread_font_size" name="tray_unread_font_size" type="number"' in body
     assert "接收 gupiao_ztfx MCP 通道实时提醒" in body
     assert 'id="mcp_api_key" name="mcp_api_key" type="password"' in body
 
@@ -134,6 +136,7 @@ def test_write_config_validates_persists_and_notifies(server):
             "symbols": "600519\n000001",
             "visible_rows": 999,  # 越界，应被夹到 30
             "font_size": 7,
+            "tray_unread_font_size": 24,
             "opacity": 0.4,
             "show_sparkline_fill": True,
             "stock_name_color": "#123456",
@@ -152,6 +155,7 @@ def test_write_config_validates_persists_and_notifies(server):
     assert config["symbols"] == ["600519", "000001"]
     assert config["visible_rows"] == 30
     assert config["font_size"] == 7
+    assert config["tray_unread_font_size"] == 24
     assert config["opacity"] == 0.4
     assert config["show_sparkline_fill"] is True
     assert config["stock_name_color"] == "#123456"
@@ -168,6 +172,7 @@ def test_write_config_validates_persists_and_notifies(server):
     persisted = json.loads(server.store.path.read_text(encoding="utf-8"))
     assert persisted["provider"] == "tencent"
     assert persisted["font_size"] == 7
+    assert persisted["tray_unread_font_size"] == 24
     # 实时下发给桌面窗口
     assert server.applied[-1].provider == "tencent"
 

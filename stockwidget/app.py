@@ -5,7 +5,7 @@ from __future__ import annotations
 import signal
 import sys
 
-from PySide6.QtCore import QObject, QUrl, Qt, Signal
+from PySide6.QtCore import QEvent, QObject, QTimer, QUrl, Qt, Signal
 from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import QApplication, QSystemTrayIcon
 
@@ -26,6 +26,17 @@ class ConfigBridge(QObject):
     changed = Signal(object)
 
 
+class WindowActivationFilter(QObject):
+    """只在主行情窗口真正从后台切到前台时发信号。"""
+
+    activated = Signal()
+
+    def eventFilter(self, watched, event) -> bool:
+        if event.type() == QEvent.Type.WindowActivate:
+            self.activated.emit()
+        return super().eventFilter(watched, event)
+
+
 class WidgetApp:
     def __init__(self, argv: list[str] | None = None, store: Store | None = None) -> None:
         desktop.apply_qt_platform()
@@ -39,8 +50,18 @@ class WidgetApp:
         self.store = store or Store()
         self.config = config = self.store.get()
         self._unread = 0
+        self.tray: Tray | None = None
 
         self.window = TickerWindow(config)
+        self._window_activation_filter = WindowActivationFilter(self.window)
+        self._window_activation_filter.activated.connect(self._on_window_activated)
+        self.window.installEventFilter(self._window_activation_filter)
+        self._terminal_was_foreground = desktop.terminal_is_foreground()
+        self._terminal_foreground_timer = QTimer(self.window)
+        self._terminal_foreground_timer.setInterval(300)
+        self._terminal_foreground_timer.timeout.connect(self._poll_terminal_foreground)
+        if sys.platform == "win32" and desktop.terminal_window_handle() is not None:
+            self._terminal_foreground_timer.start()
         self.window.restore_bounds(
             config.bounds, [screen.availableGeometry() for screen in self.qt.screens()]
         )
@@ -73,7 +94,6 @@ class WidgetApp:
         )
         self.notification_listener.status_changed.connect(self._on_mcp_status, Qt.QueuedConnection)
 
-        self.tray: Tray | None = None
         if QSystemTrayIcon.isSystemTrayAvailable():
             self.tray = Tray(config)
             self.tray.toggle_action.triggered.connect(self.toggle_window)
@@ -193,6 +213,18 @@ class WidgetApp:
         if self.tray is not None:
             self.tray.set_unread(0)
 
+    def _on_window_activated(self) -> None:
+        """用户把行情窗口切回前台时，托盘未读即视为已查看。"""
+        if self._unread > 0:
+            self._clear_unread()
+
+    def _poll_terminal_foreground(self) -> None:
+        """Windows 下检测启动 Python 的终端从后台切回前台。"""
+        foreground = desktop.terminal_is_foreground()
+        if foreground and not self._terminal_was_foreground and self._unread > 0:
+            self._clear_unread()
+        self._terminal_was_foreground = foreground
+
     def _apply_config(self, config: Config) -> None:
         self.config = config
         if not (config.mcp_notifications_enabled and config.mcp_bell_tray_icon):
@@ -231,8 +263,12 @@ class WidgetApp:
         if self.config.mcp_bell_toast and self.tray is not None:
             self.tray.notify(notification.title, notification.body)
         if self.config.mcp_bell_tray_icon and self.tray is not None:
-            self._unread += 1
-            self.tray.set_unread(self._unread)
+            # 提醒到达时如果用户本来就在看行情窗口或启动 Python 的终端，就不制造未读。
+            if self.window.isActiveWindow() or desktop.terminal_is_foreground():
+                self._clear_unread()
+            else:
+                self._unread += 1
+                self.tray.set_unread(self._unread)
         if self.config.mcp_bell_window:
             self.window.show_mcp_notification(notification.title, notification.body)
 

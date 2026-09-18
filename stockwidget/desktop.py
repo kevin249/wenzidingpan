@@ -80,6 +80,50 @@ def keep_visible_when_inactive(widget: Any) -> None:
     widget.setAttribute(Qt.WA_MacAlwaysShowToolWindow, True)
 
 
+def terminal_window_handle() -> int | None:
+    """Windows 下返回当前 Python 控制台实际可见宿主窗口的 HWND。
+
+    传统 conhost 中 GetConsoleWindow 本身就是可见窗口；Windows Terminal / ConPTY
+    返回的是一个很小的伪窗口，但它的 root owner 指向实际的 Terminal 宿主窗口。
+    其他平台、pythonw 或无控制台启动时返回 None。
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        user32 = ctypes.windll.user32
+        kernel32.GetConsoleWindow.restype = ctypes.c_void_p
+        user32.GetAncestor.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+        user32.GetAncestor.restype = ctypes.c_void_p
+
+        console_hwnd = kernel32.GetConsoleWindow()
+        if not console_hwnd:
+            return None
+        # GA_ROOTOWNER = 3；ConPTY 的 PseudoConsoleWindow owner 是实际终端宿主。
+        root_owner = user32.GetAncestor(console_hwnd, 3)
+        return int(root_owner or console_hwnd)
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None
+
+
+def terminal_is_foreground() -> bool:
+    """当前 Python 所在终端是否就是 Windows 的前台窗口。"""
+    terminal_hwnd = terminal_window_handle()
+    if terminal_hwnd is None:
+        return False
+    try:
+        import ctypes
+
+        user32 = ctypes.windll.user32
+        user32.GetForegroundWindow.restype = ctypes.c_void_p
+        foreground = user32.GetForegroundWindow()
+        return bool(foreground and int(foreground) == terminal_hwnd)
+    except (AttributeError, OSError, TypeError, ValueError):
+        return False
+
+
 def ring_terminal_bell(stream: Any = None) -> bool:
     """往终端写一个 BEL（0x07），让终端按自己的设置去提示用户。
 

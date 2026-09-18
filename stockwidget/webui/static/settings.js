@@ -36,6 +36,7 @@ const FONT_SIZES = [
   'stock_percent_font_size',
   'dark_trade_font_size',
   'chart_label_font_size',
+  'tray_unread_font_size',
 ];
 const NUMBERS = [
   'visible_rows',

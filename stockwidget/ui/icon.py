@@ -29,8 +29,10 @@ def tray_icon(
     normal_color: str = DEFAULT_TRAY_COLOR,
     alert_color: str = DEFAULT_TRAY_ALERT_COLOR,
     unread: int = 0,
+    unread_font_size: int = 14,
 ) -> QIcon:
     unread = max(0, int(unread))
+    unread_font_size = max(7, min(32, int(round(unread_font_size))))
     alert = bool(alert or unread)
 
     color = QColor(alert_color if alert else normal_color)
@@ -83,7 +85,8 @@ def tray_icon(
 
         font = painter.font()
         font.setBold(True)
-        font.setPixelSize(max(8, int(size * (0.22 if len(label) <= 2 else 0.17))))
+        label_font_size = unread_font_size if len(label) <= 2 else round(unread_font_size * 0.78)
+        font.setPixelSize(max(6, label_font_size))
         painter.setFont(font)
         painter.setPen(text_color)
         painter.drawText(badge, Qt.AlignCenter, label)
