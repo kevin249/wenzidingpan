@@ -232,3 +232,17 @@ def test_tray_right_click_is_not_an_acknowledgement():
 
     assert (stub._unread, tray.unread, window.cleared) == (2, 2, 0)
     assert toggled == []
+
+
+def test_window_activation_clears_tray_unread_without_clearing_window_bell():
+    """从后台切回行情窗口等同看过托盘提醒，但 BELL 历史仍保留。"""
+    window, tray = _FakeWindow(), _FakeTray()
+    tray.unread = 4
+    stub = SimpleNamespace(window=window, tray=tray, _unread=4)
+    stub._clear_unread = lambda: app_module.WidgetApp._clear_unread(stub)
+
+    app_module.WidgetApp._on_window_activated(stub)
+
+    assert stub._unread == 0
+    assert tray.unread == 0
+    assert window.cleared == 0
