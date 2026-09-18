@@ -125,6 +125,7 @@ class Config:
     # 通知区图标颜色：默认常态白色、收到未读提醒时蓝色。
     tray_icon_normal_color: str = "#ffffff"
     tray_icon_alert_color: str = "#3b82f6"
+    tray_unread_font_size: int = 14  # 托盘未读数字字号（64px 绘制画布上的像素）
     mcp_notifications_enabled: bool = False
     # 提醒到达时走哪几路提示，三路互不影响，都受上面那个总开关约束。
     # 正文打印到 CMD 不在此列——那是排查用的，始终打印。
@@ -230,6 +231,10 @@ def sanitize(raw: Any) -> Config:
                 # HTML color 控件只接受 #rrggbb，简写 #rgb 在这里展开。
                 normalized = color if len(color) == 7 else "#" + "".join(c * 2 for c in color[1:])
                 setattr(out, key, normalized)
+
+    tray_unread_size = _as_number(raw.get("tray_unread_font_size"))
+    if tray_unread_size is not None:
+        out.tray_unread_font_size = int(_clamp(round(tray_unread_size), 7, 32))
 
     # 托盘颜色不支持 auto，只接受实际十六进制颜色。
     for key in ("tray_icon_normal_color", "tray_icon_alert_color"):
