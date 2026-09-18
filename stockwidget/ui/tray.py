@@ -28,6 +28,7 @@ class Tray(QSystemTrayIcon):
     def __init__(self, config: Config, parent=None) -> None:
         self._normal_color = config.tray_icon_normal_color
         self._alert_color = config.tray_icon_alert_color
+        self._unread_font_size = config.tray_unread_font_size
         super().__init__(
             tray_icon(normal_color=self._normal_color, alert_color=self._alert_color), parent
         )
@@ -95,6 +96,7 @@ class Tray(QSystemTrayIcon):
                 normal_color=self._normal_color,
                 alert_color=self._alert_color,
                 unread=self._unread,
+                unread_font_size=self._unread_font_size,
             )
         )
 
@@ -109,14 +111,16 @@ class Tray(QSystemTrayIcon):
         return count
 
     def apply_config(self, config: Config) -> None:
-        # 颜色可在运行中修改；保留当前未读状态，只重新着色。
-        colors_changed = (
+        # 颜色和未读数字字号都可在运行中修改；保留当前未读状态并立即重绘。
+        icon_changed = (
             self._normal_color != config.tray_icon_normal_color
             or self._alert_color != config.tray_icon_alert_color
+            or self._unread_font_size != config.tray_unread_font_size
         )
         self._normal_color = config.tray_icon_normal_color
         self._alert_color = config.tray_icon_alert_color
-        if colors_changed:
+        self._unread_font_size = config.tray_unread_font_size
+        if icon_changed:
             self._refresh_icon()
 
         # 回填勾选状态时屏蔽信号，免得又反过来触发一次写配置。
