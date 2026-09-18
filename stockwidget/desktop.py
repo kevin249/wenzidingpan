@@ -123,6 +123,7 @@ def terminal_is_foreground() -> bool:
     except (AttributeError, OSError, TypeError, ValueError):
         return False
 
+
 def ring_terminal_bell(stream: Any = None) -> bool:
     """往终端写一个 BEL（0x07），让终端按自己的设置去提示用户。
 
