@@ -62,6 +62,19 @@ def test_base_font_size_below_nine_is_persisted(tmp_path):
     assert Store(path).get().font_size == 7
 
 
+def test_tray_unread_font_size_is_clamped_and_persisted(tmp_path):
+    path = tmp_path / "config.json"
+    store = Store(path)
+
+    assert sanitize({}).tray_unread_font_size == 14
+    assert sanitize({"tray_unread_font_size": 2}).tray_unread_font_size == 7
+    assert sanitize({"tray_unread_font_size": 99}).tray_unread_font_size == 32
+
+    saved = store.update({"tray_unread_font_size": 24})
+    assert saved.tray_unread_font_size == 24
+    assert Store(path).get().tray_unread_font_size == 24
+
+
 def test_mcp_notification_settings_are_sanitized_and_persisted(tmp_path):
     store = Store(tmp_path / "config.json")
     saved = store.update(
