@@ -101,3 +101,14 @@ def test_tray_unread_switches_the_icon_and_tooltip(app):
     assert tray.set_unread(150) == 150
     assert "150 条未读提醒" in tray.toolTip()
     assert unread_badge_text(150) == "99+"
+
+
+def test_tray_unread_font_size_updates_live(app):
+    tray = Tray(Config(tray_unread_font_size=9))
+    tray.set_unread(88)
+    small = tray.icon().pixmap(64, 64).toImage()
+
+    tray.apply_config(Config(tray_unread_font_size=28))
+    large = tray.icon().pixmap(64, 64).toImage()
+
+    assert large != small
