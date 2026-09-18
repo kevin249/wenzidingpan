@@ -32,7 +32,7 @@ class WindowActivationFilter(QObject):
     activated = Signal()
 
     def eventFilter(self, watched, event) -> bool:
-        if event.type() == QEvent.WindowActivate:
+        if event.type() == QEvent.Type.WindowActivate:
             self.activated.emit()
         return super().eventFilter(watched, event)
 
