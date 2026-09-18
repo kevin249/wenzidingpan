@@ -5,7 +5,7 @@ from __future__ import annotations
 import signal
 import sys
 
-from PySide6.QtCore import QObject, QUrl, Qt, Signal
+from PySide6.QtCore import QEvent, QObject, QUrl, Qt, Signal
 from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import QApplication, QSystemTrayIcon
 
@@ -26,6 +26,17 @@ class ConfigBridge(QObject):
     changed = Signal(object)
 
 
+class WindowActivationFilter(QObject):
+    """只在主行情窗口真正从后台切到前台时发信号。"""
+
+    activated = Signal()
+
+    def eventFilter(self, watched, event) -> bool:
+        if event.type() == QEvent.WindowActivate:
+            self.activated.emit()
+        return super().eventFilter(watched, event)
+
+
 class WidgetApp:
     def __init__(self, argv: list[str] | None = None, store: Store | None = None) -> None:
         desktop.apply_qt_platform()
@@ -39,8 +50,12 @@ class WidgetApp:
         self.store = store or Store()
         self.config = config = self.store.get()
         self._unread = 0
+        self.tray: Tray | None = None
 
         self.window = TickerWindow(config)
+        self._window_activation_filter = WindowActivationFilter(self.window)
+        self._window_activation_filter.activated.connect(self._on_window_activated)
+        self.window.installEventFilter(self._window_activation_filter)
         self.window.restore_bounds(
             config.bounds, [screen.availableGeometry() for screen in self.qt.screens()]
         )
@@ -73,7 +88,6 @@ class WidgetApp:
         )
         self.notification_listener.status_changed.connect(self._on_mcp_status, Qt.QueuedConnection)
 
-        self.tray: Tray | None = None
         if QSystemTrayIcon.isSystemTrayAvailable():
             self.tray = Tray(config)
             self.tray.toggle_action.triggered.connect(self.toggle_window)
@@ -192,6 +206,11 @@ class WidgetApp:
         self._unread = 0
         if self.tray is not None:
             self.tray.set_unread(0)
+
+    def _on_window_activated(self) -> None:
+        """用户把行情窗口切回前台时，托盘未读即视为已查看。"""
+        if self._unread > 0:
+            self._clear_unread()
 
     def _apply_config(self, config: Config) -> None:
         self.config = config
