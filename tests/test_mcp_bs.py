@@ -4,6 +4,8 @@ from datetime import datetime
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from stockwidget import mcp_bs
 
 
@@ -22,6 +24,24 @@ def test_source_is_persisted(monkeypatch, tmp_path):
     assert mcp_bs.set_source("mcp") == "mcp"
     mcp_bs.reset_for_tests()
     assert mcp_bs.get_source() == "mcp"
+
+
+@pytest.mark.parametrize(
+    ("event_type", "category"),
+    [
+        ("trading.order_filled", "交易提醒"),
+        ("screen.v2.done", "选股 / 筛选"),
+        ("market.dark_trade_turning", "行情提醒"),
+        ("ai.review.done", "AI 分析"),
+        ("leader.realtime", "龙头 / 复盘"),
+        ("backtest.done", "回测 / 策略任务"),
+        ("research.update_matched", "研究资讯"),
+        ("sentiment.state_change", "市场情绪"),
+        ("system.test", "系统"),
+    ],
+)
+def test_updated_gupiao_event_families_have_friendly_categories(event_type, category):
+    assert mcp_bs._category(event_type) == category
 
 
 def test_today_records_are_groupable_and_deduplicated():
