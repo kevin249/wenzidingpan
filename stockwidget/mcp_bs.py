@@ -127,6 +127,16 @@ def _category(event_type: str) -> str:
         return "选股 / 筛选"
     if event_type.startswith("market."):
         return "行情提醒"
+    if event_type.startswith("ai."):
+        return "AI 分析"
+    if event_type.startswith("leader."):
+        return "龙头 / 复盘"
+    if event_type.startswith("backtest."):
+        return "回测 / 策略任务"
+    if event_type.startswith("research."):
+        return "研究资讯"
+    if event_type.startswith("sentiment."):
+        return "市场情绪"
     if event_type.startswith("system."):
         return "系统"
     return event_type or "其他"
