@@ -38,6 +38,15 @@ class McpNotification:
     created_at: str = ""
     link: str = ""
     payload: dict[str, Any] = field(default_factory=dict)
+    sequence: int = 0
+
+
+def _positive_int(value: Any) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return parsed if parsed > 0 else 0
 
 
 def _api_key(config: Config) -> str:
@@ -129,6 +138,7 @@ def _notifications(payload: dict[str, Any]) -> list[McpNotification]:
                 created_at=str(row.get("created_at") or ""),
                 link=str(row.get("link") or ""),
                 payload=dict(structured),
+                sequence=_positive_int(row.get("sequence")),
             )
         )
     return notifications
@@ -148,6 +158,7 @@ class McpNotificationListener(QThread):
         self._cancel_event: asyncio.Event | None = None
         self._last_status = ""
         self._baseline_ready = False
+        self._last_sequence: int | None = None
         self._seen_order: deque[str] = deque()
         self._seen_ids: set[str] = set()
 
@@ -161,6 +172,7 @@ class McpNotificationListener(QThread):
             self._config = config
             if changed:
                 self._baseline_ready = False
+                self._last_sequence = None
                 self._seen_order.clear()
                 self._seen_ids.clear()
         if changed:
@@ -251,8 +263,8 @@ class McpNotificationListener(QThread):
                         warnings.simplefilter("ignore", MCPDeprecationWarning)
                         await _bounded(session.subscribe_resource(uri), cancel_event)
                     try:
-                        await self._establish_baseline(session, uri, cancel_event)
-                        self._emit_status("已连接 · 实时订阅")
+                        missing = await self._establish_baseline(session, uri, cancel_event)
+                        self._emit_delivery_status(missing)
                         await self._consume(updates, session, uri, cancel_event)
                     finally:
                         with suppress(Exception):
@@ -262,9 +274,10 @@ class McpNotificationListener(QThread):
 
     async def _establish_baseline(
         self, session: ClientSession, uri: str, cancel_event: asyncio.Event | None = None
-    ) -> None:
+    ) -> int:
         payload = _resource_payload(await _bounded(session.read_resource(uri), cancel_event))
         notifications = _notifications(payload)
+        missing = self._observe_sequence(payload, notifications)
         # 设置页的“当日订阅信息”和 MCP B/S 图层需要看见资源缓冲中已有的当天事件；
         # 但首次连接仍不能把这些历史事件重新弹成新提醒。
         for item in notifications:
@@ -273,17 +286,21 @@ class McpNotificationListener(QThread):
             baseline_ready = self._baseline_ready
         if baseline_ready:
             self._deliver(notifications)
-            return
+            return missing
         for item in notifications:
             self._remember(item.event_id)
         with self._lock:
             self._baseline_ready = True
+        return 0
 
     async def _deliver_resource(
         self, session: ClientSession, uri: str, cancel_event: asyncio.Event | None = None
     ) -> None:
         payload = _resource_payload(await _bounded(session.read_resource(uri), cancel_event))
-        self._deliver(_notifications(payload))
+        notifications = _notifications(payload)
+        missing = self._observe_sequence(payload, notifications)
+        self._deliver(notifications)
+        self._emit_delivery_status(missing)
 
     async def _consume(
         self,
@@ -310,6 +327,41 @@ class McpNotificationListener(QThread):
                     await self._deliver_resource(session, uri, cancel_event)
                 continue
             await self._deliver_resource(session, uri, cancel_event)
+
+    def _emit_delivery_status(self, missing: int) -> None:
+        if missing > 0:
+            self._emit_status(f"已连接 · 警告：MCP 消息缺失 {missing} 条")
+            return
+        self._emit_status("已连接 · 实时订阅")
+
+    def _observe_sequence(
+        self, payload: dict[str, Any], notifications: list[McpNotification]
+    ) -> int:
+        """跟踪服务端单调序号，返回本次快照已经无法补回的事件数。
+
+        gupiao_ztfx 的通知资源只保留有限历史。客户端离线或推送通道失效太久时，
+        latest_sequence 可能已经前进，但资源快照最早的新序号不再紧跟本地最后
+        序号。这里把这种情况显式报告出来，避免静默漏消息。网关进程重启会让序号
+        从头开始，此时只重新建立基线，不把正常的序号回退误报成丢失。
+        """
+        sequences = sorted({item.sequence for item in notifications if item.sequence > 0})
+        latest = _positive_int(payload.get("latest_sequence"))
+        if latest <= 0 and sequences:
+            latest = sequences[-1]
+        if latest <= 0:
+            return 0
+
+        with self._lock:
+            previous = self._last_sequence
+            if previous is None or latest < previous:
+                self._last_sequence = latest
+                return 0
+            if latest <= previous:
+                return 0
+            present = sum(1 for sequence in sequences if previous < sequence <= latest)
+            missing = max(latest - previous - present, 0)
+            self._last_sequence = latest
+        return missing
 
     def _deliver(self, notifications: list[McpNotification]) -> None:
         for notification in notifications:
