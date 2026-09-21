@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from types import SimpleNamespace
 from typing import Any
+
+import pytest
 
 from stockwidget import mcp_notifications
 from stockwidget.mcp_notifications import (
@@ -42,6 +45,119 @@ def test_notifications_ignore_invalid_rows_and_normalize_text():
     assert _notifications(payload) == [
         McpNotification(event_id="event-12", title="提醒", body="正文", event_type="market.alert")
     ]
+
+
+CURRENT_GUPIAO_EVENT_TYPES = (
+    "market.fund_flow_retreat",
+    "leader.daily",
+    "leader.manual",
+    "leader.realtime",
+    "market.risk_anomaly",
+    "market.watchlist_alert",
+    "market.dark_trade_turning",
+    "market.live_news",
+    "sentiment.state_change",
+    "ai.prediction.done",
+    "ai.review.done",
+    "ai.review.failed",
+    "ai.model_test.done",
+    "ai.model_test.failed",
+    "trading.pnl_threshold",
+    "trading.position_risk",
+    "trading.order_filled",
+    "trading.holdings_ai.done",
+    "trading.holdings_ai.partial",
+    "trading.holdings_ai.failed",
+    "trading.holding_t_signal",
+    "trading.bank_index_alert",
+    "backtest.done",
+    "backtest.failed",
+    "screen.v2.done",
+    "screen.v2.failed",
+    "screen.v2.market_update",
+    "research.update_matched",
+    "system.admin_alert",
+    "system.test",
+)
+
+
+@pytest.mark.parametrize("event_type", CURRENT_GUPIAO_EVENT_TYPES)
+def test_current_gupiao_event_envelope_is_preserved(event_type):
+    payload = {
+        "latest_sequence": 37,
+        "notifications": [
+            {
+                "sequence": 37,
+                "event_id": "event-37",
+                "event_type": event_type,
+                "title": "测试提醒",
+                "body": "正文",
+                "priority": "high",
+                "created_at": "2026-09-21T08:30:00+08:00",
+                "link": "/detail",
+                "payload": {"code": "603986", "nested": {"ok": True}},
+            }
+        ],
+    }
+
+    assert _notifications(payload) == [
+        McpNotification(
+            event_id="event-37",
+            title="测试提醒",
+            body="正文",
+            event_type=event_type,
+            priority="high",
+            created_at="2026-09-21T08:30:00+08:00",
+            link="/detail",
+            payload={"code": "603986", "nested": {"ok": True}},
+            sequence=37,
+        )
+    ]
+
+
+def _sequence_stub(last_sequence):
+    return SimpleNamespace(_lock=threading.Lock(), _last_sequence=last_sequence)
+
+
+def _sequence_notifications(first: int, last: int) -> list[McpNotification]:
+    return [
+        McpNotification(event_id=f"event-{sequence}", title="提醒", body="", sequence=sequence)
+        for sequence in range(first, last + 1)
+    ]
+
+
+def test_sequence_tracking_accepts_a_complete_resource_window():
+    stub = _sequence_stub(50)
+    missing = McpNotificationListener._observe_sequence(
+        stub,
+        {"latest_sequence": 150},
+        _sequence_notifications(51, 150),
+    )
+    assert missing == 0
+    assert stub._last_sequence == 150
+
+
+def test_sequence_tracking_reports_events_evicted_from_the_resource_window():
+    stub = _sequence_stub(50)
+    # gupiao_ztfx 默认资源窗口只保留最近 100 条；151 到来后，51 已经被挤掉。
+    missing = McpNotificationListener._observe_sequence(
+        stub,
+        {"latest_sequence": 151},
+        _sequence_notifications(52, 151),
+    )
+    assert missing == 1
+    assert stub._last_sequence == 151
+
+
+def test_sequence_tracking_rebaselines_after_gateway_restart():
+    stub = _sequence_stub(150)
+    missing = McpNotificationListener._observe_sequence(
+        stub,
+        {"latest_sequence": 3},
+        _sequence_notifications(1, 3),
+    )
+    assert missing == 0
+    assert stub._last_sequence == 3
 
 
 def test_sse_timeout_is_long_enough_for_a_quiet_gateway():
