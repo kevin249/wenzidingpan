@@ -294,6 +294,8 @@ class TickerWindow(QWidget):
         self._config = config
         self._rows: dict[str, QuoteRow] = {}
         self._depths: dict[str, DepthSnapshot] = {}
+        self._theme2_expanded_symbol: str | None = None
+        self._transient_geometry_change = False
         self._scale = 1.0
         self._manual_size = False
         self._drag_start_size = QSize()
@@ -467,13 +469,20 @@ class TickerWindow(QWidget):
         self.empty_label.setFont(make_font(scaled, 0.9))
         for row in self._rows.values():
             row.apply_config(scaled)
+        if config.display_theme != "theme2":
+            self._theme2_expanded_symbol = None
+            for row in self._rows.values():
+                row.set_theme2_expanded(False, notify=False)
         if self._rows:
             # 字号会改变每个行情格的 minimumSizeHint，随配置一起刷新内容宽度。
             self._lay_out_grid(list(self._rows))
 
-        single = config.layout == "single"
+        single = config.layout == "single" and config.display_theme != "theme2"
         self.marquee.setVisible(single)
         self.scroll.setVisible(not single and bool(self._rows))
+        self.scroll.setVerticalScrollBarPolicy(
+            Qt.ScrollBarAsNeeded if config.display_theme == "theme2" else Qt.ScrollBarAlwaysOff
+        )
         self.empty_label.setVisible(not single and not self._rows)
         # 多行模式始终保留右下角透明热区；鼠标穿透时它也必须一起禁用。
         self.grip.setVisible(not single and not config.click_through)
@@ -549,7 +558,7 @@ class TickerWindow(QWidget):
 
     def update_snapshot(self, snapshot: Snapshot, _provider_label: str) -> None:
         quotes = snapshot.quotes
-        if self._config.layout == "single":
+        if self._config.layout == "single" and self._config.display_theme != "theme2":
             self.marquee.set_quotes(quotes)
         else:
             self._sync_rows(quotes, snapshot.trends)
@@ -576,6 +585,7 @@ class TickerWindow(QWidget):
             if row is None:
                 row = QuoteRow(quote.symbol)
                 row.apply_config(scaled)
+                row.theme2_expansion_changed.connect(self._on_theme2_expansion_changed)
                 self._install_move_filters(row)
                 self._rows[quote.symbol] = row
             row.update_quote(quote, scaled, trends.get(quote.symbol))
@@ -598,14 +608,16 @@ class TickerWindow(QWidget):
 
         self._lay_out_grid([q.symbol for q in quotes])
 
-        single = self._config.layout == "single"
+        single = self._config.layout == "single" and self._config.display_theme != "theme2"
         self.scroll.setVisible(not single and bool(self._rows))
         self.empty_label.setVisible(not single and not self._rows)
         self._resize_to_grid()
         self._sync_restored_scale_from_height()
 
     def _grid_size(self, count: int) -> tuple[int, int]:
-        """设置里的行数决定网格有几行，列数由自选数量摊出来。"""
+        """主题2固定一列；主题1仍按设置行数铺网格。"""
+        if self._config.display_theme == "theme2":
+            return max(count, 1), 1
         rows = max(1, min(self._config.visible_rows, max(count, 1)))
         columns = max(1, -(-count // rows))  # 向上取整
         return rows, columns
@@ -635,6 +647,41 @@ class TickerWindow(QWidget):
         for column in range(columns):
             self.rows_layout.setColumnStretch(column, 1)
         self._grid_shape = (rows, columns)
+
+    def _theme2_target_width(self) -> int:
+        if not self._rows:
+            return max(150, round(self.scaled_config().font_size * 13))
+        width = max(row.theme2_target_width() for row in self._rows.values()) + 4
+        if self._config.show_title_buttons:
+            width = max(width, self.title_bar.sizeHint().width() + 2)
+        return width
+
+    def _on_theme2_expansion_changed(self, symbol: str, expanded: bool) -> None:
+        if self._config.display_theme != "theme2":
+            return
+        if expanded:
+            self._theme2_expanded_symbol = symbol
+            for other_symbol, row in self._rows.items():
+                if other_symbol != symbol:
+                    row.set_theme2_expanded(False, notify=False)
+        elif self._theme2_expanded_symbol == symbol:
+            self._theme2_expanded_symbol = None
+        else:
+            return
+
+        # 右侧盘口列保持原位：详情区只从左侧长出来/缩回去。
+        right = self.frameGeometry().right()
+        target = self._theme2_target_width()
+        screen = self.screen()
+        if screen is not None:
+            target = min(target, screen.availableGeometry().width())
+        self._transient_geometry_change = True
+        try:
+            self.resize(target, self.height())
+            self.move(right - target + 1, self.y())
+            self._keep_on_screen()
+        finally:
+            self._transient_geometry_change = False
 
     # ------------------------------------------------------------ 尺寸
 
@@ -706,6 +753,30 @@ class TickerWindow(QWidget):
     def _resize_to_grid(self, *, ensure_chart_height: bool = False) -> None:
         """高度按网格行数算，宽度按列数摊开——1 行就是全部横向铺满。"""
         chrome = self._chrome_height()
+        if self._config.display_theme == "theme2":
+            self.setMinimumHeight(0)
+            self.setMaximumHeight(16777215)
+            if not self._rows:
+                return
+            sample = next(iter(self._rows.values()))
+            rows = len(self._rows)
+            total_height = chrome + sample.sizeHint().height() * rows + 8
+            width = self._theme2_target_width()
+            screen = self.screen()
+            if screen is not None:
+                geo = screen.availableGeometry()
+                needs_scroll = total_height > geo.height()
+                total_height = min(total_height, geo.height())
+                width = min(
+                    width + (
+                        self.scroll.verticalScrollBar().sizeHint().width() if needs_scroll else 0
+                    ),
+                    geo.width(),
+                )
+            self.resize(width, total_height)
+            self._keep_on_screen()
+            return
+
         if self._config.layout == "single":
             self.setFixedHeight(chrome + self.marquee.height() + 4)
             self.setMinimumWidth(220)
@@ -750,6 +821,8 @@ class TickerWindow(QWidget):
         而窗口宽度又是照着退回后的 sizeHint 算的——两边互相迁就就再也回不去了。
         """
         scaled = self.scaled_config()
+        if self._config.display_theme == "theme2":
+            return max(148, round(scaled.font_size * 12.5))
         if self._config.row_style != "sides":
             return round(scaled.font_size * 13)
         side_font = max(scaled.stock_name_font_size, scaled.stock_price_font_size)
@@ -784,11 +857,13 @@ class TickerWindow(QWidget):
         self._apply_scale()
 
     def moveEvent(self, event) -> None:  # noqa: N802 - Qt 命名
-        self._save_timer.start()
+        if not self._transient_geometry_change:
+            self._save_timer.start()
         self._move_handle()
 
     def resizeEvent(self, event) -> None:  # noqa: N802 - Qt 命名
-        self._save_timer.start()
+        if not self._transient_geometry_change:
+            self._save_timer.start()
         self._move_handle()
         self._position_grip()
 
