@@ -20,6 +20,8 @@ from .symbols import classify
 
 DEPTH_POLL_SECONDS = 60.0
 DEPTH_RETRY_SECONDS = 5.0
+# 多股票严格串行：上一只深度链完成后至少留这个间隔，再请求下一只。
+DEPTH_INTER_SYMBOL_GAP_SECONDS = 0.75
 BS_POLL_SECONDS = 60.0
 MIN_THOUSAND_LEVELS = 11
 
@@ -239,11 +241,19 @@ def _poll_seconds(all_full_depth: bool) -> float:
     return DEPTH_POLL_SECONDS if all_full_depth else DEPTH_RETRY_SECONDS
 
 
+def _serial_depth_delay(previous_finished_at: float, now: float | None = None) -> float:
+    """两只股票深度请求之间的最小空档；第一只直接执行。"""
+    if previous_finished_at <= 0:
+        return 0.0
+    current = time.monotonic() if now is None else float(now)
+    return max(0.0, DEPTH_INTER_SYMBOL_GAP_SECONDS - (current - previous_finished_at))
+
+
 def _status_text(all_full_depth: bool) -> str:
     return (
-        "已连接 · 千档 60s"
+        "已连接 · 千档串行 60s"
         if all_full_depth
-        else "已连接 · 深度降级 · 千档 5s 重试"
+        else "已连接 · 深度降级 · 千档串行 5s 重试"
     )
 
 
@@ -335,11 +345,35 @@ class McpDepthPoller(QThread):
                         f"读取失败 · 千档5s重试：{type(exc).__name__}: {str(exc)[:100]}"
                     )
 
-            interval = _poll_seconds(all_full_depth)
-            remaining = max(0.0, interval - (time.monotonic() - started))
+            remaining = self._next_wake_seconds(config)
             if not self._stopping.is_set():
                 self._wake.wait(remaining)
                 self._wake.clear()
+
+    def _next_wake_seconds(self, config: Config, now: float | None = None) -> float:
+        """按每只股票真实 next_due 唤醒，避免串行耗时把 60s 变成约 120s。"""
+        current = time.monotonic() if now is None else float(now)
+        codes = [
+            item.code
+            for raw in config.symbols
+            if (item := classify(raw)) is not None
+        ]
+        if not codes:
+            return DEPTH_RETRY_SECONDS
+
+        due_values = [self._next_depth_due.get(code) for code in codes]
+        if any(value is None for value in due_values):
+            depth_wait = DEPTH_RETRY_SECONDS
+        else:
+            depth_wait = max(0.0, min(float(value) for value in due_values) - current)
+
+        if self._last_bs_fetch_at <= 0:
+            bs_wait = DEPTH_RETRY_SECONDS
+        else:
+            bs_wait = max(0.0, self._last_bs_fetch_at + BS_POLL_SECONDS - current)
+
+        # 最短保留一点睡眠，防止异常/边界条件形成空转；最长不超过正常 60s。
+        return min(DEPTH_POLL_SECONDS, max(0.1, min(depth_wait, bs_wait)))
 
     async def _fetch_cycle(self, config: Config, *, fetch_bs: bool) -> bool:
         key = _api_key(config)
@@ -347,6 +381,7 @@ class McpDepthPoller(QThread):
             return False
         headers = {"Authorization": f"Bearer {key}"}
         now = time.monotonic()
+        last_depth_finished_at = 0.0
         valid_codes = [
             item.code
             for raw in config.symbols
@@ -380,11 +415,16 @@ class McpDepthPoller(QThread):
                                 pass
 
                         if depth_due:
+                            # 绝不并发，也不背靠背挤服务器：上一只完整结束后留空档。
+                            delay = _serial_depth_delay(last_depth_finished_at)
+                            if delay > 0:
+                                await asyncio.sleep(delay)
                             snapshot = await _fetch_depth_with_fallback(session, symbol.code)
+                            last_depth_finished_at = time.monotonic()
                             self._depth_modes[symbol.code] = snapshot.depth_mode
-                            # 从本轮开始时间计下一次 due，避免请求耗时再额外叠加到 5s 周期。
-                            self._next_depth_due[symbol.code] = now + _poll_seconds(
-                                snapshot.full_depth
+                            # 每只股票独立计时：降级后至少 5 秒再尝试它自己的千档。
+                            self._next_depth_due[symbol.code] = (
+                                last_depth_finished_at + _poll_seconds(snapshot.full_depth)
                             )
                             # 十档/五档/不可用都要发给 UI，不能让旧千档永久卡住。
                             self.depth_ready.emit(snapshot)
