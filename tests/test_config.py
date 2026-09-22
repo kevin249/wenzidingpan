@@ -125,6 +125,14 @@ def test_theme2_side_defaults_right_and_accepts_left_mirror():
     assert sanitize({"theme2_side": "inside"}).theme2_side == "right"
 
 
+def test_theme2_depth_width_defaults_and_is_clamped():
+    assert sanitize({}).theme2_depth_width == 84
+    assert sanitize({"theme2_depth_width": 160}).theme2_depth_width == 160
+    assert sanitize({"theme2_depth_width": 1}).theme2_depth_width == 40
+    assert sanitize({"theme2_depth_width": 9999}).theme2_depth_width == 600
+    assert sanitize({"theme2_depth_width": True}).theme2_depth_width == 84
+
+
 def test_row_style_falls_back_to_left_middle_right():
     assert sanitize({}).row_style == "sides"
     assert sanitize({"row_style": "stacked"}).row_style == "stacked"
