@@ -30,9 +30,9 @@ def _is_red(pixel) -> bool:
     return pixel.red() > pixel.green() + 70 and pixel.red() > pixel.blue() + 40
 
 
-def test_theme2_depth_uses_center_price_line_and_left_only_bars(app):
+def test_theme2_right_dock_places_price_left_and_depth_only_on_right(app):
     widget = DepthLadder()
-    widget.apply_config(Config(display_theme="theme2", font_size=13))
+    widget.apply_config(Config(display_theme="theme2", theme2_side="right", font_size=13))
     widget.set_quote(100.0, 1.25, QColor(154, 163, 184))
     widget.set_depth(
         DepthSnapshot(
@@ -47,36 +47,48 @@ def test_theme2_depth_uses_center_price_line_and_left_only_bars(app):
         )
     )
     image = widget.grab().toImage()
+    mirror, axis_x, depth_inner_x, price_left, price_right = widget._horizontal_geometry()
     center_y = image.height() // 2
-    axis_x = image.width() - 5
+
+    assert mirror is False
+    assert axis_x == pytest.approx(image.width() - 5)
+    assert price_left < price_right < depth_inner_x < axis_x
+    assert widget._price_rect.center().x() < image.width() * 0.35
+    assert widget._price_rect.top() < center_y < widget._price_rect.bottom()
 
     upper_green = 0
-    upper_red = 0
-    lower_green = 0
     lower_red = 0
-    right_colored = 0
-
+    colored_inside_price_side = 0
     for y in range(image.height()):
         for x in range(image.width()):
             pixel = image.pixelColor(x, y)
             green = _is_green(pixel)
             red = _is_red(pixel)
-            if x > axis_x and (green or red):
-                right_colored += 1
-            if x >= axis_x - 2:
-                continue
-            if y < center_y - 10:
-                upper_green += int(green)
-                upper_red += int(red)
-            elif y > center_y + 10:
-                lower_green += int(green)
-                lower_red += int(red)
+            if x < round(depth_inner_x) - 1 and (green or red):
+                colored_inside_price_side += 1
+            if x >= round(depth_inner_x):
+                if y < center_y - 10:
+                    upper_green += int(green)
+                elif y > center_y + 10:
+                    lower_red += int(red)
 
-    assert upper_green > 0, "当前价中线上方应有绿色卖盘"
-    assert lower_red > 0, "当前价中线下方应有红色买盘"
-    assert upper_red == 0, "卖盘区不应混入红色买盘"
-    assert lower_green == 0, "买盘区不应混入绿色卖盘"
-    assert right_colored == 0, "买卖挂单量条都必须位于价格轴左侧"
+    assert colored_inside_price_side == 0, "挂单不能覆盖最左侧股价/虚线区域"
+    assert upper_green > 0, "卖盘应在右侧盘口上半区"
+    assert lower_red > 0, "买盘应在右侧盘口下半区"
+
+    guide_start = round(price_right + 3)
+    guide_end = round(axis_x - 3)
+    guide_colors = [image.pixelColor(x, center_y) for x in range(guide_start, guide_end)]
+    guide_hits = sum(
+        1
+        for pixel in guide_colors
+        if pixel.alpha() > 40
+        and abs(pixel.red() - pixel.green()) < 24
+        and abs(pixel.green() - pixel.blue()) < 30
+    )
+    guide_gaps = sum(1 for pixel in guide_colors if pixel.alpha() < 20)
+    assert guide_hits > 3, "股价中线必须有灰色虚线指向买卖交界"
+    assert guide_gaps > 3, "股价引导线必须是虚线而不是实线"
 
 
 def test_theme2_uses_quote_price_as_vertical_center(app):
@@ -115,7 +127,7 @@ def test_theme2_uses_quote_price_as_vertical_center(app):
 
 
 
-def test_theme2_left_mirror_puts_axis_left_and_bars_right(app):
+def test_theme2_left_mirror_puts_price_right_and_depth_after_left_axis(app):
     widget = DepthLadder()
     widget.apply_config(Config(display_theme="theme2", theme2_side="left", font_size=13))
     widget.set_quote(100.0, -0.75, QColor(154, 163, 184))
@@ -133,7 +145,12 @@ def test_theme2_left_mirror_puts_axis_left_and_bars_right(app):
     )
     image = widget.grab().toImage()
     center_y = image.height() // 2
-    axis_x = 5
+    mirror, axis_x, depth_inner_x, price_left, price_right = widget._horizontal_geometry()
+
+    assert mirror is True
+    assert axis_x == pytest.approx(5)
+    assert axis_x < depth_inner_x < price_left < price_right
+    assert widget._price_rect.center().x() > image.width() * 0.65
 
     colored_left_of_axis = 0
     upper_green_right = 0
@@ -152,6 +169,14 @@ def test_theme2_left_mirror_puts_axis_left_and_bars_right(app):
             elif y > center_y + 10:
                 lower_red_right += int(red)
 
+    colored_inside_price_side = 0
+    for y in range(image.height()):
+        for x in range(round(depth_inner_x) + 1, image.width()):
+            pixel = image.pixelColor(x, y)
+            if _is_green(pixel) or _is_red(pixel):
+                colored_inside_price_side += 1
+
     assert colored_left_of_axis == 0, "镜像后挂单量条不能跑到左侧价格轴外"
+    assert colored_inside_price_side == 0, "镜像后挂单不能侵入最右股价区域"
     assert upper_green_right > 0, "镜像后卖盘仍应在中线上方并向右延伸"
     assert lower_red_right > 0, "镜像后买盘仍应在中线下方并向右延伸"
