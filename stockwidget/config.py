@@ -104,6 +104,7 @@ class Config:
     compact: bool = False
     display_theme: str = "theme1"  # theme1 = 经典网格，theme2 = 千档竖列
     theme2_side: str = "right"  # right = 靠右/向左展，left = 靠左镜像/向右展
+    theme2_depth_width: int = 84  # 主题2挂单分布区域宽度（不含股价文字区），像素
     layout: str = "multi"  # multi = 多行列表，single = 单行滚动
     # sides = 左中右：左侧名称/暗盘两行，右侧现价/涨跌幅两行，走势图在中间；
     # stacked = 上中下：名称与现价同一行，暗盘与涨跌幅同一行，走势图永远在中间。
@@ -204,6 +205,10 @@ def sanitize(raw: Any) -> Config:
         # 0（含负数）保持「自动」，其余夹进一个还能看清曲线的区间。
         height = int(round(chart_height))
         out.chart_height = 0 if height <= 0 else int(_clamp(height, 8, 400))
+
+    depth_width = _as_number(raw.get("theme2_depth_width"))
+    if depth_width is not None:
+        out.theme2_depth_width = int(_clamp(round(depth_width), 40, 600))
 
     size = _as_number(raw.get("font_size"))
     if size is not None:

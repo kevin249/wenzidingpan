@@ -56,6 +56,11 @@
             </select>
           </div>
           <div class="field">
+            <label for="theme2_depth_width">主题 2 挂单宽度（px）</label>
+            <input id="theme2_depth_width" name="theme2_depth_width" type="number"
+                   min="40" max="600" step="4" value="{{ config.theme2_depth_width }}" />
+          </div>
+          <div class="field">
             <label for="layout">显示模式</label>
             <select id="layout" name="layout">
               <option value="multi" {% if config.layout == 'multi' %}selected{% endif %}>多行列表</option>

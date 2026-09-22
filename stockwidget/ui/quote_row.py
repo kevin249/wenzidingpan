@@ -13,6 +13,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QBoxLayout, QGridLayout, QHBoxLayout, QLabel, QSizePolicy, QWidget
 
+from .. import mcp_bs
 from ..config import Config
 from ..intraday import Trend, calculate_bs_points
 from ..mcp_depth import DepthSnapshot
@@ -533,7 +534,7 @@ class QuoteRow(QWidget):
         )
         self.theme2_chart.set_annotations(
             trend.open_price if trend else (prices[0] if prices else None),
-            calculate_bs_points(prices),
+            mcp_bs.bs_points(quote.symbol, prices),
             show_signals=config.show_bs_points,
             show_open_line=config.show_open_line,
             show_high_low=config.show_high_low,

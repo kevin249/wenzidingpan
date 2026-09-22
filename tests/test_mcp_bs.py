@@ -113,3 +113,78 @@ def test_bs_points_map_morning_and_afternoon_minutes():
         now=datetime(2026, 9, 14, 14, 0, tzinfo=TZ),
     )
     assert points == [(30, "B"), (131, "S")]
+
+
+
+def test_active_volatility_snapshot_supplies_all_today_bs_markers():
+    prices = [100.0] * 242
+    mcp_bs.record_volatility_bs(
+        {
+            "available": True,
+            "code": "600000",
+            "trade_date": "2026-09-14",
+            "markers": [
+                {
+                    "time": "09:45",
+                    "type": "buy_first",
+                    "label": "B2 候选确认",
+                    "price": 100.0,
+                },
+                {
+                    "time": "10:31",
+                    "type": "sell_first",
+                    "label": "S3 结构确认",
+                    "price": 100.0,
+                },
+                {
+                    "time": "13:10",
+                    "type": "buy_first",
+                    "label": "B4 强反转",
+                    "price": 100.0,
+                },
+            ],
+        }
+    )
+
+    assert mcp_bs.bs_points(
+        "600000",
+        prices,
+        now=datetime(2026, 9, 14, 14, 0, tzinfo=TZ),
+    ) == [(15, "B"), (61, "S"), (131, "B")]
+
+
+def test_active_snapshot_is_authoritative_over_partial_notification_cache():
+    prices = [100.0] * 242
+    notification = SimpleNamespace(
+        event_id="old-notification-only",
+        event_type="trading.holding_t_signal",
+        title="测试 600000 出现 S4",
+        body="",
+        priority="normal",
+        created_at="2026-09-14T10:00:01+08:00",
+        link="",
+        payload={
+            "code": "600000",
+            "direction": "sell_first",
+            "bar_at": "2026-09-14T10:00:00+08:00",
+            "price": 100.0,
+        },
+    )
+    mcp_bs.record_notification(notification)
+    mcp_bs.record_volatility_bs(
+        {
+            "available": True,
+            "code": "600000",
+            "trade_date": "2026-09-14",
+            "markers": [
+                {"time": "09:45", "type": "buy_first", "price": 100.0},
+            ],
+        }
+    )
+
+    # 主动 get_volatility_bs 是完整日内快照；通知里独有的 10:00 S 不应混回来。
+    assert mcp_bs.bs_points(
+        "600000",
+        prices,
+        now=datetime(2026, 9, 14, 11, 0, tzinfo=TZ),
+    ) == [(15, "B")]
