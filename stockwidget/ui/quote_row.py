@@ -562,6 +562,10 @@ class QuoteRow(QWidget):
             return
         self.theme2_chart.push_sample(quote.price)
         self.theme2_chart.set_series(prices)
+        self.theme2_chart.set_volume_profile(
+            trend.volumes if trend else [],
+            enabled=True,
+        )
         self.theme2_chart.set_prev_close(
             (trend.prev_close if trend and trend.prev_close else None) or quote.prev_close
         )
