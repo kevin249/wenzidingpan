@@ -1501,3 +1501,32 @@ def test_theme2_left_mirror_keeps_left_edge_and_expands_right(app):
     assert row.theme2_detail.isVisible() is False
     assert window.frameGeometry().left() == pytest.approx(before_left, abs=2)
     window.close()
+
+
+
+def test_theme2_expanded_chart_uses_mcp_bs_points(app, monkeypatch):
+    from stockwidget import mcp_bs
+    from stockwidget.providers.base import Quote
+
+    requested = []
+
+    def fake_bs_points(symbol, prices, now=None):
+        requested.append((symbol, list(prices)))
+        return [(1, "B"), (2, "S")]
+
+    monkeypatch.setattr(mcp_bs, "bs_points", fake_bs_points)
+
+    config = Config(display_theme="theme2", show_bs_points=True)
+    row = QuoteRow("600519")
+    row.apply_config(config)
+    quote = Quote.from_prices("600519", "贵州茅台", 1304.66, 1272.83)
+    trend = Trend(
+        prices=[1280.0, 1295.0, 1304.66],
+        prev_close=1272.83,
+        open_price=1280.0,
+    )
+    row.update_quote(quote, config, trend)
+
+    assert requested == [("600519", trend.prices)]
+    assert row.theme2_chart._signals == [(1, "B"), (2, "S")]
+    row.close()
