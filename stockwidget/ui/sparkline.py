@@ -33,6 +33,7 @@ class Sparkline(QWidget):
         self._series: list[float] = []  # 当日分时，空则用采样点
         self._volumes: list[float] = []
         self._show_volume_profile = False
+        self._configured_profile_width = 0
         self._prev_close: float | None = None
         self._open_price: float | None = None
         self._signals: list[tuple[int, str]] = []
@@ -85,6 +86,13 @@ class Sparkline(QWidget):
         if state != old:
             self._volumes = cleaned
             self._show_volume_profile = bool(enabled)
+            self.update()
+
+    def set_side_profile_width(self, width: int) -> None:
+        """设置左右成交量/挂单侧栏的共同宽度；0 表示按组件宽度自动计算。"""
+        value = max(0, int(width or 0))
+        if value != self._configured_profile_width:
+            self._configured_profile_width = value
             self.update()
 
     def set_prev_close(self, value: float | None) -> None:
@@ -176,10 +184,13 @@ class Sparkline(QWidget):
 
     # ------------------------------------------------------------ 绘制
 
-    @staticmethod
-    def _side_profile_width(width: int) -> float:
+    def _side_profile_width(self, width: int) -> float:
         """成交量与挂单使用完全相同的左右侧栏宽度。"""
-        return min(240.0, max(24.0, width * 0.28))
+        automatic = min(240.0, max(24.0, width * 0.28))
+        target = float(self._configured_profile_width) if self._configured_profile_width > 0 else automatic
+        # 至少给中间 K 线保留 80px，窗口太窄时两侧等比例收紧。
+        maximum = max(24.0, (width - 80.0) / 2.0)
+        return min(target, maximum)
 
     def _draw_traded_volume(
         self,
