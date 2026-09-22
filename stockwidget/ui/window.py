@@ -159,7 +159,7 @@ class ResizeGrip(QWidget):
         # 20x20 只是鼠标热区，不参与任何布局；视觉斜线默认不画。
         self.setFixedSize(20, 20)
         self.setCursor(Qt.SizeFDiagCursor)
-        self.setToolTip("拖动缩放，字体与走势图会等比放大")
+        self.setToolTip("拖动调整宽高，主题2内容会自动适配")
         self._origin: QPoint | None = None
         self._start_size = QSize()
         self._hovered = False
@@ -647,6 +647,13 @@ class TickerWindow(QWidget):
             self.rows_layout.setColumnStretch(column, 0)
         for column in range(columns):
             self.rows_layout.setColumnStretch(column, 1)
+        old_rows = self._grid_shape[0]
+        for row_index in range(rows, old_rows):
+            self.rows_layout.setRowStretch(row_index, 0)
+        for row_index in range(rows):
+            self.rows_layout.setRowStretch(
+                row_index, 1 if self._config.display_theme == "theme2" else 0
+            )
         self._grid_shape = (rows, columns)
 
     def _theme2_target_width(self) -> int:
@@ -782,7 +789,9 @@ class TickerWindow(QWidget):
                     ),
                     geo.width(),
                 )
-            self.resize(width, total_height)
+            if not self._manual_size:
+                self.resize(width, total_height)
+            # 用户拖过右下角后，行情刷新/配置重排只适配内容，不再把外框弹回自然尺寸。
             self._keep_on_screen()
             return
 
@@ -1009,7 +1018,7 @@ class TickerWindow(QWidget):
             title_probe.apply_config(base)
             chrome += title_probe.sizeHint().height()
 
-        if base.layout == "single":
+        if base.layout == "single" and base.display_theme != "theme2":
             marquee_probe = Marquee()
             marquee_probe.apply_config(base)
             return chrome + marquee_probe.height() + 4

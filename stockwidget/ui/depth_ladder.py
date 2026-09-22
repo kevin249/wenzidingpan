@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QFontMetricsF, QPainter, QPen
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from ..config import Config
 from ..mcp_depth import DepthSnapshot
@@ -36,6 +36,8 @@ class DepthLadder(QWidget):
         self._price_rect = QRectF()
         self.setCursor(Qt.PointingHandCursor)
         self.setMouseTracking(True)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.setMinimumHeight(52)
 
     def apply_config(self, config: Config) -> None:
         self._config = config
@@ -44,7 +46,10 @@ class DepthLadder(QWidget):
         # 总宽度 = 外侧股价区 + 间隔 + 用户指定盘口宽度 + 价格轴边距。
         self._preferred_width = 4 + price_width + gap + config.theme2_depth_width + 5
         self._preferred_height = max(88, round(config.font_size * 7.2))
-        self.setFixedSize(self._preferred_width, self._preferred_height)
+        # 配置宽度只决定默认/自然尺寸；用户拖右下角后，实际宽高由父布局分配。
+        self.setMinimumWidth(4 + price_width + gap + 40 + 5)
+        self.setMaximumWidth(16777215)
+        self.setMaximumHeight(16777215)
         self.updateGeometry()
         self.update()
 
@@ -91,15 +96,16 @@ class DepthLadder(QWidget):
         outer = 4.0
         gap = max(6.0, round(self._config.font_size * 0.45))
         price_width = max(66.0, round(self._config.stock_price_font_size * 4.6))
-        depth_width = float(self._config.theme2_depth_width)
+        # 实际窗口宽度优先：右下角拖宽/拖窄时盘口自动吃掉剩余空间。
+        # theme2_depth_width 仅作为 sizeHint 的默认盘口宽度。
         if mirror:
-            depth_inner_x = axis_x + depth_width
-            price_left = depth_inner_x + gap
-            price_right = price_left + price_width
-        else:
-            depth_inner_x = axis_x - depth_width
-            price_right = depth_inner_x - gap
+            price_right = float(self.width()) - outer
             price_left = price_right - price_width
+            depth_inner_x = price_left - gap
+        else:
+            price_left = outer
+            price_right = price_left + price_width
+            depth_inner_x = price_right + gap
         return mirror, axis_x, depth_inner_x, price_left, price_right
 
     def _draw_depth(self, painter: QPainter) -> None:

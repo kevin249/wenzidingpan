@@ -1530,3 +1530,73 @@ def test_theme2_expanded_chart_uses_mcp_bs_points(app, monkeypatch):
     assert requested == [("600519", trend.prices)]
     assert row.theme2_chart._signals == [(1, "B"), (2, "S")]
     row.close()
+
+
+
+def test_theme2_right_bottom_resize_preserves_manual_width_height_and_adapts_rows(app):
+    from stockwidget.providers.base import Quote
+
+    config = Config(display_theme="theme2", show_title_buttons=False)
+    window = TickerWindow(config)
+    quotes = [
+        Quote.from_prices("600519", "贵州茅台", 1304.66, 1272.83),
+        Quote.from_prices("603986", "兆易创新", 404.97, 432.37),
+        Quote.from_prices("300223", "北京君正", 381.66, 386.48),
+    ]
+    window._sync_rows(quotes)
+    window.show()
+    app.processEvents()
+
+    requested = QSize(max(window.width() + 140, 360), max(window.height() + 150, 360))
+    target = window._bounded_drag_size(requested)
+    window._on_grip_drag_started(window.size())
+    window._on_grip_dragged(requested)
+    window._apply_scale()
+    app.processEvents()
+
+    dragged = QSize(window.size())
+    assert window._manual_size is True
+    assert dragged.width() == target.width()
+    assert dragged.height() == target.height()
+
+    # 模拟下一次行情刷新：手动框不能再被自然尺寸顶回去。
+    window._sync_rows(quotes)
+    app.processEvents()
+    assert window.size() == dragged
+
+    viewport = window.scroll.viewport()
+    row_heights = [row.height() for row in window._rows.values()]
+    assert max(row_heights) - min(row_heights) <= 2
+    assert all(row.theme2_depth.height() >= row.height() - 12 for row in window._rows.values())
+    assert window.grip.x() == window.width() - window.grip.width() - 2
+    assert window.grip.y() == window.height() - window.grip.height() - 2
+    window.close()
+
+
+def test_theme2_width_drag_expands_order_book_area_without_forcing_config_change(app):
+    from stockwidget.providers.base import Quote
+
+    config = Config(display_theme="theme2", theme2_depth_width=84, show_title_buttons=False)
+    window = TickerWindow(config)
+    window._sync_rows([Quote.from_prices("600519", "贵州茅台", 1304.66, 1272.83)])
+    window.show()
+    app.processEvents()
+
+    row = window._rows["600519"]
+    before = row.theme2_depth._horizontal_geometry()
+    start_height = window.height()
+    requested = QSize(window.width() + 180, start_height)
+    bounded = window._bounded_drag_size(requested)
+    window._on_grip_drag_started(window.size())
+    window._on_grip_dragged(requested)
+    window._apply_scale()
+    app.processEvents()
+    after = row.theme2_depth._horizontal_geometry()
+
+    assert window.width() == bounded.width()
+    before_span = before[1] - before[2]
+    after_span = after[1] - after[2]
+    assert after_span > before_span
+    assert config.theme2_depth_width == 84
+    assert window._config.theme2_depth_width == 84
+    window.close()

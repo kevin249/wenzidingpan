@@ -162,7 +162,11 @@ class QuoteRow(QWidget):
         row_height = max(88, round(config.font_size * 7.2))
         detail_width = max(330, round(config.font_size * 27))
         info_width = max(104, round(config.font_size * 8.5))
-        self.theme2_detail.setFixedSize(detail_width, row_height)
+        self.theme2_detail.setMinimumWidth(detail_width)
+        self.theme2_detail.setMaximumWidth(MAX_WIDGET_SIZE)
+        self.theme2_detail.setMinimumHeight(0)
+        self.theme2_detail.setMaximumHeight(MAX_WIDGET_SIZE)
+        self.theme2_detail.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self._theme2_info.setFixedWidth(info_width)
         self._theme2_detail_layout.setDirection(
             QBoxLayout.Direction.RightToLeft
@@ -185,9 +189,11 @@ class QuoteRow(QWidget):
 
     def theme2_target_width(self) -> int:
         margins = self._layout.contentsMargins()
-        width = self.theme2_depth.width() + margins.left() + margins.right()
+        width = self.theme2_depth.sizeHint().width() + margins.left() + margins.right()
         if self._theme2_expanded:
-            width += self._layout.horizontalSpacing() + self.theme2_detail.width()
+            width += self._layout.horizontalSpacing() + max(
+                self.theme2_detail.minimumWidth(), self.theme2_detail.sizeHint().width()
+            )
         return width
 
     def set_theme2_expanded(self, expanded: bool, *, notify: bool = True) -> None:
@@ -224,19 +230,11 @@ class QuoteRow(QWidget):
                 ):
                     self._layout.removeWidget(widget)
                 if config.theme2_side == "left":
-                    self._layout.addWidget(
-                        self.theme2_depth, 0, 0, 2, 1, Qt.AlignLeft | Qt.AlignVCenter
-                    )
-                    self._layout.addWidget(
-                        self.theme2_detail, 0, 1, 2, 1, Qt.AlignLeft | Qt.AlignVCenter
-                    )
+                    self._layout.addWidget(self.theme2_depth, 0, 0, 2, 1)
+                    self._layout.addWidget(self.theme2_detail, 0, 1, 2, 1)
                 else:
-                    self._layout.addWidget(
-                        self.theme2_detail, 0, 0, 2, 1, Qt.AlignRight | Qt.AlignVCenter
-                    )
-                    self._layout.addWidget(
-                        self.theme2_depth, 0, 1, 2, 1, Qt.AlignRight | Qt.AlignVCenter
-                    )
+                    self._layout.addWidget(self.theme2_detail, 0, 0, 2, 1)
+                    self._layout.addWidget(self.theme2_depth, 0, 1, 2, 1)
                 self._layout.setColumnStretch(0, 0)
                 self._layout.setColumnStretch(1, 0)
                 self._layout.setColumnStretch(2, 0)
@@ -252,7 +250,27 @@ class QuoteRow(QWidget):
             self._layout.setContentsMargins(padding, padding, padding, padding)
             self._layout.setHorizontalSpacing(max(4, round(config.font_size * 0.45)))
             self._layout.setVerticalSpacing(0)
-            self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+            # 主题2由窗口当前宽高驱动；右下角拖拽时每行和盘口一起伸缩。
+            self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            self.setMinimumHeight(max(52, round(config.font_size * 4.0)))
+            self.setMaximumHeight(MAX_WIDGET_SIZE)
+            if self._theme2_expanded:
+                self.theme2_detail.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+                self.theme2_depth.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+                if config.theme2_side == "left":
+                    self._layout.setColumnStretch(0, 0)
+                    self._layout.setColumnStretch(1, 1)
+                else:
+                    self._layout.setColumnStretch(0, 1)
+                    self._layout.setColumnStretch(1, 0)
+            else:
+                self.theme2_depth.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+                if config.theme2_side == "left":
+                    self._layout.setColumnStretch(0, 1)
+                    self._layout.setColumnStretch(1, 0)
+                else:
+                    self._layout.setColumnStretch(0, 0)
+                    self._layout.setColumnStretch(1, 1)
             self._narrow = False
             return
 
