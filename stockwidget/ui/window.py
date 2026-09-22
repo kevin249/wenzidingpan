@@ -669,8 +669,9 @@ class TickerWindow(QWidget):
         else:
             return
 
-        # 右侧盘口列保持原位：详情区只从左侧长出来/缩回去。
-        right = self.frameGeometry().right()
+        # 靠右时固定右边缘向左展开；靠左镜像时固定左边缘向右展开。
+        mirror_left = self._config.theme2_side == "left"
+        fixed_edge = self.frameGeometry().left() if mirror_left else self.frameGeometry().right()
         target = self._theme2_target_width()
         screen = self.screen()
         if screen is not None:
@@ -678,7 +679,10 @@ class TickerWindow(QWidget):
         self._transient_geometry_change = True
         try:
             self.resize(target, self.height())
-            self.move(right - target + 1, self.y())
+            if mirror_left:
+                self.move(fixed_edge, self.y())
+            else:
+                self.move(fixed_edge - target + 1, self.y())
             self._keep_on_screen()
         finally:
             self._transient_geometry_change = False
