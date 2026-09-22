@@ -221,7 +221,9 @@ def test_full_thousand_never_requests_fallback():
 def test_poll_interval_is_five_seconds_until_thousand_recovers():
     assert mcp_depth._poll_seconds(False) == 5.0
     assert mcp_depth._poll_seconds(True) == 60.0
+    assert "串行" in mcp_depth._status_text(False)
     assert "5s" in mcp_depth._status_text(False)
+    assert "串行" in mcp_depth._status_text(True)
     assert "60s" in mcp_depth._status_text(True)
 
 
@@ -262,3 +264,25 @@ def test_multi_symbol_depth_gap_is_enforced_after_previous_request():
     assert mcp_depth._serial_depth_delay(0.0, now=100.0) == 0.0
     assert mcp_depth._serial_depth_delay(100.0, now=100.2) == pytest.approx(gap - 0.2)
     assert mcp_depth._serial_depth_delay(100.0, now=101.0) == 0.0
+
+
+
+def test_serial_scheduler_wakes_for_earliest_symbol_due():
+    poller = mcp_depth.McpDepthPoller(
+        mcp_depth.Config(symbols=["600000", "000001"])
+    )
+    poller._last_bs_fetch_at = 100.0
+    poller._next_depth_due = {"600000": 105.0, "000001": 112.0}
+
+    assert poller._next_wake_seconds(poller._config, now=101.0) == pytest.approx(4.0)
+
+
+def test_serial_scheduler_does_not_double_wait_after_long_batch():
+    poller = mcp_depth.McpDepthPoller(
+        mcp_depth.Config(symbols=["600000", "000001"])
+    )
+    poller._last_bs_fetch_at = 100.0
+    # 模拟多股串行完成后：最早股票 60 秒到期，后面股票更晚。
+    poller._next_depth_due = {"600000": 161.0, "000001": 164.0}
+
+    assert poller._next_wake_seconds(poller._config, now=160.0) == pytest.approx(1.0)
