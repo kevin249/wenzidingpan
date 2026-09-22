@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+from types import SimpleNamespace
+
+import stockwidget.mcp_depth as mcp_depth
 from stockwidget.mcp_depth import MIN_THOUSAND_LEVELS, parse_depth_payload
 
 
@@ -69,3 +73,34 @@ def test_nested_thousand_levels_are_supported():
     assert snapshot.available is True
     assert snapshot.bid_count == 6
     assert snapshot.ask_count == 6
+
+
+
+def test_active_bs_fetch_requests_all_today_markers(monkeypatch):
+    calls = []
+    recorded = []
+
+    class FakeSession:
+        async def call_tool(self, name, arguments=None):
+            calls.append((name, arguments))
+            return SimpleNamespace(
+                is_error=False,
+                structured_content={
+                    "available": True,
+                    "code": "600000",
+                    "trade_date": "2026-09-22",
+                    "markers": [{"time": "10:00", "type": "buy_first"}],
+                },
+            )
+
+    monkeypatch.setattr(mcp_depth, "record_volatility_bs", recorded.append)
+    payload = asyncio.run(mcp_depth._fetch_volatility_bs(FakeSession(), "600000"))
+
+    assert calls == [
+        (
+            "get_volatility_bs",
+            {"symbol": "600000", "trade_date": "", "limit": 200},
+        )
+    ]
+    assert payload["markers"][0]["type"] == "buy_first"
+    assert recorded == [payload]
