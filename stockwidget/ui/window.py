@@ -1018,7 +1018,7 @@ class TickerWindow(QWidget):
             title_probe.apply_config(base)
             chrome += title_probe.sizeHint().height()
 
-        if base.layout == "single":
+        if base.layout == "single" and base.display_theme != "theme2":
             marquee_probe = Marquee()
             marquee_probe.apply_config(base)
             return chrome + marquee_probe.height() + 4
