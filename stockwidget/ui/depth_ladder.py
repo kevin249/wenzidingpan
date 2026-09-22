@@ -65,6 +65,15 @@ class DepthLadder(QWidget):
     def sizeHint(self) -> QSize:  # noqa: N802
         return QSize(self._preferred_width, self._preferred_height)
 
+    def _book_mid_price(self, levels) -> float | None:
+        if self._price is not None and self._price > 0:
+            return self._price
+        bids = [row.price for row in levels if row.side == "bid" and row.price > 0]
+        asks = [row.price for row in levels if row.side == "ask" and row.price > 0]
+        if bids and asks:
+            return (max(bids) + min(asks)) / 2.0
+        return max(bids) if bids else min(asks) if asks else None
+
     def _draw_depth(self, painter: QPainter) -> None:
         snapshot = self._depth
         if snapshot is None or not snapshot.available or not snapshot.levels:
@@ -73,22 +82,47 @@ class DepthLadder(QWidget):
         levels = [row for row in snapshot.levels if row.price > 0 and row.volume > 0]
         if not levels:
             return
-        low = min(row.price for row in levels)
-        high = max(row.price for row in levels)
-        span = high - low or max(abs(high) * 0.001, 0.01)
-        height = max(1, self.height() - 4)
-        center = self.width() / 2.0
-        max_bar = max(12.0, self.width() * 0.47)
+        mid_price = self._book_mid_price(levels)
+        if mid_price is None or mid_price <= 0:
+            return
+
+        # 主题2盘口方向：
+        # - 右侧是一根共同的价格轴，买卖量条全部向左延伸；
+        # - 当前价固定在高度正中央；
+        # - 卖盘只画在中线上方，买盘只画在中线下方。
+        axis_x = self.width() - 5
+        center_y = self.height() / 2.0
+        top_margin = 3.0
+        bottom_margin = 3.0
+        upper_span = max(1.0, center_y - top_margin - 3.0)
+        lower_span = max(1.0, self.height() - bottom_margin - center_y - 3.0)
+        max_bar = max(18.0, axis_x - 4.0)
+
+        asks = [row for row in levels if row.side == "ask" and row.price >= mid_price]
+        bids = [row for row in levels if row.side == "bid" and row.price <= mid_price]
+        ask_span = max((row.price - mid_price for row in asks), default=0.0)
+        bid_span = max((mid_price - row.price for row in bids), default=0.0)
+        ask_span = ask_span or max(abs(mid_price) * 0.001, 0.01)
+        bid_span = bid_span or max(abs(mid_price) * 0.001, 0.01)
 
         buckets: dict[tuple[int, str], float] = {}
-        for row in levels:
-            y = round(2 + (high - row.price) / span * height)
-            y = max(2, min(self.height() - 2, y))
-            key = (y, row.side)
-            buckets[key] = buckets.get(key, 0.0) + row.volume
+        for row in asks:
+            ratio = min(max((row.price - mid_price) / ask_span, 0.0), 1.0)
+            y = round(center_y - 3.0 - ratio * upper_span)
+            buckets[(max(2, y), "ask")] = buckets.get((max(2, y), "ask"), 0.0) + row.volume
+        for row in bids:
+            ratio = min(max((mid_price - row.price) / bid_span, 0.0), 1.0)
+            y = round(center_y + 3.0 + ratio * lower_span)
+            y = min(self.height() - 2, y)
+            buckets[(y, "bid")] = buckets.get((y, "bid"), 0.0) + row.volume
         if not buckets:
             return
+
         maximum = max(buckets.values()) or 1.0
+        axis_color = QColor(130, 136, 150)
+        axis_color.setAlpha(115)
+        painter.setPen(QPen(axis_color, 1.0))
+        painter.drawLine(axis_x, 2, axis_x, self.height() - 2)
 
         for (y, side), volume in buckets.items():
             length = max(1.0, max_bar * volume / maximum)
@@ -98,15 +132,20 @@ class DepthLadder(QWidget):
                 color = QColor(BID_COLOR if side == "bid" else ASK_COLOR)
             color.setAlpha(112)
             painter.setPen(QPen(color, 1.2))
-            if side == "bid":
-                painter.drawLine(round(center - length), y, round(center), y)
-            else:
-                painter.drawLine(round(center), y, round(center + length), y)
+            painter.drawLine(round(axis_x - length), y, axis_x, y)
 
     def paintEvent(self, event) -> None:  # noqa: N802
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         self._draw_depth(painter)
+
+        # 当前价是盘口上下分界：整条中线贯穿到右侧价格轴。
+        center_y = self.height() / 2.0
+        axis_x = self.width() - 5
+        center_line = QColor(190, 195, 205)
+        center_line.setAlpha(150)
+        painter.setPen(QPen(center_line, 1.0))
+        painter.drawLine(2, round(center_y), axis_x, round(center_y))
 
         box_width = min(self.width() * 0.72, max(88.0, self.width() * 0.58))
         box_height = min(54.0, max(38.0, self.height() * 0.42))
