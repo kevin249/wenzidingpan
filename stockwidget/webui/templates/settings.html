@@ -61,6 +61,11 @@
                    min="40" max="600" step="4" value="{{ config.theme2_depth_width }}" />
           </div>
           <div class="field">
+            <label for="theme2_popup_font_size">主题 2 弹出框字号（px）</label>
+            <input id="theme2_popup_font_size" name="theme2_popup_font_size" type="number"
+                   min="7" max="48" step="1" value="{{ config.theme2_popup_font_size }}" />
+          </div>
+          <div class="field">
             <label for="layout">显示模式</label>
             <select id="layout" name="layout">
               <option value="multi" {% if config.layout == 'multi' %}selected{% endif %}>多行列表</option>
