@@ -14,6 +14,7 @@ from mcp.client.streamable_http import streamable_http_client
 from PySide6.QtCore import QThread, Signal
 
 from .config import Config
+from .mcp_bs import record_volatility_bs
 from .mcp_notifications import SSE_TIMEOUT, _api_key, _bounded, _tool_payload
 from .symbols import classify
 
@@ -180,7 +181,7 @@ class McpDepthPoller(QThread):
             try:
                 asyncio.run(self._fetch_cycle(config))
                 if not self._stopping.is_set():
-                    self._emit_status("已连接 · 千档 60s")
+                    self._emit_status("已连接 · 千档/B-S 60s")
             except (KeyboardInterrupt, SystemExit):
                 raise
             except BaseException as exc:  # noqa: BLE001
@@ -211,13 +212,33 @@ class McpDepthPoller(QThread):
                         symbol = classify(raw_symbol)
                         if symbol is None:
                             continue
-                        result = await _bounded(
-                            session.call_tool(
-                                "get_tdx_depth",
-                                arguments={"symbol": symbol.code, "force": True},
+                        # 主动读取当天全部 B/S markers，不依赖通知是否曾经送达。
+                        try:
+                            bs_result = await _bounded(
+                                session.call_tool(
+                                    "get_volatility_bs",
+                                    arguments={
+                                        "symbol": symbol.code,
+                                        "trade_date": "",
+                                        "limit": 200,
+                                    },
+                                )
                             )
-                        )
-                        snapshot = parse_depth_payload(symbol.code, _tool_payload(result))
+                            record_volatility_bs(_tool_payload(bs_result))
+                        except Exception:
+                            # B/S 暂时不可用不能拖死千档；下一轮 60s 自动重试。
+                            pass
+
+                        try:
+                            result = await _bounded(
+                                session.call_tool(
+                                    "get_tdx_depth",
+                                    arguments={"symbol": symbol.code, "force": True},
+                                )
+                            )
+                            snapshot = parse_depth_payload(symbol.code, _tool_payload(result))
+                        except Exception:
+                            continue
                         # 读取失败/退化到十档时保留 UI 上一份千档，过期后由绘图层标“延迟”。
                         if snapshot.available:
                             self.depth_ready.emit(snapshot)
