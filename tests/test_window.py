@@ -1600,3 +1600,51 @@ def test_theme2_width_drag_expands_order_book_area_without_forcing_config_change
     assert config.theme2_depth_width == 84
     assert window._config.theme2_depth_width == 84
     window.close()
+
+
+
+def test_theme2_resize_does_not_scale_fonts(app):
+    from stockwidget.providers.base import Quote
+
+    config = Config(
+        display_theme="theme2",
+        font_size=13,
+        stock_name_font_size=12,
+        stock_price_font_size=15,
+        stock_percent_font_size=11,
+        dark_trade_font_size=10,
+        chart_label_font_size=9,
+        show_title_buttons=False,
+    )
+    window = TickerWindow(config)
+    window._sync_rows([Quote.from_prices("600519", "贵州茅台", 1304.66, 1272.83)])
+    window.show()
+    app.processEvents()
+
+    row = window._rows["600519"]
+    before = (
+        row.theme2_name_label.font().pixelSize(),
+        row.theme2_code_label.font().pixelSize(),
+        row.theme2_dark_label.font().pixelSize(),
+        row.theme2_depth._config.stock_price_font_size,
+        row.theme2_depth._config.stock_percent_font_size,
+    )
+    scale_before = window._scale
+
+    requested = QSize(window.width() + 180, window.height() + 180)
+    window._on_grip_drag_started(window.size())
+    window._on_grip_dragged(requested)
+    window._apply_scale()
+    app.processEvents()
+
+    after = (
+        row.theme2_name_label.font().pixelSize(),
+        row.theme2_code_label.font().pixelSize(),
+        row.theme2_dark_label.font().pixelSize(),
+        row.theme2_depth._config.stock_price_font_size,
+        row.theme2_depth._config.stock_percent_font_size,
+    )
+    assert after == before
+    assert window._scale == scale_before
+    assert window.scaled_config() is window._config
+    window.close()
