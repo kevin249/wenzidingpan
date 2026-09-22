@@ -39,7 +39,10 @@ class DepthLadder(QWidget):
 
     def apply_config(self, config: Config) -> None:
         self._config = config
-        self._preferred_width = max(168, round(config.font_size * 12.8))
+        price_width = max(66, round(config.stock_price_font_size * 4.6))
+        gap = max(6, round(config.font_size * 0.45))
+        # 总宽度 = 外侧股价区 + 间隔 + 用户指定盘口宽度 + 价格轴边距。
+        self._preferred_width = 4 + price_width + gap + config.theme2_depth_width + 5
         self._preferred_height = max(88, round(config.font_size * 7.2))
         self.setFixedSize(self._preferred_width, self._preferred_height)
         self.updateGeometry()
@@ -87,18 +90,16 @@ class DepthLadder(QWidget):
         axis_x = 5.0 if mirror else float(self.width() - 5)
         outer = 4.0
         gap = max(6.0, round(self._config.font_size * 0.45))
-        price_width = min(
-            max(66.0, round(self._config.stock_price_font_size * 4.6)),
-            self.width() * 0.46,
-        )
+        price_width = max(66.0, round(self._config.stock_price_font_size * 4.6))
+        depth_width = float(self._config.theme2_depth_width)
         if mirror:
-            price_right = float(self.width()) - outer
-            price_left = price_right - price_width
-            depth_inner_x = price_left - gap
-        else:
-            price_left = outer
+            depth_inner_x = axis_x + depth_width
+            price_left = depth_inner_x + gap
             price_right = price_left + price_width
-            depth_inner_x = price_right + gap
+        else:
+            depth_inner_x = axis_x - depth_width
+            price_right = depth_inner_x - gap
+            price_left = price_right - price_width
         return mirror, axis_x, depth_inner_x, price_left, price_right
 
     def _draw_depth(self, painter: QPainter) -> None:
