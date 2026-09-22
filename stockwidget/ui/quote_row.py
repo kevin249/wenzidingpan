@@ -198,7 +198,8 @@ class QuoteRow(QWidget):
     def leaveEvent(self, event) -> None:  # noqa: N802 - Qt 命名
         if self._config.display_theme == "theme2" and self._theme2_expanded:
             self.set_theme2_expanded(False)
-        super().leaveEvent(event)
+        if event is not None:
+            super().leaveEvent(event)
 
     def _update_layout_mode(self) -> None:
         """按所选版式摆放文字；各类字体保持用户设置的比例。"""
