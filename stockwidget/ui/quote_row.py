@@ -230,19 +230,11 @@ class QuoteRow(QWidget):
                 ):
                     self._layout.removeWidget(widget)
                 if config.theme2_side == "left":
-                    self._layout.addWidget(
-                        self.theme2_depth, 0, 0, 2, 1, Qt.AlignLeft | Qt.AlignVCenter
-                    )
-                    self._layout.addWidget(
-                        self.theme2_detail, 0, 1, 2, 1, Qt.AlignLeft | Qt.AlignVCenter
-                    )
+                    self._layout.addWidget(self.theme2_depth, 0, 0, 2, 1)
+                    self._layout.addWidget(self.theme2_detail, 0, 1, 2, 1)
                 else:
-                    self._layout.addWidget(
-                        self.theme2_detail, 0, 0, 2, 1, Qt.AlignRight | Qt.AlignVCenter
-                    )
-                    self._layout.addWidget(
-                        self.theme2_depth, 0, 1, 2, 1, Qt.AlignRight | Qt.AlignVCenter
-                    )
+                    self._layout.addWidget(self.theme2_detail, 0, 0, 2, 1)
+                    self._layout.addWidget(self.theme2_depth, 0, 1, 2, 1)
                 self._layout.setColumnStretch(0, 0)
                 self._layout.setColumnStretch(1, 0)
                 self._layout.setColumnStretch(2, 0)
