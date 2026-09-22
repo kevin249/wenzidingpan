@@ -70,8 +70,10 @@ def test_theme2_is_vertical_and_click_expands_left_detail(app):
             )
         },
     )
-    window.move(300, 100)
     window.show()
+    app.processEvents()
+    geo = window.screen().availableGeometry()
+    window.move(max(geo.left(), geo.right() - window.width() - 20), geo.top() + 20)
     app.processEvents()
 
     assert window._grid_size(3) == (3, 1)
