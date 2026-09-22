@@ -1457,3 +1457,47 @@ def test_resize_grip_is_overlay_and_tracks_bottom_right(app):
     window.grip.leaveEvent(None)
     assert window.grip._hovered is False
     window.close()
+
+
+
+def test_theme2_left_mirror_keeps_left_edge_and_expands_right(app):
+    from stockwidget.providers.base import Quote
+
+    config = Config(display_theme="theme2", theme2_side="left", show_sparkline=False)
+    window = TickerWindow(config)
+    quote = Quote.from_prices("600519", "贵州茅台", 1304.66, 1272.83)
+    window._sync_rows(
+        [quote],
+        {
+            "600519": Trend(
+                prices=[1275.0, 1290.0, 1304.66],
+                high_price=1310.0,
+                low_price=1268.0,
+            )
+        },
+    )
+    window.show()
+    app.processEvents()
+    geo = window.screen().availableGeometry()
+    window.move(geo.left() + 20, geo.top() + 20)
+    app.processEvents()
+
+    row = window._rows["600519"]
+    layout = row.layout()
+    assert layout.getItemPosition(layout.indexOf(row.theme2_depth))[:2] == (0, 0)
+    assert layout.getItemPosition(layout.indexOf(row.theme2_detail))[:2] == (0, 1)
+
+    before_width = window.width()
+    before_left = window.frameGeometry().left()
+    row.theme2_depth.price_clicked.emit()
+    app.processEvents()
+
+    assert row.theme2_detail.isVisible() is True
+    assert window.width() > before_width
+    assert window.frameGeometry().left() == pytest.approx(before_left, abs=2)
+
+    row.leaveEvent(None)
+    app.processEvents()
+    assert row.theme2_detail.isVisible() is False
+    assert window.frameGeometry().left() == pytest.approx(before_left, abs=2)
+    window.close()
