@@ -13,3 +13,14 @@ def test_intraday_chart_refreshes_each_second():
 def test_quote_refresh_interval_is_kept_when_chart_is_off():
     config = Config(refresh_seconds=9, show_sparkline=False)
     assert Poller._loop_interval(config) == 9.0
+
+
+def test_theme2_keeps_intraday_refresh_even_when_classic_sparkline_is_hidden():
+    config = Config(
+        refresh_seconds=9,
+        display_theme="theme2",
+        show_sparkline=False,
+        intraday_chart=True,
+    )
+    assert Poller._chart_enabled(config) is True
+    assert Poller._loop_interval(config) == 1.0

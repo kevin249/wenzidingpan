@@ -10,13 +10,15 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QGridLayout, QHBoxLayout, QLabel, QSizePolicy, QWidget
 
 from ..config import Config
 from ..intraday import Trend, calculate_bs_points
 from ..mcp_depth import DepthSnapshot
 from ..providers.base import Quote
+from ..symbols import classify
+from .depth_ladder import DepthLadder
 from .sparkline import Sparkline
 from .theme import (
     BLACK,
@@ -37,12 +39,15 @@ def _color_style(color) -> str:
 
 
 class QuoteRow(QWidget):
+    theme2_expansion_changed = Signal(str, bool)
+
     def __init__(self, symbol: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.symbol = symbol
         self._last_quote: Quote | None = None
         self._last_trend: Trend | None = None
         self._last_depth: DepthSnapshot | None = None
+        self._theme2_expanded = False
 
         self.name_label = QLabel()
         self.price_label = QLabel()
@@ -52,7 +57,7 @@ class QuoteRow(QWidget):
         self.sparkline = Sparkline()
         self._config = Config()
         self._narrow = False
-        self._layout_state: tuple[bool, bool, bool, bool, bool] | None = None
+        self._layout_state: tuple[object, ...] | None = None
 
         self.price_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.percent_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
@@ -69,6 +74,35 @@ class QuoteRow(QWidget):
         dark_layout.addWidget(self.dark_label)
         dark_layout.addWidget(self.dark_value)
         dark_layout.addStretch(1)
+
+        # 主题2：右侧常驻千档；点击中央价格后左侧详情/K线临时展开。
+        self.theme2_depth = DepthLadder()
+        self.theme2_depth.price_clicked.connect(lambda: self.set_theme2_expanded(True))
+        self.theme2_detail = QWidget()
+        theme2_detail_layout = QHBoxLayout(self.theme2_detail)
+        theme2_detail_layout.setContentsMargins(6, 4, 6, 4)
+        theme2_detail_layout.setSpacing(8)
+        theme2_info = QWidget()
+        theme2_info_layout = QGridLayout(theme2_info)
+        theme2_info_layout.setContentsMargins(0, 0, 0, 0)
+        theme2_info_layout.setHorizontalSpacing(4)
+        theme2_info_layout.setVerticalSpacing(2)
+        self.theme2_name_label = QLabel()
+        self.theme2_code_label = QLabel()
+        self.theme2_dark_label = QLabel()
+        self.theme2_high_low_label = QLabel()
+        theme2_info_layout.addWidget(self.theme2_name_label, 0, 0)
+        theme2_info_layout.addWidget(self.theme2_code_label, 1, 0)
+        theme2_info_layout.addWidget(self.theme2_dark_label, 2, 0)
+        theme2_info_layout.addWidget(self.theme2_high_low_label, 3, 0)
+        self.theme2_chart = Sparkline()
+        self.theme2_chart.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        theme2_detail_layout.addWidget(theme2_info)
+        theme2_detail_layout.addWidget(self.theme2_chart, 1)
+        self._theme2_info = theme2_info
+        self._theme2_detail_layout = theme2_detail_layout
+        self.theme2_detail.hide()
+        self.theme2_depth.hide()
 
         layout = QGridLayout(self)
         layout.setContentsMargins(12, 5, 12, 5)
@@ -103,6 +137,18 @@ class QuoteRow(QWidget):
         self.sparkline.set_annotation_font(
             make_font(config, pixel_size=config.chart_label_font_size)
         )
+        self.theme2_chart.set_annotation_options(
+            show_signals=config.show_bs_points,
+            show_open_line=config.show_open_line,
+            show_high_low=config.show_high_low,
+            show_fill=config.show_sparkline_fill,
+            grayscale=config.grayscale,
+        )
+        self.theme2_chart.set_annotation_font(
+            make_font(config, pixel_size=config.chart_label_font_size)
+        )
+        self.theme2_depth.apply_config(config)
+        self._apply_theme2_metrics(config)
         self._update_layout_mode()
         if self._last_quote is not None:
             self.update_quote(self._last_quote, config, self._last_trend)
@@ -111,9 +157,98 @@ class QuoteRow(QWidget):
         super().resizeEvent(event)
         self._update_layout_mode()
 
+    def _apply_theme2_metrics(self, config: Config) -> None:
+        row_height = max(88, round(config.font_size * 7.2))
+        detail_width = max(330, round(config.font_size * 27))
+        info_width = max(104, round(config.font_size * 8.5))
+        self.theme2_detail.setFixedSize(detail_width, row_height)
+        self._theme2_info.setFixedWidth(info_width)
+        self.theme2_chart.set_preferred_height(max(60, row_height - 10))
+        self.theme2_name_label.setFont(
+            make_font(config, bold=True, pixel_size=config.stock_name_font_size)
+        )
+        self.theme2_code_label.setFont(
+            make_font(config, pixel_size=max(7, config.stock_percent_font_size))
+        )
+        self.theme2_dark_label.setFont(
+            make_font(config, bold=config.dark_trade_bold, pixel_size=config.dark_trade_font_size)
+        )
+        self.theme2_high_low_label.setFont(
+            make_font(config, pixel_size=max(7, config.stock_percent_font_size))
+        )
+
+    def theme2_target_width(self) -> int:
+        margins = self._layout.contentsMargins()
+        width = self.theme2_depth.width() + margins.left() + margins.right()
+        if self._theme2_expanded:
+            width += self._layout.horizontalSpacing() + self.theme2_detail.width()
+        return width
+
+    def set_theme2_expanded(self, expanded: bool, *, notify: bool = True) -> None:
+        expanded = bool(expanded and self._config.display_theme == "theme2")
+        if expanded == self._theme2_expanded:
+            return
+        self._theme2_expanded = expanded
+        self.theme2_detail.setVisible(expanded)
+        self._update_layout_mode()
+        self.updateGeometry()
+        if notify:
+            self.theme2_expansion_changed.emit(self.symbol, expanded)
+
+    def leaveEvent(self, event) -> None:  # noqa: N802 - Qt 命名
+        if self._config.display_theme == "theme2" and self._theme2_expanded:
+            self.set_theme2_expanded(False)
+        if event is not None:
+            super().leaveEvent(event)
+
     def _update_layout_mode(self) -> None:
         """按所选版式摆放文字；各类字体保持用户设置的比例。"""
         config = self._config
+        if config.display_theme == "theme2":
+            theme2_state = ("theme2",)
+            if self._layout_state != theme2_state:
+                for widget in (
+                    self.name_label,
+                    self.price_label,
+                    self.percent_label,
+                    self.dark_box,
+                    self.sparkline,
+                    self.theme2_detail,
+                    self.theme2_depth,
+                ):
+                    self._layout.removeWidget(widget)
+                self._layout.addWidget(
+                    self.theme2_detail, 0, 0, 2, 1, Qt.AlignRight | Qt.AlignVCenter
+                )
+                self._layout.addWidget(
+                    self.theme2_depth, 0, 1, 2, 1, Qt.AlignRight | Qt.AlignVCenter
+                )
+                self._layout.setColumnStretch(0, 0)
+                self._layout.setColumnStretch(1, 0)
+                self._layout.setColumnStretch(2, 0)
+                self._layout_state = theme2_state
+            self.name_label.hide()
+            self.price_label.hide()
+            self.percent_label.hide()
+            self.dark_box.hide()
+            self.sparkline.hide()
+            self.theme2_depth.show()
+            self.theme2_detail.setVisible(self._theme2_expanded)
+            padding = max(2, round(config.font_size * 0.28))
+            self._layout.setContentsMargins(padding, padding, padding, padding)
+            self._layout.setHorizontalSpacing(max(4, round(config.font_size * 0.45)))
+            self._layout.setVerticalSpacing(0)
+            self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+            self._narrow = False
+            return
+
+        self.theme2_detail.hide()
+        self.theme2_depth.hide()
+        self.name_label.setVisible(config.show_stock_name)
+        self.price_label.setVisible(config.show_stock_price)
+        self.percent_label.setVisible(config.show_stock_price)
+        self.sparkline.setVisible(config.show_sparkline)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
         side_font = max(config.stock_name_font_size, config.stock_price_font_size)
         narrow = self.width() < max(120, round(side_font * 12))
         self.name_label.setFont(
@@ -284,6 +419,7 @@ class QuoteRow(QWidget):
         self._last_quote = quote
         self._last_trend = trend
         color = direction_color(config, quote.change)
+        self._update_theme2_data(quote, config, trend, color)
         self.name_label.setText(quote.name or quote.symbol)
         self.name_label.setStyleSheet(
             _color_style(configured_text_color(config.stock_name_color, color))
@@ -333,9 +469,69 @@ class QuoteRow(QWidget):
         # 文本写入后 minimumSizeHint 才准确；必要时切到更窄的堆叠布局。
         self._update_layout_mode()
 
+    def _update_theme2_data(self, quote: Quote, config: Config, trend: Trend | None, color) -> None:
+        symbol = classify(quote.symbol)
+        code = symbol.code if symbol is not None else quote.symbol
+        self.theme2_name_label.setText(quote.name or quote.symbol)
+        self.theme2_code_label.setText(code)
+        self.theme2_name_label.setStyleSheet(
+            _color_style(configured_text_color(config.stock_name_color, color))
+        )
+        self.theme2_code_label.setStyleSheet(_color_style(MUTED))
+
+        dark = fmt_money(quote.dark_fund)
+        main = fmt_money(quote.dark_main_net_inflow)
+        parts = []
+        if dark is not None:
+            parts.append(f"暗 {dark}")
+        if main is not None:
+            parts.append(f"主净 {main}")
+        self.theme2_dark_label.setText("  ".join(parts) if parts else "暗 --")
+        self.theme2_dark_label.setStyleSheet(
+            _color_style(
+                configured_text_color(
+                    config.dark_trade_color,
+                    direction_color(config, quote.dark_fund),
+                )
+            )
+        )
+
+        prices = trend.prices if trend else []
+        high = trend.high_price if trend and trend.high_price is not None else (
+            max(prices) if prices else None
+        )
+        low = trend.low_price if trend and trend.low_price is not None else (
+            min(prices) if prices else None
+        )
+        high_text = "--" if high is None else f"{high:.2f}"
+        low_text = "--" if low is None else f"{low:.2f}"
+        self.theme2_high_low_label.setText(f"高 {high_text}  低 {low_text}")
+        self.theme2_high_low_label.setStyleSheet(_color_style(MUTED))
+
+        self.theme2_depth.set_quote(quote.price, quote.change_percent, color, quote.error)
+        self.theme2_chart.set_color(color)
+        if quote.error:
+            self.theme2_chart.clear()
+            return
+        self.theme2_chart.push_sample(quote.price)
+        self.theme2_chart.set_series(prices)
+        self.theme2_chart.set_prev_close(
+            (trend.prev_close if trend and trend.prev_close else None) or quote.prev_close
+        )
+        self.theme2_chart.set_annotations(
+            trend.open_price if trend else (prices[0] if prices else None),
+            calculate_bs_points(prices),
+            show_signals=config.show_bs_points,
+            show_open_line=config.show_open_line,
+            show_high_low=config.show_high_low,
+            show_fill=config.show_sparkline_fill,
+            grayscale=config.grayscale,
+        )
+
     def update_depth(self, snapshot: DepthSnapshot | None) -> None:
         self._last_depth = snapshot
         self.sparkline.set_depth(snapshot)
+        self.theme2_depth.set_depth(snapshot)
 
     def _set_dark(self, dark_fund: float | None, config: Config) -> None:
         text = fmt_money(dark_fund) if config.show_dark_trade and not config.compact else None

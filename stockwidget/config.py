@@ -21,6 +21,7 @@ APP_DIR_NAME = "stock-ticker-widget"
 CONFIG_FILE_NAME = "config.json"
 
 LAYOUTS = ("multi", "single")
+DISPLAY_THEMES = ("theme1", "theme2")
 # sides = 左中右（左右各两行文字），stacked = 上中下（上下各一行文字）
 ROW_STYLES = ("sides", "stacked")
 COLOR_SCHEMES = ("cn", "us")
@@ -100,6 +101,7 @@ class Config:
     intraday_chart: bool = True
     show_dark_trade: bool = True
     compact: bool = False
+    display_theme: str = "theme1"  # theme1 = 经典网格，theme2 = 千档竖列 + 点击左展
     layout: str = "multi"  # multi = 多行列表，single = 单行滚动
     # sides = 左中右：左侧名称/暗盘两行，右侧现价/涨跌幅两行，走势图在中间；
     # stacked = 上中下：名称与现价同一行，暗盘与涨跌幅同一行，走势图永远在中间。
@@ -170,6 +172,8 @@ def sanitize(raw: Any) -> Config:
 
     if raw.get("color_scheme") in COLOR_SCHEMES:
         out.color_scheme = raw["color_scheme"]
+    if raw.get("display_theme") in DISPLAY_THEMES:
+        out.display_theme = raw["display_theme"]
     if raw.get("layout") in LAYOUTS:
         out.layout = raw["layout"]
     if raw.get("row_style") in ROW_STYLES:

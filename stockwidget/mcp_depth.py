@@ -128,10 +128,9 @@ class McpDepthPoller(QThread):
     @staticmethod
     def _enabled(config: Config) -> bool:
         return bool(
-            config.show_sparkline
-            and config.intraday_chart
-            and config.symbols
+            config.symbols
             and _api_key(config)
+            and (config.display_theme == "theme2" or (config.show_sparkline and config.intraday_chart))
         )
 
     def apply_config(self, config: Config) -> None:
@@ -142,12 +141,14 @@ class McpDepthPoller(QThread):
                 tuple(config.symbols),
                 config.show_sparkline,
                 config.intraday_chart,
+                config.display_theme,
             ) != (
                 self._config.mcp_url,
                 _api_key(self._config),
                 tuple(self._config.symbols),
                 self._config.show_sparkline,
                 self._config.intraday_chart,
+                self._config.display_theme,
             )
             self._config = config
         if changed:

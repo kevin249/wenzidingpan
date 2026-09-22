@@ -48,6 +48,7 @@ const NUMBERS = [
 ];
 const TEXTS = [
   'provider',
+  'display_theme',
   'layout',
   'row_style',
   'color_scheme',
@@ -244,14 +245,25 @@ function refreshHints() {
         : '公开接口，无需 API key；请求频率过高可能被限流。';
   if (provider && el('symbols-hint')) el('symbols-hint').textContent = provider.placeholder;
 
-  const single = el('layout').value === 'single';
-  for (const id of ['visible_rows', 'row_style', 'chart_height']) el(id).disabled = single;
-  el('layout-hint').textContent = single
-    ? '单行滚动：所有股票在一行里横向滚动，鼠标悬停暂停；此模式下行数、行内样式与 K 线高度都不生效。'
-    : '多行列表：自选按这个行数铺成网格——填 1 就全部横向排开，填 2 就铺两行，窗口宽度随之变宽。';
+  const theme2 = el('display_theme').value === 'theme2';
+  const single = !theme2 && el('layout').value === 'single';
+  el('layout').disabled = theme2;
+  for (const id of ['visible_rows', 'row_style', 'chart_height']) {
+    el(id).disabled = single || theme2;
+  }
+  el('layout-hint').textContent = theme2
+    ? '主题 2 固定为一列纵向排列；显示模式、网格行数与行内样式不参与排版。'
+    : single
+      ? '单行滚动：所有股票在一行里横向滚动，鼠标悬停暂停；此模式下行数、行内样式与 K 线高度都不生效。'
+      : '多行列表：自选按这个行数铺成网格——填 1 就全部横向排开，填 2 就铺两行，窗口宽度随之变宽。';
 
-  el('row_style-hint').textContent =
-    el('row_style').value === 'stacked'
+  el('display-theme-hint').textContent = theme2
+    ? '主题 2：右侧常驻千档挂单分布，中央只显示现价/涨跌幅；点击中央价格后窗口向左展开股票名、代码、暗盘、高低价和完整日内 K 线，鼠标移出该股票后自动收起。'
+    : '主题 1：保持原有经典网格/单行滚动显示。';
+
+  el('row_style-hint').textContent = theme2
+    ? '主题 2 不使用行内样式。'
+    : el('row_style').value === 'stacked'
       ? '上中下：上面一行是名称与现价，下面一行是暗盘与涨跌幅，中间永远是 K 线。'
       : '左中右：左边名称压暗盘、右边现价压涨跌幅，左右各两行，中间永远是 K 线；格子窄到排不下时会自动改用上中下。';
 }
@@ -281,7 +293,7 @@ async function apply(label = '已保存') {
 /* ------------------------------------------------------------ 事件 */
 
 // 开关和下拉改完即时生效；字号短延迟自动保存，避免改完直接退出时丢失。
-for (const id of [...CHECKBOXES, 'provider', 'layout', 'row_style', 'color_scheme', 'background_color']) {
+for (const id of [...CHECKBOXES, 'provider', 'display_theme', 'layout', 'row_style', 'color_scheme', 'background_color']) {
   el(id).addEventListener('change', () => apply('已应用'));
 }
 for (const id of FONT_COLORS) {

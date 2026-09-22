@@ -16,6 +16,7 @@ except (ImportError, OSError) as error:
     pytest.skip(f"Qt 运行库不可用：{error}", allow_module_level=True)
 
 from stockwidget.config import Config
+from stockwidget.intraday import Trend
 from stockwidget.ui.marquee import Marquee
 from stockwidget.ui.quote_row import QuoteRow
 from stockwidget.ui.sparkline import Sparkline
@@ -47,6 +48,56 @@ def test_quote_row_stacks_price_and_percent_in_two_rows(app):
     assert row.dark_label.styleSheet() == black
     assert row.dark_value.styleSheet() == black
     assert row.price_label.styleSheet() != black
+
+
+def test_theme2_is_vertical_and_click_expands_left_detail(app):
+    from stockwidget.providers.base import Quote
+
+    config = Config(display_theme="theme2", show_sparkline=False)
+    window = TickerWindow(config)
+    quotes = [
+        Quote.from_prices("600519", "贵州茅台", 1304.66, 1272.83),
+        Quote.from_prices("000001", "平安银行", 12.34, 12.00),
+        Quote.from_prices("300750", "宁德时代", 420.00, 410.00),
+    ]
+    window._sync_rows(
+        quotes,
+        {
+            "600519": Trend(
+                prices=[1275.0, 1290.0, 1304.66],
+                high_price=1310.0,
+                low_price=1268.0,
+            )
+        },
+    )
+    window.show()
+    app.processEvents()
+    geo = window.screen().availableGeometry()
+    window.move(max(geo.left(), geo.right() - window.width() - 20), geo.top() + 20)
+    app.processEvents()
+
+    assert window._grid_size(3) == (3, 1)
+    row = window._rows["600519"]
+    assert row.theme2_depth.isVisible() is True
+    assert row.theme2_detail.isVisible() is False
+    assert row.name_label.isVisible() is False
+
+    before_width = window.width()
+    before_right = window.frameGeometry().right()
+    row.theme2_depth.price_clicked.emit()
+    app.processEvents()
+
+    assert row.theme2_detail.isVisible() is True
+    assert "600519" in row.theme2_code_label.text()
+    assert "高 1310.00" in row.theme2_high_low_label.text()
+    assert window.width() > before_width
+    assert window.frameGeometry().right() == pytest.approx(before_right, abs=2)
+
+    row.leaveEvent(None)
+    app.processEvents()
+    assert row.theme2_detail.isVisible() is False
+    assert window.width() <= before_width + 2
+    window.close()
 
 
 def test_window_bell_tracks_and_clears_mcp_notifications(app):
