@@ -57,7 +57,7 @@ class QuoteRow(QWidget):
         self.sparkline = Sparkline()
         self._config = Config()
         self._narrow = False
-        self._layout_state: tuple[bool, bool, bool, bool, bool] | None = None
+        self._layout_state: tuple[object, ...] | None = None
 
         self.price_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.percent_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
