@@ -1648,3 +1648,67 @@ def test_theme2_resize_does_not_scale_fonts(app):
     assert window._scale == scale_before
     assert window.scaled_config() is window._config
     window.close()
+
+
+
+def test_theme2_detail_info_is_four_compact_lines_at_top_left(app):
+    from stockwidget.providers.base import Quote
+
+    row = QuoteRow("600519")
+    config = Config(display_theme="theme2")
+    row.apply_config(config)
+    row.resize(620, 150)
+    row.update_quote(
+        Quote.from_prices("600519", "贵州茅台", 1304.66, 1272.83),
+        config,
+        Trend(
+            prices=[1275.0, 1290.0, 1304.66],
+            high_price=1310.0,
+            low_price=1268.0,
+        ),
+    )
+    row.set_theme2_expanded(True, notify=False)
+    row.show()
+    app.processEvents()
+
+    layout = row._theme2_info_layout
+    margins = layout.contentsMargins()
+    assert (margins.left(), margins.top(), margins.right(), margins.bottom()) == (0, 0, 0, 0)
+    assert layout.spacing() == 0
+    assert layout.count() == 5  # 四行文字 + 底部 stretch
+
+    labels = [
+        row.theme2_name_label,
+        row.theme2_code_label,
+        row.theme2_dark_label,
+        row.theme2_high_low_label,
+    ]
+    # 四行连续贴左上，不允许额外高度被平均摊成大段行距。
+    assert labels[0].y() <= 2
+    for current, following in zip(labels, labels[1:]):
+        gap = following.y() - (current.y() + current.height())
+        assert gap <= 1
+    assert labels[-1].geometry().bottom() < row._theme2_info.height() / 2
+    row.close()
+
+
+def test_theme2_depth_is_not_intercepted_by_window_drag_filter(app):
+    from stockwidget.providers.base import Quote
+
+    window = TickerWindow(Config(display_theme="theme2"))
+    window._sync_rows([Quote.from_prices("600519", "贵州茅台", 1304.66, 1272.83)])
+    window.show()
+    app.processEvents()
+
+    depth = window._rows["600519"].theme2_depth
+    start = window.frameGeometry().topLeft()
+    point = depth.mapToGlobal(depth.rect().center())
+    handled = window.eventFilter(
+        depth,
+        _WindowDragEvent(QEvent.MouseButtonPress, point, button=Qt.LeftButton),
+    )
+
+    assert handled is False
+    assert window._move_drag_origin is None
+    assert window.frameGeometry().topLeft() == start
+    window.close()
