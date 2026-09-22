@@ -694,15 +694,10 @@ class TickerWindow(QWidget):
                             other_row.theme2_depth.sizeHint().width(),
                         )
                     )
-                    # 其它股票只冻结绘制区域，不触发布局；仅点击行重查一次 Preferred 宽度。
-                    other_row.set_theme2_depth_width_override(
-                        width, relayout=other_symbol == symbol
-                    )
-            else:
-                # 已有弹出框时切换股票，沿用第一次冻结的盘口宽度。
-                frozen_width = row.theme2_depth.width_override
-                if frozen_width is not None:
-                    row.set_theme2_depth_width_override(frozen_width, relayout=True)
+                    # 所有行只写入绘制冻结值，不做逐行 geometry invalidation。
+                    # 点击行已在 set_theme2_expanded() 进入 Preferred 布局前锁好 sizeHint。
+                    if other_symbol != symbol:
+                        other_row.set_theme2_depth_width_override(width)
 
             self._theme2_expanded_symbol = symbol
             for other_symbol, other_row in self._rows.items():
