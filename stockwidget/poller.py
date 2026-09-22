@@ -73,9 +73,13 @@ class Poller(QThread):
     # ------------------------------------------------------------ 循环
 
     @staticmethod
+    def _chart_enabled(config: Config) -> bool:
+        return bool(config.intraday_chart and (config.show_sparkline or config.display_theme == "theme2"))
+
+    @staticmethod
     def _loop_interval(config: Config) -> float:
-        """走势图开启时每秒更新；普通报价仍按 refresh_seconds 自己节流。"""
-        if config.show_sparkline and config.intraday_chart:
+        """主题2的展开K线也要求秒级；普通报价仍按 refresh_seconds 自己节流。"""
+        if Poller._chart_enabled(config):
             return CHART_REFRESH_SECONDS
         return float(config.refresh_seconds)
 
@@ -133,7 +137,7 @@ class Poller(QThread):
             dark_enabled=config.show_dark_trade,
             effective_provider=self._effective_provider,
         )
-        if config.show_sparkline and config.intraday_chart:
+        if self._chart_enabled(config):
             self._attach_trends(quotes, snapshot)
         return snapshot
 
