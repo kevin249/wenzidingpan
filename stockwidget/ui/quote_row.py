@@ -164,7 +164,9 @@ class QuoteRow(QWidget):
         self.theme2_detail.setFixedSize(detail_width, row_height)
         self._theme2_info.setFixedWidth(info_width)
         self._theme2_detail_layout.setDirection(
-            QBoxLayout.RightToLeft if config.theme2_side == "left" else QBoxLayout.LeftToRight
+            QBoxLayout.Direction.RightToLeft
+            if config.theme2_side == "left"
+            else QBoxLayout.Direction.LeftToRight
         )
         self.theme2_chart.set_preferred_height(max(60, row_height - 10))
         self.theme2_name_label.setFont(
