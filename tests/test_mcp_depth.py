@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
+import pytest
+
 import stockwidget.mcp_depth as mcp_depth
 from stockwidget.mcp_depth import (
     DEPTH_FIVE,
@@ -251,3 +253,12 @@ def test_active_bs_fetch_requests_all_today_markers(monkeypatch):
     ]
     assert payload["markers"][0]["type"] == "buy_first"
     assert recorded == [payload]
+
+
+
+def test_multi_symbol_depth_gap_is_enforced_after_previous_request():
+    gap = mcp_depth.DEPTH_INTER_SYMBOL_GAP_SECONDS
+    assert gap == 0.75
+    assert mcp_depth._serial_depth_delay(0.0, now=100.0) == 0.0
+    assert mcp_depth._serial_depth_delay(100.0, now=100.2) == pytest.approx(gap - 0.2)
+    assert mcp_depth._serial_depth_delay(100.0, now=101.0) == 0.0
