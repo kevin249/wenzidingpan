@@ -702,7 +702,9 @@ class TickerWindow(QWidget):
         自动尺寸不必管——``_resize_to_grid``
         本来就会重算。
         """
-        if not self._manual_size or self._config.layout == "single":
+        if not self._manual_size or (
+            self._config.layout == "single" and self._config.display_theme != "theme2"
+        ):
             return
         hint = self.title_bar.sizeHint().height()
         if showing:
