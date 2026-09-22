@@ -19,7 +19,7 @@ EASTMONEY_ENDPOINT = "https://push2his.eastmoney.com/api/qt/stock/trends2/get"
 EASTMONEY_UT = "7eea3edcaed734bea9cbfc24409ed989"
 TENCENT_ENDPOINT = "https://web.ifzq.gtimg.cn/appstock/app/minute/query"
 
-CACHE_TTL_SECONDS = 60
+CACHE_TTL_SECONDS = 1
 REQUEST_TIMEOUT = 8
 MORNING = ("09:30", "11:30")
 AFTERNOON = ("13:00", "15:00")

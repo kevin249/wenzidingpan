@@ -12,6 +12,7 @@ from PySide6.QtWidgets import QApplication, QSystemTrayIcon
 from . import desktop, providers
 from .config import Config, Store
 from .hotkey import DEFAULT_WINDOW_TOGGLE_HOTKEY, WindowsGlobalHotkey
+from .mcp_depth import DepthSnapshot, McpDepthPoller
 from .mcp_notifications import McpNotification, McpNotificationListener
 from .poller import Poller, Snapshot
 from .ui.icon import tray_icon
@@ -88,6 +89,9 @@ class WidgetApp:
 
         self.poller = Poller(config)
         self.poller.snapshot_ready.connect(self._on_snapshot, Qt.QueuedConnection)
+        self.depth_poller = McpDepthPoller(config)
+        self.depth_poller.depth_ready.connect(self._on_depth_snapshot, Qt.QueuedConnection)
+        self.depth_poller.status_changed.connect(self._on_depth_status, Qt.QueuedConnection)
         self.notification_listener = McpNotificationListener(config)
         self.notification_listener.notification_ready.connect(
             self._on_mcp_notification, Qt.QueuedConnection
@@ -131,6 +135,7 @@ class WidgetApp:
 
     def refresh(self) -> None:
         self.poller.refresh_now()
+        self.depth_poller.refresh_now()
 
     def open_settings(self) -> None:
         QDesktopServices.openUrl(QUrl(self.server.url))
@@ -184,6 +189,8 @@ class WidgetApp:
             self._global_window_hotkey.wait(1000)
         self.poller.stop()
         self.poller.wait(2000)
+        self.depth_poller.stop()
+        self.depth_poller.wait(18000)
         self.notification_listener.stop()
         self.notification_listener.wait(9000)
         self.server.stop()
@@ -231,6 +238,9 @@ class WidgetApp:
             self._clear_unread()
         self.window.apply_config(config)
         self.poller.apply_config(config)
+        depth_poller = getattr(self, "depth_poller", None)
+        if depth_poller is not None:
+            depth_poller.apply_config(config)
         self.notification_listener.apply_config(config)
         if self.tray is not None:
             self.tray.apply_config(config)
@@ -247,6 +257,13 @@ class WidgetApp:
         if snapshot.effective_provider:
             label = f"自动 · {listing.get(snapshot.effective_provider, snapshot.effective_provider)}"
         self.window.update_snapshot(snapshot, label)
+
+    def _on_depth_snapshot(self, snapshot: DepthSnapshot) -> None:
+        self.window.update_depth(snapshot)
+
+    def _on_depth_status(self, status: str) -> None:
+        if status != "已关闭":
+            print(f"[MCP千档] {status}", flush=True)
 
     def _on_mcp_status(self, status: str) -> None:
         if status != "已关闭":
@@ -291,6 +308,7 @@ class WidgetApp:
         if self.tray is not None:
             self.tray.show()
         self.poller.start()
+        self.depth_poller.start()
         self.notification_listener.start()
         return self.qt.exec()
 

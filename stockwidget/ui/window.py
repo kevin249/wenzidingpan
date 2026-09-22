@@ -23,7 +23,9 @@ from PySide6.QtWidgets import (
 
 from ..config import Bounds, Config
 from ..desktop import keep_visible_when_inactive
+from ..mcp_depth import DepthSnapshot
 from ..poller import Snapshot
+from ..symbols import classify
 from .marquee import Marquee
 from .quote_row import QuoteRow
 from .theme import BORDER, MUTED, TEXT, make_font
@@ -291,6 +293,7 @@ class TickerWindow(QWidget):
         super().__init__()
         self._config = config
         self._rows: dict[str, QuoteRow] = {}
+        self._depths: dict[str, DepthSnapshot] = {}
         self._scale = 1.0
         self._manual_size = False
         self._drag_start_size = QSize()
@@ -551,6 +554,13 @@ class TickerWindow(QWidget):
         else:
             self._sync_rows(quotes, snapshot.trends)
 
+    def update_depth(self, snapshot: DepthSnapshot) -> None:
+        self._depths[snapshot.symbol] = snapshot
+        for raw_symbol, row in self._rows.items():
+            symbol = classify(raw_symbol)
+            if symbol is not None and symbol.code == snapshot.symbol:
+                row.update_depth(snapshot)
+
     def show_mcp_notification(self, title: str, body: str) -> None:
         self.title_bar.push_bell(title, body)
 
@@ -569,8 +579,17 @@ class TickerWindow(QWidget):
                 self._install_move_filters(row)
                 self._rows[quote.symbol] = row
             row.update_quote(quote, scaled, trends.get(quote.symbol))
+            symbol = classify(quote.symbol)
+            if symbol is not None:
+                row.update_depth(self._depths.get(symbol.code))
 
         wanted = {q.symbol for q in quotes}
+        wanted_codes = {
+            symbol.code for quote in quotes if (symbol := classify(quote.symbol)) is not None
+        }
+        self._depths = {
+            code: snapshot for code, snapshot in self._depths.items() if code in wanted_codes
+        }
         for symbol in list(self._rows):
             if symbol not in wanted:
                 row = self._rows.pop(symbol)

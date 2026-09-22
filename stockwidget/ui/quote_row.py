@@ -15,6 +15,7 @@ from PySide6.QtWidgets import QGridLayout, QHBoxLayout, QLabel, QSizePolicy, QWi
 
 from ..config import Config
 from ..intraday import Trend, calculate_bs_points
+from ..mcp_depth import DepthSnapshot
 from ..providers.base import Quote
 from .sparkline import Sparkline
 from .theme import (
@@ -41,6 +42,7 @@ class QuoteRow(QWidget):
         self.symbol = symbol
         self._last_quote: Quote | None = None
         self._last_trend: Trend | None = None
+        self._last_depth: DepthSnapshot | None = None
 
         self.name_label = QLabel()
         self.price_label = QLabel()
@@ -330,6 +332,10 @@ class QuoteRow(QWidget):
         self._set_dark(quote.dark_fund, config)
         # 文本写入后 minimumSizeHint 才准确；必要时切到更窄的堆叠布局。
         self._update_layout_mode()
+
+    def update_depth(self, snapshot: DepthSnapshot | None) -> None:
+        self._last_depth = snapshot
+        self.sparkline.set_depth(snapshot)
 
     def _set_dark(self, dark_fund: float | None, config: Config) -> None:
         text = fmt_money(dark_fund) if config.show_dark_trade and not config.compact else None

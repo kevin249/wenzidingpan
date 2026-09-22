@@ -12,7 +12,13 @@ import pytest
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QApplication
 
-from stockwidget.ui.sparkline import BUY_COLOR, SELL_COLOR, Sparkline
+from stockwidget.mcp_depth import DepthLevel, DepthSnapshot
+from stockwidget.ui.sparkline import (
+    BUY_COLOR,
+    DEPTH_BID_COLOR,
+    SELL_COLOR,
+    Sparkline,
+)
 
 # 曲线用绿色，避免和 B 红 / S 蓝混在一起，否则像素校验会把曲线当成竖线。
 CURVE_COLOR = QColor(34, 197, 94)
@@ -134,3 +140,54 @@ def test_signals_hidden_when_switched_off(app):
         and image.pixelColor(x, y).red() < 120
     )
     assert blues == 0, "关掉开关后不应画出 S 蓝线"
+
+
+def test_thousand_depth_is_drawn_inside_the_chart_right_edge(app):
+    prices = [9.7 + index * 0.006 for index in range(120)]
+    levels = tuple(
+        [
+            DepthLevel("bid", 9.78 + index * 0.03, 100 + index * 80)
+            for index in range(6)
+        ]
+        + [
+            DepthLevel("ask", 10.02 + index * 0.03, 120 + index * 70)
+            for index in range(6)
+        ]
+    )
+    widget = Sparkline()
+    widget.set_series(prices)
+    widget.set_color(CURVE_COLOR)
+    widget.set_annotations(
+        None,
+        [],
+        show_signals=False,
+        show_open_line=False,
+        show_high_low=False,
+        show_fill=False,
+        grayscale=False,
+    )
+    widget.set_depth(
+        DepthSnapshot(
+            symbol="600000",
+            levels=levels,
+            received_at=1.0,
+            full_depth=True,
+            available=True,
+            bid_count=6,
+            ask_count=6,
+        )
+    )
+    widget.resize(WIDTH, HEIGHT)
+    image = widget.grab().toImage()
+
+    red_pixels = 0
+    for y in range(image.height()):
+        for x in range(round(image.width() * 0.70), image.width()):
+            pixel = image.pixelColor(x, y)
+            if (
+                abs(pixel.red() - DEPTH_BID_COLOR.red()) < TOLERANCE
+                and abs(pixel.green() - DEPTH_BID_COLOR.green()) < TOLERANCE
+                and abs(pixel.blue() - DEPTH_BID_COLOR.blue()) < TOLERANCE
+            ):
+                red_pixels += 1
+    assert red_pixels > 0, "千档买盘应在 K 线内部右侧画出深度条"

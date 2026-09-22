@@ -7,16 +7,22 @@
 from __future__ import annotations
 
 from collections import deque
+import time
 
-from PySide6.QtCore import QPointF, QSize, Qt
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QWidget
+
+from ..mcp_depth import DepthSnapshot
 
 SAMPLE_LEN = 40  # 回退模式下保留的采样点数
 FILL_ALPHA = 38  # 面积填充的透明度，压得比曲线淡很多
 BASELINE_ALPHA = 110
 BUY_COLOR = QColor(240, 79, 90)
 SELL_COLOR = QColor(59, 130, 246)
+DEPTH_BID_COLOR = QColor(240, 79, 90)
+DEPTH_ASK_COLOR = QColor(34, 197, 94)
+DEPTH_STALE_SECONDS = 120
 
 
 class Sparkline(QWidget):
@@ -36,6 +42,7 @@ class Sparkline(QWidget):
         self._preferred_height = 0
         self._annotation_font = QFont()
         self._annotation_font.setPixelSize(9)
+        self._depth: DepthSnapshot | None = None
         self.setAttribute(Qt.WA_TransparentForMouseEvents)
 
     # ------------------------------------------------------------ 尺寸
@@ -70,6 +77,11 @@ class Sparkline(QWidget):
     def set_prev_close(self, value: float | None) -> None:
         if value != self._prev_close:
             self._prev_close = value
+            self.update()
+
+    def set_depth(self, snapshot: DepthSnapshot | None) -> None:
+        if snapshot != self._depth:
+            self._depth = snapshot
             self.update()
 
     def set_color(self, color: QColor) -> None:
@@ -149,6 +161,51 @@ class Sparkline(QWidget):
 
     # ------------------------------------------------------------ 绘制
 
+    def _draw_depth(self, painter: QPainter, width: int, height: int, y_of) -> None:
+        snapshot = self._depth
+        if snapshot is None or not snapshot.available or len(snapshot.levels) < 11:
+            return
+
+        # 只画当前 K 线价格窗口内可见的挂单；千档价格绝不能反向撑大 K 线 Y 轴。
+        buckets: dict[tuple[int, str], float] = {}
+        for level in snapshot.levels:
+            y = round(y_of(level.price))
+            if y < 0 or y >= height:
+                continue
+            key = (y, level.side)
+            buckets[key] = buckets.get(key, 0.0) + level.volume
+        if not buckets:
+            return
+
+        maximum = max(buckets.values())
+        if maximum <= 0:
+            return
+        max_width = min(240.0, max(24.0, width * 0.28))
+        right = float(width - 1)
+
+        painter.save()
+        for (row, side), volume in buckets.items():
+            bar_width = max(1.0, max_width * volume / maximum)
+            if self._grayscale:
+                color = QColor(155, 155, 155) if side == "bid" else QColor(105, 105, 105)
+            else:
+                color = QColor(DEPTH_BID_COLOR if side == "bid" else DEPTH_ASK_COLOR)
+            color.setAlpha(88)
+            painter.fillRect(QRectF(right - bar_width, row - 0.7, bar_width, 1.4), color)
+
+        label = "千档" if snapshot.full_depth else "千档*"
+        if snapshot.received_at and time.time() - snapshot.received_at > DEPTH_STALE_SECONDS:
+            label += "·延迟"
+        label += f" {snapshot.bid_count}/{snapshot.ask_count}"
+        painter.setFont(self._annotation_font)
+        painter.setPen(QColor(145, 145, 145) if self._grayscale else QColor(185, 190, 202))
+        painter.drawText(
+            QRectF(max(0.0, width - max_width - 2), 1, max_width, max(12, height / 4)),
+            Qt.AlignRight | Qt.AlignTop,
+            label,
+        )
+        painter.restore()
+
     def paintEvent(self, event) -> None:  # noqa: N802 - Qt 命名
         points = self.points
         if len(points) < 2:
@@ -203,6 +260,9 @@ class Sparkline(QWidget):
             fill = QColor(self._color)
             fill.setAlpha(FILL_ALPHA)
             painter.fillPath(area, fill)
+
+        # 千档挂单在 K 线内部右侧按相同价格轴叠加，曲线和基准线画在它上面。
+        self._draw_depth(painter, width, height, y_of)
 
         # 昨收基准线
         if self._prev_close is not None:
