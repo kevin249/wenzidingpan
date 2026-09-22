@@ -1749,5 +1749,6 @@ def test_theme2_expanded_chart_receives_minute_volume_and_latest_depth(app):
 
     assert row.theme2_chart._volumes == trend.volumes
     assert row.theme2_chart._show_volume_profile is True
+    assert row.theme2_chart._configured_profile_width == config.theme2_depth_width
     assert row.theme2_chart._depth is snapshot
     row.close()
