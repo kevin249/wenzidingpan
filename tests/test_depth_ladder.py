@@ -324,3 +324,22 @@ def test_theme2_depth_levels_are_evenly_distributed_over_window_height(app):
     assert max(bid_gaps) - min(bid_gaps) <= 3
     assert min(asks) <= 5
     assert max(bids) >= image.height() - 5
+
+
+
+def test_theme2_width_override_never_turns_depth_into_fixed_widget(app):
+    widget = DepthLadder()
+    widget.apply_config(Config(display_theme="theme2"))
+    minimum = widget.minimumWidth()
+    maximum = widget.maximumWidth()
+
+    widget.set_width_override(220)
+    assert widget.width_override == 220
+    assert widget.minimumWidth() == minimum
+    assert widget.maximumWidth() == maximum
+    assert widget.minimumWidth() != widget.maximumWidth()
+
+    widget.set_width_override(None)
+    assert widget.width_override is None
+    assert widget.minimumWidth() == minimum
+    assert widget.maximumWidth() == maximum
