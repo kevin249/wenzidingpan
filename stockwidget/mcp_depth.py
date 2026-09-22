@@ -251,9 +251,9 @@ def _serial_depth_delay(previous_finished_at: float, now: float | None = None) -
 
 def _status_text(all_full_depth: bool) -> str:
     return (
-        "已连接 · 千档 60s"
+        "已连接 · 千档串行 60s"
         if all_full_depth
-        else "已连接 · 深度降级 · 千档 5s 重试"
+        else "已连接 · 深度降级 · 千档串行 5s 重试"
     )
 
 
@@ -345,11 +345,35 @@ class McpDepthPoller(QThread):
                         f"读取失败 · 千档5s重试：{type(exc).__name__}: {str(exc)[:100]}"
                     )
 
-            interval = _poll_seconds(all_full_depth)
-            remaining = max(0.0, interval - (time.monotonic() - started))
+            remaining = self._next_wake_seconds(config)
             if not self._stopping.is_set():
                 self._wake.wait(remaining)
                 self._wake.clear()
+
+    def _next_wake_seconds(self, config: Config, now: float | None = None) -> float:
+        """按每只股票真实 next_due 唤醒，避免串行耗时把 60s 变成约 120s。"""
+        current = time.monotonic() if now is None else float(now)
+        codes = [
+            item.code
+            for raw in config.symbols
+            if (item := classify(raw)) is not None
+        ]
+        if not codes:
+            return DEPTH_RETRY_SECONDS
+
+        due_values = [self._next_depth_due.get(code) for code in codes]
+        if any(value is None for value in due_values):
+            depth_wait = DEPTH_RETRY_SECONDS
+        else:
+            depth_wait = max(0.0, min(float(value) for value in due_values) - current)
+
+        if self._last_bs_fetch_at <= 0:
+            bs_wait = DEPTH_RETRY_SECONDS
+        else:
+            bs_wait = max(0.0, self._last_bs_fetch_at + BS_POLL_SECONDS - current)
+
+        # 最短保留一点睡眠，防止异常/边界条件形成空转；最长不超过正常 60s。
+        return min(DEPTH_POLL_SECONDS, max(0.1, min(depth_wait, bs_wait)))
 
     async def _fetch_cycle(self, config: Config, *, fetch_bs: bool) -> bool:
         key = _api_key(config)
