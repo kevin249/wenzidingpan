@@ -52,6 +52,8 @@ class Trend:
     prices: list[float] = field(default_factory=list)
     prev_close: float | None = None
     open_price: float | None = None
+    high_price: float | None = None
+    low_price: float | None = None
     error: str | None = None
 
     def __bool__(self) -> bool:
@@ -119,6 +121,8 @@ def parse_eastmoney(payload: object) -> Trend:
 
     prices: list[float] = []
     open_price: float | None = None
+    high_price: float | None = None
+    low_price: float | None = None
     for item in data.get("trends") or []:
         parts = str(item or "").split(",")
         if len(parts) < 3:
@@ -129,9 +133,21 @@ def parse_eastmoney(payload: object) -> Trend:
             if open_price is None:
                 candidate = _number(parts[1])
                 open_price = candidate if candidate is not None and candidate > 0 else close
+            high = _number(parts[3]) if len(parts) > 3 else None
+            low = _number(parts[4]) if len(parts) > 4 else None
+            if high is not None and high > 0:
+                high_price = high if high_price is None else max(high_price, high)
+            if low is not None and low > 0:
+                low_price = low if low_price is None else min(low_price, low)
             prices.append(close)
 
-    return Trend(prices=prices, prev_close=_number(data.get("preClose")), open_price=open_price)
+    return Trend(
+        prices=prices,
+        prev_close=_number(data.get("preClose")),
+        open_price=open_price,
+        high_price=high_price if high_price is not None else (max(prices) if prices else None),
+        low_price=low_price if low_price is not None else (min(prices) if prices else None),
+    )
 
 
 def parse_tencent(payload: object, key: str) -> Trend:
@@ -149,7 +165,12 @@ def parse_tencent(payload: object, key: str) -> Trend:
         if price is not None and price > 0 and _is_trading_minute(minute):
             prices.append(price)
 
-    return Trend(prices=prices, open_price=prices[0] if prices else None)
+    return Trend(
+        prices=prices,
+        open_price=prices[0] if prices else None,
+        high_price=max(prices) if prices else None,
+        low_price=min(prices) if prices else None,
+    )
 
 
 class IntradayClient:
