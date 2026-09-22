@@ -112,6 +112,19 @@ def parse_depth_payload(
     )
 
 
+async def _fetch_volatility_bs(session: ClientSession, symbol: str) -> dict[str, Any]:
+    """主动读取该股票当天完整 B/S markers，并写入共享缓存。"""
+    result = await _bounded(
+        session.call_tool(
+            "get_volatility_bs",
+            arguments={"symbol": symbol, "trade_date": "", "limit": 200},
+        )
+    )
+    payload = _tool_payload(result)
+    record_volatility_bs(payload)
+    return payload
+
+
 class McpDepthPoller(QThread):
     """独立于行情线程的低频千档采集，慢请求不会阻塞 1 秒走势图。"""
 
@@ -214,17 +227,7 @@ class McpDepthPoller(QThread):
                             continue
                         # 主动读取当天全部 B/S markers，不依赖通知是否曾经送达。
                         try:
-                            bs_result = await _bounded(
-                                session.call_tool(
-                                    "get_volatility_bs",
-                                    arguments={
-                                        "symbol": symbol.code,
-                                        "trade_date": "",
-                                        "limit": 200,
-                                    },
-                                )
-                            )
-                            record_volatility_bs(_tool_payload(bs_result))
+                            await _fetch_volatility_bs(session, symbol.code)
                         except Exception:
                             # B/S 暂时不可用不能拖死千档；下一轮 60s 自动重试。
                             pass
