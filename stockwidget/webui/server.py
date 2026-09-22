@@ -15,6 +15,7 @@ from flask import Flask, abort, jsonify, render_template, request
 
 from .. import mcp_bs, providers
 from ..config import MIN_OPACITY, Config, Store
+from ..market_hours import active_updates_allowed
 from ..search import StockSearch
 
 DEFAULT_HOST = "127.0.0.1"
@@ -113,6 +114,9 @@ class SettingsServer:
             require_token()
             config = self.store.get()
             names: dict[str, str] = {}
+            # 设置页启动会自动请求这个接口；非交易时段不要因此偷偷访问行情源。
+            if not active_updates_allowed(config.debug_mode):
+                return jsonify({"names": names})
             try:
                 for quote in providers.resolve(config.provider).fetch(list(config.symbols)):
                     if not quote.error and quote.name != quote.symbol:

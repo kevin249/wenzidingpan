@@ -128,7 +128,7 @@ def main() -> int:
 
     config_path = Path(tempfile.mkdtemp()) / "config.json"
     store = Store(config_path)
-    store.update({"provider": "mock", "refresh_seconds": 1, "visible_rows": 4})
+    store.update({"provider": "mock", "refresh_seconds": 1, "visible_rows": 4, "debug_mode": True})
 
     app = WidgetApp(argv=[], store=store)
     url = app.server.start()
