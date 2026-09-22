@@ -1834,3 +1834,59 @@ def test_theme2_expansion_uses_current_real_width_not_default_size_hint(app):
     assert window.width() > before
     assert row.theme2_depth.width() > natural
     window.close()
+
+
+
+def test_theme2_popup_font_size_controls_all_popup_text(app):
+    row = QuoteRow("600519")
+    config = Config(display_theme="theme2", theme2_popup_font_size=18)
+    row.apply_config(config)
+
+    assert row.theme2_name_label.font().pixelSize() == 18
+    assert row.theme2_code_label.font().pixelSize() == 18
+    assert row.theme2_dark_label.font().pixelSize() == 18
+    assert row.theme2_high_low_label.font().pixelSize() == 18
+    assert row.theme2_chart._annotation_font.pixelSize() == 18
+    row.close()
+
+
+def test_theme2_price_click_defers_expansion_until_event_loop(app):
+    row = QuoteRow("600519")
+    row.apply_config(Config(display_theme="theme2"))
+
+    row.theme2_depth.price_clicked.emit()
+    assert row._theme2_expanded is False
+
+    app.processEvents()
+    assert row._theme2_expanded is True
+    row.close()
+
+
+def test_theme2_switching_popup_rows_reuses_original_frozen_depth_width(app):
+    from stockwidget.providers.base import Quote
+
+    config = Config(display_theme="theme2", show_title_buttons=False)
+    window = TickerWindow(config)
+    window._sync_rows([
+        Quote.from_prices("600519", "贵州茅台", 1304.66, 1272.83),
+        Quote.from_prices("603986", "兆易创新", 404.97, 432.37),
+    ])
+    window.show()
+    app.processEvents()
+
+    first = window._rows["600519"]
+    second = window._rows["603986"]
+    original_second = second.theme2_depth.width()
+
+    first.theme2_depth.price_clicked.emit()
+    app.processEvents()
+    frozen = second.theme2_depth.width_override
+    assert frozen == original_second
+
+    second.theme2_depth.price_clicked.emit()
+    app.processEvents()
+
+    assert second._theme2_expanded is True
+    assert second.theme2_depth.width_override == frozen
+    assert second.theme2_depth.sizeHint().width() == frozen
+    window.close()
