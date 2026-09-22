@@ -117,7 +117,7 @@ async def _fetch_volatility_bs(session: ClientSession, symbol: str) -> dict[str,
     result = await _bounded(
         session.call_tool(
             "get_volatility_bs",
-            arguments={"symbol": symbol, "trade_date": "", "limit": 200},
+            arguments={"symbol": symbol, "trade_date": "", "limit": 1000},
         )
     )
     payload = _tool_payload(result)
