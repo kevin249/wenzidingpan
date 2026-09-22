@@ -33,7 +33,7 @@ def _is_red(pixel) -> bool:
 def test_theme2_depth_uses_center_price_line_and_left_only_bars(app):
     widget = DepthLadder()
     widget.apply_config(Config(display_theme="theme2", font_size=13))
-    widget.set_quote(100.0, 1.25, QColor(240, 79, 90))
+    widget.set_quote(100.0, 1.25, QColor(154, 163, 184))
     widget.set_depth(
         DepthSnapshot(
             symbol="600000",
@@ -112,3 +112,46 @@ def test_theme2_uses_quote_price_as_vertical_center(app):
 
     assert green_rows and max(green_rows) < center
     assert red_rows and min(red_rows) > center
+
+
+
+def test_theme2_left_mirror_puts_axis_left_and_bars_right(app):
+    widget = DepthLadder()
+    widget.apply_config(Config(display_theme="theme2", theme2_side="left", font_size=13))
+    widget.set_quote(100.0, -0.75, QColor(154, 163, 184))
+    widget.set_depth(
+        DepthSnapshot(
+            symbol="600000",
+            available=True,
+            levels=tuple(
+                [DepthLevel("ask", 100.1 + index * 0.1, 120 + index * 50) for index in range(8)]
+                + [DepthLevel("bid", 99.9 - index * 0.1, 140 + index * 45) for index in range(8)]
+            ),
+            ask_count=8,
+            bid_count=8,
+        )
+    )
+    image = widget.grab().toImage()
+    center_y = image.height() // 2
+    axis_x = 5
+
+    colored_left_of_axis = 0
+    upper_green_right = 0
+    lower_red_right = 0
+    for y in range(image.height()):
+        for x in range(image.width()):
+            pixel = image.pixelColor(x, y)
+            green = _is_green(pixel)
+            red = _is_red(pixel)
+            if x < axis_x and (green or red):
+                colored_left_of_axis += 1
+            if x <= axis_x + 2:
+                continue
+            if y < center_y - 10:
+                upper_green_right += int(green)
+            elif y > center_y + 10:
+                lower_red_right += int(red)
+
+    assert colored_left_of_axis == 0, "镜像后挂单量条不能跑到左侧价格轴外"
+    assert upper_green_right > 0, "镜像后卖盘仍应在中线上方并向右延伸"
+    assert lower_red_right > 0, "镜像后买盘仍应在中线下方并向右延伸"
