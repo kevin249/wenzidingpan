@@ -45,6 +45,8 @@ def test_settings_page_renders(server):
     assert "填充走势图下方颜色" in body
     assert "字体颜色与字重" in body
     assert "跟随涨跌" in body
+    assert "显示主题" in body
+    assert "主题 2 · 千档竖列 / 点击左展" in body
     assert "行内样式" in body
     assert "左中右" in body
     assert "上中下" in body
@@ -175,6 +177,16 @@ def test_write_config_validates_persists_and_notifies(server):
     assert persisted["tray_unread_font_size"] == 24
     # 实时下发给桌面窗口
     assert server.applied[-1].provider == "tencent"
+
+
+def test_write_config_accepts_display_theme(server):
+    client = _client(server)
+    config = client.post(
+        f"/api/config?token={server.token}",
+        json={"display_theme": "theme2"},
+    ).get_json()["config"]
+    assert config["display_theme"] == "theme2"
+    assert server.applied[-1].display_theme == "theme2"
 
 
 def test_write_config_accepts_row_style_and_chart_height(server):
