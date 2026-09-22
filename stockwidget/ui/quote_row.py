@@ -10,7 +10,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QTimer, Qt, Signal
 from PySide6.QtWidgets import (
     QBoxLayout,
     QGridLayout,
@@ -58,6 +58,7 @@ class QuoteRow(QWidget):
         self._last_depth: DepthSnapshot | None = None
         self._theme2_expanded = False
         self._theme2_collapsed_depth_width = 0
+        self._theme2_ignore_leave = False
 
         self.name_label = QLabel()
         self.price_label = QLabel()
@@ -87,7 +88,7 @@ class QuoteRow(QWidget):
 
         # 主题2：右侧常驻千档；点击中央价格后左侧详情/K线临时展开。
         self.theme2_depth = DepthLadder()
-        self.theme2_depth.price_clicked.connect(lambda: self.set_theme2_expanded(True))
+        self.theme2_depth.price_clicked.connect(self._request_theme2_expand)
         self.theme2_detail = QWidget()
         theme2_detail_layout = QHBoxLayout(self.theme2_detail)
         theme2_detail_layout.setContentsMargins(6, 4, 6, 4)
@@ -204,6 +205,15 @@ class QuoteRow(QWidget):
             make_font(config, pixel_size=max(7, config.stock_percent_font_size))
         )
 
+    def _request_theme2_expand(self) -> None:
+        """当前 mouseRelease 结束后再展开，避免在点击事件栈内同步 resize/move。"""
+        if self._theme2_expanded:
+            return
+        QTimer.singleShot(0, lambda: self.set_theme2_expanded(True))
+
+    def _clear_theme2_leave_guard(self) -> None:
+        self._theme2_ignore_leave = False
+
     def theme2_detail_extra_width(self) -> int:
         return self._layout.horizontalSpacing() + max(
             self.theme2_detail.minimumWidth(), self.theme2_detail.sizeHint().width()
@@ -239,6 +249,12 @@ class QuoteRow(QWidget):
                 self.theme2_depth.width(), self.theme2_depth.sizeHint().width()
             )
         self._theme2_expanded = expanded
+        if expanded:
+            # resize/move 可能制造一次假的 leaveEvent，短暂屏蔽，防止展开/收起重入。
+            self._theme2_ignore_leave = True
+            QTimer.singleShot(150, self._clear_theme2_leave_guard)
+        else:
+            self._theme2_ignore_leave = False
         self.theme2_detail.setVisible(expanded)
         self._update_layout_mode()
         self.updateGeometry()
@@ -246,7 +262,11 @@ class QuoteRow(QWidget):
             self.theme2_expansion_changed.emit(self.symbol, expanded)
 
     def leaveEvent(self, event) -> None:  # noqa: N802 - Qt 命名
-        if self._config.display_theme == "theme2" and self._theme2_expanded:
+        if (
+            self._config.display_theme == "theme2"
+            and self._theme2_expanded
+            and not self._theme2_ignore_leave
+        ):
             self.set_theme2_expanded(False)
         if event is not None:
             super().leaveEvent(event)
@@ -302,7 +322,12 @@ class QuoteRow(QWidget):
                     self._layout.setColumnStretch(0, 1)
                     self._layout.setColumnStretch(1, 0)
             else:
-                self.theme2_depth.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+                self.theme2_depth.setSizePolicy(
+                    QSizePolicy.Preferred
+                    if self.theme2_depth.has_width_override
+                    else QSizePolicy.Expanding,
+                    QSizePolicy.Expanding,
+                )
                 if config.theme2_side == "left":
                     self._layout.setColumnStretch(0, 1)
                     self._layout.setColumnStretch(1, 0)
