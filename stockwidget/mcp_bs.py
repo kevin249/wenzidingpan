@@ -196,7 +196,7 @@ def record_notification(notification: Any) -> None:
 def record_volatility_bs(payload: Any) -> None:
     """缓存 get_volatility_bs 返回的当日完整 B/S markers。
 
-    MCP 工具是只读落盘结果，limit=200 足够覆盖一个交易日所有 B2/B3/B4/S2/S3/S4。
+    MCP 工具是只读落盘结果；桌面端用 limit=1000 主动读取当天完整 B2/B3/B4/S2/S3/S4。
     同一股票每次主动拉取都整包覆盖，避免旧 marker 因通知缓存残留而继续显示。
     """
     if not isinstance(payload, dict):
