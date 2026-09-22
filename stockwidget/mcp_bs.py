@@ -33,6 +33,8 @@ BS_EVENT_TYPE = "trading.holding_t_signal"
 _LOCK = threading.RLock()
 _EVENTS: deque[dict[str, Any]] = deque(maxlen=MAX_EVENTS)
 _EVENT_IDS: set[str] = set()
+# get_volatility_bs 主动拉取的“当天完整 markers”按股票覆盖保存；它比通知缓冲更完整。
+_VOLATILITY_BS: dict[str, dict[str, Any]] = {}
 _SOURCE: str | None = None
 
 _CODE_RE = re.compile(r"(?<!\d)(\d{6})(?!\d)")
@@ -191,6 +193,34 @@ def record_notification(notification: Any) -> None:
         _EVENT_IDS.add(event_id)
 
 
+def record_volatility_bs(payload: Any) -> None:
+    """缓存 get_volatility_bs 返回的当日完整 B/S markers。
+
+    MCP 工具是只读落盘结果，limit=200 足够覆盖一个交易日所有 B2/B3/B4/S2/S3/S4。
+    同一股票每次主动拉取都整包覆盖，避免旧 marker 因通知缓存残留而继续显示。
+    """
+    if not isinstance(payload, dict):
+        return
+    code = _normalize_code(payload.get("code") or payload.get("symbol"))
+    trade_date = str(payload.get("trade_date") or "").strip()
+    if not code or not trade_date:
+        return
+    markers = [
+        dict(item)
+        for item in (payload.get("markers") or [])
+        if isinstance(item, dict)
+    ]
+    snapshot = {
+        "trade_date": trade_date,
+        "available": payload.get("available") is True,
+        "markers": markers,
+        "as_of_time": str(payload.get("as_of_time") or ""),
+        "received_at": datetime.now(SHANGHAI_TZ).isoformat(timespec="seconds"),
+    }
+    with _LOCK:
+        _VOLATILITY_BS[code] = snapshot
+
+
 def today_records(now: datetime | None = None) -> list[dict[str, Any]]:
     """返回上海交易日口径的当日 MCP 事件，新事件在前。"""
     local_now = (now or datetime.now(SHANGHAI_TZ)).astimezone(SHANGHAI_TZ)
@@ -249,8 +279,47 @@ def _nearest_price_index(prices: list[float], expected: int, value: Any) -> int:
     return nearest if abs(prices[nearest] - target) / target <= 0.005 else expected
 
 
+def _active_marker_time(marker: dict[str, Any], trade_date: str) -> Any:
+    value = (
+        marker.get("bar_at")
+        or marker.get("bar_time")
+        or marker.get("signal_at")
+        or marker.get("time")
+        or marker.get("timestamp")
+    )
+    text = str(value or "").strip()
+    if re.fullmatch(r"\d{2}:\d{2}(?::\d{2})?", text):
+        return f"{trade_date}T{text}"
+    return value
+
+
+def _append_point(
+    result: list[tuple[int, str]],
+    seen: set[tuple[int, str]],
+    prices: list[float],
+    signal_at: Any,
+    side: str,
+    price: Any,
+) -> None:
+    parsed = _parse_datetime(signal_at)
+    if parsed is None:
+        return
+    index = _minute_index(parsed)
+    if index is None or index >= len(prices):
+        return
+    index = _nearest_price_index(prices, index, price)
+    key = (index, side)
+    if key not in seen:
+        seen.add(key)
+        result.append(key)
+
+
 def bs_points(symbol: str, prices: list[float], now: datetime | None = None) -> list[tuple[int, str]]:
-    """把当天 MCP B/S 信号映射为当前分时曲线的点索引。"""
+    """把当天 MCP B/S 信号映射为当前分时曲线的点索引。
+
+    若已主动拉取 get_volatility_bs，则该整包 markers 是当天权威快照；尚未拉到时才
+    退回通知资源缓存，避免“只收到部分通知”导致展开 K 线缺 B/S 点。
+    """
     code = _normalize_code(symbol)
     if not code or not prices:
         return []
@@ -258,9 +327,30 @@ def bs_points(symbol: str, prices: list[float], now: datetime | None = None) -> 
     day = local_now.date()
     result: list[tuple[int, str]] = []
     seen: set[tuple[int, str]] = set()
+
     with _LOCK:
-        snapshot = list(_EVENTS)
-    for row in snapshot:
+        active = dict(_VOLATILITY_BS.get(code) or {})
+        events = list(_EVENTS)
+
+    if active and str(active.get("trade_date") or "") == day.isoformat():
+        for marker in active.get("markers") or []:
+            if not isinstance(marker, dict):
+                continue
+            side = _side(marker, str(marker.get("label") or ""), "")
+            if side not in {"B", "S"}:
+                continue
+            _append_point(
+                result,
+                seen,
+                prices,
+                _active_marker_time(marker, day.isoformat()),
+                side,
+                marker.get("price"),
+            )
+        result.sort(key=lambda item: item[0])
+        return result
+
+    for row in events:
         if row.get("event_type") != BS_EVENT_TYPE or row.get("stock_code") != code:
             continue
         signal_at = _parse_datetime(_signal_time(row))
@@ -269,15 +359,8 @@ def bs_points(symbol: str, prices: list[float], now: datetime | None = None) -> 
         side = str(row.get("side") or "").upper()
         if side not in {"B", "S"}:
             continue
-        index = _minute_index(signal_at)
-        if index is None or index >= len(prices):
-            continue
         payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
-        index = _nearest_price_index(prices, index, payload.get("price"))
-        key = (index, side)
-        if key not in seen:
-            seen.add(key)
-            result.append(key)
+        _append_point(result, seen, prices, signal_at, side, payload.get("price"))
     result.sort(key=lambda item: item[0])
     return result
 
@@ -288,4 +371,5 @@ def reset_for_tests() -> None:
     with _LOCK:
         _EVENTS.clear()
         _EVENT_IDS.clear()
+        _VOLATILITY_BS.clear()
         _SOURCE = None
