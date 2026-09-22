@@ -35,6 +35,7 @@ class DepthLadder(QWidget):
         self._preferred_height = 104
         self._base_minimum_width = 120
         self._width_override: int | None = None
+        self._width_override_in_size_hint = False
         self._price_rect = QRectF()
         self.setCursor(Qt.PointingHandCursor)
         self.setMouseTracking(True)
@@ -56,12 +57,16 @@ class DepthLadder(QWidget):
         self.updateGeometry()
         self.update()
 
-    def set_width_override(self, width: int | None) -> None:
-        """只冻结绘制宽度，不改 min/max，也不逐行触发布局重算。"""
+    def set_width_override(
+        self, width: int | None, *, use_size_hint: bool = False
+    ) -> None:
+        """冻结绘制宽度；仅被点击行可选择把该值暴露给 sizeHint。"""
         value = None if width is None else max(self._base_minimum_width, int(width))
-        if value == self._width_override:
+        hint = bool(use_size_hint and value is not None)
+        if value == self._width_override and hint == self._width_override_in_size_hint:
             return
         self._width_override = value
+        self._width_override_in_size_hint = hint
         self.update()
 
     @property
@@ -100,7 +105,12 @@ class DepthLadder(QWidget):
             self.update()
 
     def sizeHint(self) -> QSize:  # noqa: N802
-        return QSize(self._preferred_width, self._preferred_height)
+        width = (
+            self._width_override
+            if self._width_override_in_size_hint and self._width_override is not None
+            else self._preferred_width
+        )
+        return QSize(width, self._preferred_height)
 
     def _book_mid_price(self, levels) -> float | None:
         if self._price is not None and self._price > 0:
