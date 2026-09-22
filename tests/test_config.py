@@ -133,6 +133,14 @@ def test_theme2_depth_width_defaults_and_is_clamped():
     assert sanitize({"theme2_depth_width": True}).theme2_depth_width == 84
 
 
+def test_theme2_popup_font_size_defaults_and_is_clamped():
+    assert sanitize({}).theme2_popup_font_size == 11
+    assert sanitize({"theme2_popup_font_size": 16}).theme2_popup_font_size == 16
+    assert sanitize({"theme2_popup_font_size": 1}).theme2_popup_font_size == 7
+    assert sanitize({"theme2_popup_font_size": 100}).theme2_popup_font_size == 48
+    assert sanitize({"theme2_popup_font_size": True}).theme2_popup_font_size == 11
+
+
 def test_row_style_falls_back_to_left_middle_right():
     assert sanitize({}).row_style == "sides"
     assert sanitize({"row_style": "stacked"}).row_style == "stacked"
@@ -192,6 +200,7 @@ def test_legacy_base_font_size_initializes_independent_sizes_by_old_ratios():
     assert config.stock_percent_font_size == 8
     assert config.dark_trade_font_size == 8
     assert config.chart_label_font_size == 7
+    assert config.theme2_popup_font_size == 8
 
 
 def test_booleans_are_not_accepted_as_numbers():
