@@ -1547,9 +1547,10 @@ def test_theme2_right_bottom_resize_preserves_manual_width_height_and_adapts_row
     window.show()
     app.processEvents()
 
-    target = QSize(max(window.width() + 140, 360), max(window.height() + 150, 360))
+    requested = QSize(max(window.width() + 140, 360), max(window.height() + 150, 360))
+    target = window._bounded_drag_size(requested)
     window._on_grip_drag_started(window.size())
-    window._on_grip_dragged(target)
+    window._on_grip_dragged(requested)
     window._apply_scale()
     app.processEvents()
 
@@ -1584,12 +1585,15 @@ def test_theme2_width_drag_expands_order_book_area_without_forcing_config_change
     row = window._rows["600519"]
     before = row.theme2_depth._horizontal_geometry()
     start_height = window.height()
+    requested = QSize(window.width() + 180, start_height)
+    bounded = window._bounded_drag_size(requested)
     window._on_grip_drag_started(window.size())
-    window._on_grip_dragged(QSize(window.width() + 180, start_height))
+    window._on_grip_dragged(requested)
     window._apply_scale()
     app.processEvents()
     after = row.theme2_depth._horizontal_geometry()
 
+    assert window.width() == bounded.width()
     before_span = before[1] - before[2]
     after_span = after[1] - after[2]
     assert after_span > before_span
