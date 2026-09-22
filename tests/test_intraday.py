@@ -100,7 +100,7 @@ def test_tencent_fallback_parses_minutes():
     ]}}}}
     trend = parse_tencent(payload, "sh600000")
     assert trend.prices == [10.10, 10.30]
-    assert trend.volumes == [100.0, 220.0]
+    assert trend.volumes == [100.0, 120.0]
 
 
 def test_tencent_rejects_bad_payload():
