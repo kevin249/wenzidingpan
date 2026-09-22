@@ -49,6 +49,7 @@ const NUMBERS = [
 const TEXTS = [
   'provider',
   'display_theme',
+  'theme2_side',
   'layout',
   'row_style',
   'color_scheme',
@@ -246,7 +247,9 @@ function refreshHints() {
   if (provider && el('symbols-hint')) el('symbols-hint').textContent = provider.placeholder;
 
   const theme2 = el('display_theme').value === 'theme2';
+  const mirrorLeft = el('theme2_side').value === 'left';
   const single = !theme2 && el('layout').value === 'single';
+  el('theme2_side').disabled = !theme2;
   el('layout').disabled = theme2;
   for (const id of ['visible_rows', 'row_style', 'chart_height']) {
     el(id).disabled = single || theme2;
@@ -258,7 +261,9 @@ function refreshHints() {
       : '多行列表：自选按这个行数铺成网格——填 1 就全部横向排开，填 2 就铺两行，窗口宽度随之变宽。';
 
   el('display-theme-hint').textContent = theme2
-    ? '主题 2：右侧常驻千档挂单分布，中央只显示现价/涨跌幅；点击中央价格后窗口向左展开股票名、代码、暗盘、高低价和完整日内 K 线，鼠标移出该股票后自动收起。'
+    ? mirrorLeft
+      ? '主题 2 靠左镜像：价格轴在左、挂单向右，点击中央价格后窗口固定左边缘向右展开；鼠标移出自动收起。'
+      : '主题 2 靠右：价格轴在右、挂单向左，点击中央价格后窗口固定右边缘向左展开；鼠标移出自动收起。'
     : '主题 1：保持原有经典网格/单行滚动显示。';
 
   el('row_style-hint').textContent = theme2
@@ -293,7 +298,7 @@ async function apply(label = '已保存') {
 /* ------------------------------------------------------------ 事件 */
 
 // 开关和下拉改完即时生效；字号短延迟自动保存，避免改完直接退出时丢失。
-for (const id of [...CHECKBOXES, 'provider', 'display_theme', 'layout', 'row_style', 'color_scheme', 'background_color']) {
+for (const id of [...CHECKBOXES, 'provider', 'display_theme', 'theme2_side', 'layout', 'row_style', 'color_scheme', 'background_color']) {
   el(id).addEventListener('change', () => apply('已应用'));
 }
 for (const id of FONT_COLORS) {
