@@ -31,6 +31,8 @@ def test_eastmoney_takes_close_price_and_prev_close():
     assert trend.prices == [10.10, 10.30]  # 取的是收盘价（第 3 个字段）
     assert trend.prev_close == 10.0
     assert trend.open_price == 10.0
+    assert trend.high_price == 10.30
+    assert trend.low_price == 9.90
     assert bool(trend) is True
 
 
@@ -122,9 +124,9 @@ def test_client_caches_within_ttl():
     )
     client = IntradayClient(session=session)
     client.fetch("600000", now=1000.0)
-    client.fetch("600000", now=1030.0)
+    client.fetch("600000", now=1000.5)
     assert session.calls == 1
-    client.fetch("600000", now=1000.0 + 61)  # 超过 TTL
+    client.fetch("600000", now=1001.1)  # 超过 1 秒 TTL
     assert session.calls == 2
 
 
