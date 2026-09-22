@@ -382,7 +382,8 @@ class McpDepthPoller(QThread):
                         if depth_due:
                             snapshot = await _fetch_depth_with_fallback(session, symbol.code)
                             self._depth_modes[symbol.code] = snapshot.depth_mode
-                            self._next_depth_due[symbol.code] = time.monotonic() + _poll_seconds(
+                            # 从本轮开始时间计下一次 due，避免请求耗时再额外叠加到 5s 周期。
+                            self._next_depth_due[symbol.code] = now + _poll_seconds(
                                 snapshot.full_depth
                             )
                             # 十档/五档/不可用都要发给 UI，不能让旧千档永久卡住。
