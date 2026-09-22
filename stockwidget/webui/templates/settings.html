@@ -45,7 +45,14 @@
             <label for="display_theme">显示主题</label>
             <select id="display_theme" name="display_theme">
               <option value="theme1" {% if config.display_theme == 'theme1' %}selected{% endif %}>主题 1 · 经典网格</option>
-              <option value="theme2" {% if config.display_theme == 'theme2' %}selected{% endif %}>主题 2 · 千档竖列 / 点击左展</option>
+              <option value="theme2" {% if config.display_theme == 'theme2' %}selected{% endif %}>主题 2 · 千档竖列</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="theme2_side">主题 2 停靠侧</label>
+            <select id="theme2_side" name="theme2_side">
+              <option value="right" {% if config.theme2_side == 'right' %}selected{% endif %}>靠右 · 向左展开</option>
+              <option value="left" {% if config.theme2_side == 'left' %}selected{% endif %}>靠左 · 镜像向右展开</option>
             </select>
           </div>
           <div class="field">

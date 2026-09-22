@@ -86,17 +86,18 @@ class DepthLadder(QWidget):
         if mid_price is None or mid_price <= 0:
             return
 
-        # 主题2盘口方向：
-        # - 右侧是一根共同的价格轴，买卖量条全部向左延伸；
-        # - 当前价固定在高度正中央；
-        # - 卖盘只画在中线上方，买盘只画在中线下方。
-        axis_x = self.width() - 5
+        # 主题2盘口可左右镜像：
+        # - 靠右：价格轴在右，买卖量条全部向左；
+        # - 靠左：价格轴在左，买卖量条全部向右；
+        # 两种模式都保持当前价居中、上绿卖、下红买。
+        mirror_left = self._config.theme2_side == "left"
+        axis_x = 5 if mirror_left else self.width() - 5
         center_y = self.height() / 2.0
         top_margin = 3.0
         bottom_margin = 3.0
         upper_span = max(1.0, center_y - top_margin - 3.0)
         lower_span = max(1.0, self.height() - bottom_margin - center_y - 3.0)
-        max_bar = max(18.0, axis_x - 4.0)
+        max_bar = max(18.0, (self.width() - axis_x - 4.0) if mirror_left else axis_x - 4.0)
 
         asks = [row for row in levels if row.side == "ask" and row.price >= mid_price]
         bids = [row for row in levels if row.side == "bid" and row.price <= mid_price]
@@ -132,20 +133,27 @@ class DepthLadder(QWidget):
                 color = QColor(BID_COLOR if side == "bid" else ASK_COLOR)
             color.setAlpha(112)
             painter.setPen(QPen(color, 1.2))
-            painter.drawLine(round(axis_x - length), y, axis_x, y)
+            if mirror_left:
+                painter.drawLine(axis_x, y, round(axis_x + length), y)
+            else:
+                painter.drawLine(round(axis_x - length), y, axis_x, y)
 
     def paintEvent(self, event) -> None:  # noqa: N802
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         self._draw_depth(painter)
 
-        # 当前价是盘口上下分界：整条中线贯穿到右侧价格轴。
+        # 当前价是盘口上下分界；水平线一直连到当前侧的价格轴。
         center_y = self.height() / 2.0
-        axis_x = self.width() - 5
+        mirror_left = self._config.theme2_side == "left"
+        axis_x = 5 if mirror_left else self.width() - 5
         center_line = QColor(190, 195, 205)
         center_line.setAlpha(150)
         painter.setPen(QPen(center_line, 1.0))
-        painter.drawLine(2, round(center_y), axis_x, round(center_y))
+        if mirror_left:
+            painter.drawLine(axis_x, round(center_y), self.width() - 2, round(center_y))
+        else:
+            painter.drawLine(2, round(center_y), axis_x, round(center_y))
 
         box_width = min(self.width() * 0.72, max(88.0, self.width() * 0.58))
         box_height = min(54.0, max(38.0, self.height() * 0.42))
