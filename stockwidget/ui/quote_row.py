@@ -57,6 +57,7 @@ class QuoteRow(QWidget):
         self._last_trend: Trend | None = None
         self._last_depth: DepthSnapshot | None = None
         self._theme2_expanded = False
+        self._theme2_collapsed_depth_width = 0
 
         self.name_label = QLabel()
         self.price_label = QLabel()
@@ -203,19 +204,40 @@ class QuoteRow(QWidget):
             make_font(config, pixel_size=max(7, config.stock_percent_font_size))
         )
 
+    def theme2_detail_extra_width(self) -> int:
+        return self._layout.horizontalSpacing() + max(
+            self.theme2_detail.minimumWidth(), self.theme2_detail.sizeHint().width()
+        )
+
     def theme2_target_width(self) -> int:
+        """自动/启动布局只看自然宽度；真实当前宽度只在点击展开路径使用。"""
         margins = self._layout.contentsMargins()
         width = self.theme2_depth.sizeHint().width() + margins.left() + margins.right()
         if self._theme2_expanded:
-            width += self._layout.horizontalSpacing() + max(
-                self.theme2_detail.minimumWidth(), self.theme2_detail.sizeHint().width()
-            )
+            width += self.theme2_detail_extra_width()
         return width
+
+    def theme2_collapsed_depth_width(self) -> int:
+        return self._theme2_collapsed_depth_width or max(
+            self.theme2_depth.width(), self.theme2_depth.sizeHint().width()
+        )
+
+    def set_theme2_depth_width_override(self, width: int | None) -> None:
+        self.theme2_depth.set_width_override(width)
+        if self._config.theme2_side == "left":
+            self._layout.setAlignment(self.theme2_depth, Qt.AlignLeft | Qt.AlignVCenter)
+        else:
+            self._layout.setAlignment(self.theme2_depth, Qt.AlignRight | Qt.AlignVCenter)
 
     def set_theme2_expanded(self, expanded: bool, *, notify: bool = True) -> None:
         expanded = bool(expanded and self._config.display_theme == "theme2")
         if expanded == self._theme2_expanded:
             return
+        if expanded and not self._theme2_expanded:
+            # 在详情可见之前记下真实盘口宽度，避免布局先挤压后再拿到错误值。
+            self._theme2_collapsed_depth_width = max(
+                self.theme2_depth.width(), self.theme2_depth.sizeHint().width()
+            )
         self._theme2_expanded = expanded
         self.theme2_detail.setVisible(expanded)
         self._update_layout_mode()
@@ -287,6 +309,10 @@ class QuoteRow(QWidget):
                 else:
                     self._layout.setColumnStretch(0, 0)
                     self._layout.setColumnStretch(1, 1)
+            if config.theme2_side == "left":
+                self._layout.setAlignment(self.theme2_depth, Qt.AlignLeft | Qt.AlignVCenter)
+            else:
+                self._layout.setAlignment(self.theme2_depth, Qt.AlignRight | Qt.AlignVCenter)
             self._narrow = False
             return
 

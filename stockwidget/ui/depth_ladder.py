@@ -33,6 +33,8 @@ class DepthLadder(QWidget):
         self._config = Config()
         self._preferred_width = 168
         self._preferred_height = 104
+        self._base_minimum_width = 120
+        self._width_override: int | None = None
         self._price_rect = QRectF()
         self.setCursor(Qt.PointingHandCursor)
         self.setMouseTracking(True)
@@ -47,11 +49,26 @@ class DepthLadder(QWidget):
         self._preferred_width = 4 + price_width + gap + config.theme2_depth_width + 5
         self._preferred_height = max(88, round(config.font_size * 7.2))
         # 配置宽度只决定默认/自然尺寸；用户拖右下角后，实际宽高由父布局分配。
-        self.setMinimumWidth(4 + price_width + gap + 40 + 5)
-        self.setMaximumWidth(16777215)
+        self._base_minimum_width = 4 + price_width + gap + 40 + 5
+        if self._width_override is None:
+            self.setMinimumWidth(self._base_minimum_width)
+            self.setMaximumWidth(16777215)
         self.setMaximumHeight(16777215)
         self.updateGeometry()
         self.update()
+
+    def set_width_override(self, width: int | None) -> None:
+        """临时冻结盘口实际宽度；用于弹出详情时保护其它股票不跟着横向变形。"""
+        value = None if width is None else max(self._base_minimum_width, int(width))
+        if value == self._width_override:
+            return
+        self._width_override = value
+        if value is None:
+            self.setMinimumWidth(self._base_minimum_width)
+            self.setMaximumWidth(16777215)
+        else:
+            self.setFixedWidth(value)
+        self.updateGeometry()
 
     def set_depth(self, snapshot: DepthSnapshot | None) -> None:
         if snapshot != self._depth:

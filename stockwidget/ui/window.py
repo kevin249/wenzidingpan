@@ -296,6 +296,7 @@ class TickerWindow(QWidget):
         self._rows: dict[str, QuoteRow] = {}
         self._depths: dict[str, DepthSnapshot] = {}
         self._theme2_expanded_symbol: str | None = None
+        self._theme2_collapsed_frame_width = 0
         self._transient_geometry_change = False
         self._scale = 1.0
         self._manual_size = False
@@ -475,8 +476,10 @@ class TickerWindow(QWidget):
             row.apply_config(scaled)
         if config.display_theme != "theme2":
             self._theme2_expanded_symbol = None
+            self._theme2_collapsed_frame_width = 0
             for row in self._rows.values():
                 row.set_theme2_expanded(False, notify=False)
+                row.set_theme2_depth_width_override(None)
         if self._rows:
             # 字号会改变每个行情格的 minimumSizeHint，随配置一起刷新内容宽度。
             self._lay_out_grid(list(self._rows))
@@ -670,23 +673,43 @@ class TickerWindow(QWidget):
     def _on_theme2_expansion_changed(self, symbol: str, expanded: bool) -> None:
         if self._config.display_theme != "theme2":
             return
+        row = self._rows.get(symbol)
+        if row is None:
+            return
+
+        mirror_left = self._config.theme2_side == "left"
+        fixed_edge = self.frameGeometry().left() if mirror_left else self.frameGeometry().right()
+
         if expanded:
+            # 第一次展开时记住“用户当前真实外框宽度”，并冻结每一行当前盘口宽度。
+            # 之后切换展开股票时继续复用这份基准，绝不拿默认 sizeHint 把窗口缩回去。
+            if self._theme2_collapsed_frame_width <= 0:
+                self._theme2_collapsed_frame_width = self.width()
+                for other_symbol, other_row in self._rows.items():
+                    width = (
+                        other_row.theme2_collapsed_depth_width()
+                        if other_symbol == symbol
+                        else max(other_row.theme2_depth.width(), other_row.theme2_depth.sizeHint().width())
+                    )
+                    other_row.set_theme2_depth_width_override(width)
+
             self._theme2_expanded_symbol = symbol
-            for other_symbol, row in self._rows.items():
+            for other_symbol, other_row in self._rows.items():
                 if other_symbol != symbol:
-                    row.set_theme2_expanded(False, notify=False)
+                    other_row.set_theme2_expanded(False, notify=False)
+
+            # 只在点击前真实宽度上追加详情区；原盘口列和其它股票一像素都不动。
+            target = self._theme2_collapsed_frame_width + row.theme2_detail_extra_width()
         elif self._theme2_expanded_symbol == symbol:
             self._theme2_expanded_symbol = None
+            target = self._theme2_collapsed_frame_width or self.width()
         else:
             return
 
-        # 靠右时固定右边缘向左展开；靠左镜像时固定左边缘向右展开。
-        mirror_left = self._config.theme2_side == "left"
-        fixed_edge = self.frameGeometry().left() if mirror_left else self.frameGeometry().right()
-        target = self._theme2_target_width()
         screen = self.screen()
         if screen is not None:
             target = min(target, screen.availableGeometry().width())
+
         self._transient_geometry_change = True
         try:
             self.resize(target, self.height())
@@ -697,6 +720,12 @@ class TickerWindow(QWidget):
             self._keep_on_screen()
         finally:
             self._transient_geometry_change = False
+
+        if not expanded:
+            # 外框先恢复，再解除盘口冻结；这样其它行不会在收起过程中先瞬间拉伸。
+            for other_row in self._rows.values():
+                other_row.set_theme2_depth_width_override(None)
+            self._theme2_collapsed_frame_width = 0
 
     # ------------------------------------------------------------ 尺寸
 
@@ -776,6 +805,10 @@ class TickerWindow(QWidget):
             self.setMinimumHeight(0)
             self.setMaximumHeight(16777215)
             if not self._rows:
+                return
+            if self._theme2_collapsed_frame_width > 0:
+                # 详情展开是临时几何态：行情刷新只更新数据，不能重新估宽让窗口跳动。
+                self._keep_on_screen()
                 return
             sample = next(iter(self._rows.values()))
             rows = len(self._rows)
