@@ -163,6 +163,7 @@ class QuoteRow(QWidget):
         self.theme2_chart.set_annotation_font(
             make_font(config, pixel_size=config.chart_label_font_size)
         )
+        self.theme2_chart.set_side_profile_width(config.theme2_depth_width)
         self.theme2_depth.apply_config(config)
         self._apply_theme2_metrics(config)
         self._update_layout_mode()
