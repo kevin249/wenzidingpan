@@ -17,6 +17,7 @@ from stockwidget.ui.sparkline import (
     BUY_COLOR,
     DEPTH_BID_COLOR,
     SELL_COLOR,
+    TRADED_VOLUME_COLOR,
     Sparkline,
 )
 
@@ -191,3 +192,102 @@ def test_thousand_depth_is_drawn_inside_the_chart_right_edge(app):
             ):
                 red_pixels += 1
     assert red_pixels > 0, "千档买盘应在 K 线内部右侧画出深度条"
+
+
+
+def test_theme2_traded_volume_is_opposite_depth_with_equal_sidebar_width(app):
+    prices = [9.80, 9.90, 10.00, 10.10, 10.20]
+    volumes = [100, 250, 500, 200, 120]
+    levels = (
+        DepthLevel("bid", 9.90, 200),
+        DepthLevel("bid", 9.80, 500),
+        DepthLevel("ask", 10.10, 220),
+        DepthLevel("ask", 10.20, 450),
+    )
+
+    curve_color = QColor(180, 90, 220)
+    widget = Sparkline()
+    widget.set_series(prices)
+    widget.set_volume_profile(volumes, enabled=True)
+    widget.set_color(curve_color)
+    widget.set_annotations(
+        None,
+        [],
+        show_signals=False,
+        show_open_line=False,
+        show_high_low=False,
+        show_fill=False,
+        grayscale=False,
+    )
+    widget.set_depth(
+        DepthSnapshot(
+            symbol="600000",
+            levels=levels,
+            received_at=1.0,
+            full_depth=True,
+            available=True,
+            bid_count=2,
+            ask_count=2,
+        )
+    )
+    widget.resize(WIDTH, HEIGHT)
+    image = widget.grab().toImage()
+
+    side = round(widget._side_profile_width(image.width()))
+    assert side == round(image.width() * 0.28)
+
+    volume_pixels = []
+    depth_pixels = []
+    curve_pixels = []
+    for y in range(image.height()):
+        for x in range(image.width()):
+            pixel = image.pixelColor(x, y)
+            if (
+                abs(pixel.red() - TRADED_VOLUME_COLOR.red()) < TOLERANCE
+                and abs(pixel.green() - TRADED_VOLUME_COLOR.green()) < TOLERANCE
+                and abs(pixel.blue() - TRADED_VOLUME_COLOR.blue()) < TOLERANCE
+            ):
+                volume_pixels.append((x, y))
+            if (
+                abs(pixel.red() - DEPTH_BID_COLOR.red()) < TOLERANCE
+                and abs(pixel.green() - DEPTH_BID_COLOR.green()) < TOLERANCE
+                and abs(pixel.blue() - DEPTH_BID_COLOR.blue()) < TOLERANCE
+            ):
+                depth_pixels.append((x, y))
+            if (
+                abs(pixel.red() - curve_color.red()) < 45
+                and abs(pixel.green() - curve_color.green()) < 45
+                and abs(pixel.blue() - curve_color.blue()) < 45
+            ):
+                curve_pixels.append((x, y))
+
+    assert volume_pixels, "左侧应画出已成交量价格分布"
+    assert depth_pixels, "右侧应画出实时挂单分布"
+    assert max(x for x, _ in volume_pixels) <= side + 2
+    assert min(x for x, _ in depth_pixels) >= image.width() - side - 3
+
+    # K线只占中间区域，不再与左右成交量/挂单侧栏重叠。
+    assert curve_pixels
+    assert min(x for x, _ in curve_pixels) >= side
+    assert max(x for x, _ in curve_pixels) <= image.width() - side
+
+
+def test_volume_profile_does_not_create_bottom_volume_panel(app):
+    widget = Sparkline()
+    widget.set_series([10.0, 10.1, 10.2, 10.15])
+    widget.set_volume_profile([100, 200, 300, 150], enabled=True)
+    widget.set_annotations(
+        None,
+        [],
+        show_signals=False,
+        show_open_line=False,
+        show_high_low=False,
+        show_fill=False,
+        grayscale=False,
+    )
+    widget.resize(WIDTH, HEIGHT)
+
+    # 成交量是按价格 Y 轴分布的左侧横条，不占用额外底部高度。
+    assert widget.height() == HEIGHT
+    assert widget._show_volume_profile is True
+    assert len(widget._volumes) == len(widget._series)
