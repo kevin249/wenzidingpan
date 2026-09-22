@@ -236,7 +236,7 @@ class QuoteRow(QWidget):
     def set_theme2_depth_width_override(
         self, width: int | None, *, relayout: bool = False
     ) -> None:
-        self.theme2_depth.set_width_override(width)
+        self.theme2_depth.set_width_override(width, use_size_hint=relayout)
         if relayout:
             # 仅被点击的这一行需要重新查询 Preferred 宽度；其它行只重绘。
             self.theme2_depth.updateGeometry()
@@ -256,7 +256,7 @@ class QuoteRow(QWidget):
         if expanded:
             # resize/move 可能制造一次假的 leaveEvent，短暂屏蔽，防止展开/收起重入。
             self._theme2_ignore_leave = True
-            QTimer.singleShot(150, self._clear_theme2_leave_guard)
+            QTimer.singleShot(0, self._clear_theme2_leave_guard)
         else:
             self._theme2_ignore_leave = False
         self.theme2_detail.setVisible(expanded)
