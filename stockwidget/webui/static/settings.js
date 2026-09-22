@@ -36,6 +36,7 @@ const FONT_SIZES = [
   'stock_percent_font_size',
   'dark_trade_font_size',
   'chart_label_font_size',
+  'theme2_popup_font_size',
   'tray_unread_font_size',
 ];
 const NUMBERS = [
@@ -252,6 +253,7 @@ function refreshHints() {
   const single = !theme2 && el('layout').value === 'single';
   el('theme2_side').disabled = !theme2;
   el('theme2_depth_width').disabled = !theme2;
+  el('theme2_popup_font_size').disabled = !theme2;
   el('layout').disabled = theme2;
   for (const id of ['visible_rows', 'row_style', 'chart_height']) {
     el(id).disabled = single || theme2;
