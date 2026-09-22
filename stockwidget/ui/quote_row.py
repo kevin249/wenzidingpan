@@ -233,24 +233,21 @@ class QuoteRow(QWidget):
             self.theme2_depth.width(), self.theme2_depth.sizeHint().width()
         )
 
-    def set_theme2_depth_width_override(
-        self, width: int | None, *, relayout: bool = False
-    ) -> None:
-        self.theme2_depth.set_width_override(width, use_size_hint=relayout)
-        if relayout:
-            # 仅被点击的这一行需要重新查询 Preferred 宽度；其它行只重绘。
-            self.theme2_depth.updateGeometry()
-            self._layout.invalidate()
+    def set_theme2_depth_width_override(self, width: int | None) -> None:
+        self.theme2_depth.set_width_override(width, use_size_hint=False)
 
     def set_theme2_expanded(self, expanded: bool, *, notify: bool = True) -> None:
         expanded = bool(expanded and self._config.display_theme == "theme2")
         if expanded == self._theme2_expanded:
             return
         if expanded and not self._theme2_expanded:
-            # 在详情可见之前记下真实盘口宽度，避免布局先挤压后再拿到错误值。
-            self._theme2_collapsed_depth_width = max(
-                self.theme2_depth.width(), self.theme2_depth.sizeHint().width()
-            )
+            # 在切换 Preferred 布局之前就锁定原盘口宽度；若已经作为兄弟行被冻结，
+            # 优先复用最初冻结值，绝不把展开后的整窗宽度当盘口宽度。
+            frozen = self.theme2_depth.width_override
+            if frozen is None:
+                frozen = max(self.theme2_depth.width(), self.theme2_depth.sizeHint().width())
+            self._theme2_collapsed_depth_width = frozen
+            self.theme2_depth.set_width_override(frozen, use_size_hint=True)
         self._theme2_expanded = expanded
         if expanded:
             # resize/move 可能制造一次假的 leaveEvent，短暂屏蔽，防止展开/收起重入。
