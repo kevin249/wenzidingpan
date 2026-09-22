@@ -76,6 +76,20 @@ def test_theme2_right_dock_places_price_left_and_depth_only_on_right(app):
     assert upper_green > 0, "卖盘应在右侧盘口上半区"
     assert lower_red > 0, "买盘应在右侧盘口下半区"
 
+    guide_start = round(price_right + 3)
+    guide_end = round(axis_x - 3)
+    guide_colors = [image.pixelColor(x, center_y) for x in range(guide_start, guide_end)]
+    guide_hits = sum(
+        1
+        for pixel in guide_colors
+        if pixel.alpha() > 40
+        and abs(pixel.red() - pixel.green()) < 24
+        and abs(pixel.green() - pixel.blue()) < 30
+    )
+    guide_gaps = sum(1 for pixel in guide_colors if pixel.alpha() < 20)
+    assert guide_hits > 3, "股价中线必须有灰色虚线指向买卖交界"
+    assert guide_gaps > 3, "股价引导线必须是虚线而不是实线"
+
 
 def test_theme2_uses_quote_price_as_vertical_center(app):
     widget = DepthLadder()
@@ -155,6 +169,14 @@ def test_theme2_left_mirror_puts_price_right_and_depth_after_left_axis(app):
             elif y > center_y + 10:
                 lower_red_right += int(red)
 
+    colored_inside_price_side = 0
+    for y in range(image.height()):
+        for x in range(round(depth_inner_x) + 1, image.width()):
+            pixel = image.pixelColor(x, y)
+            if _is_green(pixel) or _is_red(pixel):
+                colored_inside_price_side += 1
+
     assert colored_left_of_axis == 0, "镜像后挂单量条不能跑到左侧价格轴外"
+    assert colored_inside_price_side == 0, "镜像后挂单不能侵入最右股价区域"
     assert upper_green_right > 0, "镜像后卖盘仍应在中线上方并向右延伸"
     assert lower_red_right > 0, "镜像后买盘仍应在中线下方并向右延伸"
