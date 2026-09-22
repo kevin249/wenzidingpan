@@ -1711,3 +1711,44 @@ def test_theme2_depth_is_not_intercepted_by_window_drag_filter(app):
     assert window._move_drag_origin is None
     assert window.frameGeometry().topLeft() == start
     window.close()
+
+
+
+def test_theme2_expanded_chart_receives_minute_volume_and_latest_depth(app):
+    from stockwidget.mcp_depth import DEPTH_FULL, DepthLevel, DepthSnapshot
+    from stockwidget.providers.base import Quote
+
+    config = Config(display_theme="theme2")
+    row = QuoteRow("600519")
+    row.apply_config(config)
+    trend = Trend(
+        prices=[10.0, 10.1, 10.2],
+        volumes=[100.0, 250.0, 180.0],
+        prev_close=9.9,
+        open_price=10.0,
+    )
+    row.update_quote(
+        Quote.from_prices("600519", "贵州茅台", 10.2, 9.9),
+        config,
+        trend,
+    )
+
+    snapshot = DepthSnapshot(
+        symbol="600519",
+        levels=(
+            DepthLevel("bid", 10.1, 100),
+            DepthLevel("ask", 10.3, 120),
+        ),
+        full_depth=True,
+        available=True,
+        bid_count=1,
+        ask_count=1,
+        depth_mode=DEPTH_FULL,
+    )
+    row.update_depth(snapshot)
+
+    assert row.theme2_chart._volumes == trend.volumes
+    assert row.theme2_chart._show_volume_profile is True
+    assert row.theme2_chart._configured_profile_width == config.theme2_depth_width
+    assert row.theme2_chart._depth is snapshot
+    row.close()

@@ -163,6 +163,7 @@ class QuoteRow(QWidget):
         self.theme2_chart.set_annotation_font(
             make_font(config, pixel_size=config.chart_label_font_size)
         )
+        self.theme2_chart.set_side_profile_width(config.theme2_depth_width)
         self.theme2_depth.apply_config(config)
         self._apply_theme2_metrics(config)
         self._update_layout_mode()
@@ -562,6 +563,10 @@ class QuoteRow(QWidget):
             return
         self.theme2_chart.push_sample(quote.price)
         self.theme2_chart.set_series(prices)
+        self.theme2_chart.set_volume_profile(
+            trend.volumes if trend else [],
+            enabled=bool(trend and trend.volumes),
+        )
         self.theme2_chart.set_prev_close(
             (trend.prev_close if trend and trend.prev_close else None) or quote.prev_close
         )
@@ -579,6 +584,7 @@ class QuoteRow(QWidget):
         self._last_depth = snapshot
         self.sparkline.set_depth(snapshot)
         self.theme2_depth.set_depth(snapshot)
+        self.theme2_chart.set_depth(snapshot)
 
     def _set_dark(self, dark_fund: float | None, config: Config) -> None:
         text = fmt_money(dark_fund) if config.show_dark_trade and not config.compact else None

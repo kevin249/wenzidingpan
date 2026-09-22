@@ -29,6 +29,7 @@ def test_eastmoney_takes_close_price_and_prev_close():
         ])
     )
     assert trend.prices == [10.10, 10.30]  # 取的是收盘价（第 3 个字段）
+    assert trend.volumes == [100.0, 120.0]
     assert trend.prev_close == 10.0
     assert trend.open_price == 10.0
     assert trend.high_price == 10.30
@@ -97,7 +98,9 @@ def test_tencent_fallback_parses_minutes():
         "0931 10.30 220 2200",
         "1201 9.90 1 1",  # 午休，应被滤掉
     ]}}}}
-    assert parse_tencent(payload, "sh600000").prices == [10.10, 10.30]
+    trend = parse_tencent(payload, "sh600000")
+    assert trend.prices == [10.10, 10.30]
+    assert trend.volumes == [100.0, 120.0]
 
 
 def test_tencent_rejects_bad_payload():

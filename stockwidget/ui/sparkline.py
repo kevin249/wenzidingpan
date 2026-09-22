@@ -22,6 +22,7 @@ BUY_COLOR = QColor(240, 79, 90)
 SELL_COLOR = QColor(59, 130, 246)
 DEPTH_BID_COLOR = QColor(240, 79, 90)
 DEPTH_ASK_COLOR = QColor(34, 197, 94)
+TRADED_VOLUME_COLOR = QColor(148, 163, 184)
 DEPTH_STALE_SECONDS = 120
 
 
@@ -30,6 +31,9 @@ class Sparkline(QWidget):
         super().__init__(parent)
         self._samples: deque[float] = deque(maxlen=SAMPLE_LEN)
         self._series: list[float] = []  # 当日分时，空则用采样点
+        self._volumes: list[float] = []
+        self._show_volume_profile = False
+        self._configured_profile_width = 0
         self._prev_close: float | None = None
         self._open_price: float | None = None
         self._signals: list[tuple[int, str]] = []
@@ -72,6 +76,23 @@ class Sparkline(QWidget):
     def set_series(self, prices: list[float]) -> None:
         if prices != self._series:
             self._series = list(prices)
+            self.update()
+
+    def set_volume_profile(self, volumes: list[float], *, enabled: bool = True) -> None:
+        """设置按分钟成交量；启用后按成交价聚合到左侧价格-成交量分布。"""
+        cleaned = [max(0.0, float(value or 0.0)) for value in volumes]
+        state = (cleaned, bool(enabled))
+        old = (self._volumes, self._show_volume_profile)
+        if state != old:
+            self._volumes = cleaned
+            self._show_volume_profile = bool(enabled)
+            self.update()
+
+    def set_side_profile_width(self, width: int) -> None:
+        """设置左右成交量/挂单侧栏的共同宽度；0 表示按组件宽度自动计算。"""
+        value = max(0, int(width or 0))
+        if value != self._configured_profile_width:
+            self._configured_profile_width = value
             self.update()
 
     def set_prev_close(self, value: float | None) -> None:
@@ -150,6 +171,8 @@ class Sparkline(QWidget):
     def clear(self) -> None:
         self._samples.clear()
         self._series = []
+        self._volumes = []
+        self._show_volume_profile = False
         self._signals = []
         self._open_price = None
         self._prev_close = None
@@ -161,7 +184,62 @@ class Sparkline(QWidget):
 
     # ------------------------------------------------------------ 绘制
 
-    def _draw_depth(self, painter: QPainter, width: int, height: int, y_of) -> None:
+    def _side_profile_width(self, width: int) -> float:
+        """成交量与挂单使用完全相同的左右侧栏宽度。"""
+        automatic = min(240.0, max(24.0, width * 0.28))
+        target = float(self._configured_profile_width) if self._configured_profile_width > 0 else automatic
+        # 至少给中间 K 线保留 80px，窗口太窄时两侧等比例收紧。
+        maximum = max(24.0, (width - 80.0) / 2.0)
+        return min(target, maximum)
+
+    def _draw_traded_volume(
+        self,
+        painter: QPainter,
+        height: int,
+        y_of,
+        profile_width: float,
+    ) -> None:
+        if not self._show_volume_profile or not self._series or not self._volumes:
+            return
+
+        buckets: dict[int, float] = {}
+        for price, volume in zip(self._series, self._volumes):
+            if volume <= 0:
+                continue
+            row = round(y_of(price))
+            if 0 <= row < height:
+                buckets[row] = buckets.get(row, 0.0) + volume
+        if not buckets:
+            return
+
+        maximum = max(buckets.values()) or 1.0
+        color = QColor(135, 135, 135) if self._grayscale else QColor(TRADED_VOLUME_COLOR)
+        color.setAlpha(82)
+
+        painter.save()
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(color)
+        for row, volume in buckets.items():
+            bar_width = max(1.0, profile_width * volume / maximum)
+            painter.fillRect(QRectF(0.0, row - 0.7, bar_width, 1.4), color)
+
+        painter.setFont(self._annotation_font)
+        painter.setPen(QColor(145, 145, 145) if self._grayscale else QColor(185, 190, 202))
+        painter.drawText(
+            QRectF(2, 1, max(0.0, profile_width - 4), max(12, height / 4)),
+            Qt.AlignLeft | Qt.AlignTop,
+            "成交量",
+        )
+        painter.restore()
+
+    def _draw_depth(
+        self,
+        painter: QPainter,
+        width: int,
+        height: int,
+        y_of,
+        profile_width: float,
+    ) -> None:
         snapshot = self._depth
         if snapshot is None or not snapshot.available or not snapshot.levels:
             return
@@ -180,7 +258,7 @@ class Sparkline(QWidget):
         maximum = max(buckets.values())
         if maximum <= 0:
             return
-        max_width = min(240.0, max(24.0, width * 0.28))
+        max_width = profile_width
         right = float(width - 1)
 
         painter.save()
@@ -232,8 +310,16 @@ class Sparkline(QWidget):
         def y_of(value: float) -> float:
             return (height - 2) - (value - low) / span * (height - 4)
 
+        profile_width = self._side_profile_width(width) if self._show_volume_profile else 0.0
+        chart_left = profile_width + 2.0 if self._show_volume_profile else 0.0
+        chart_right = (
+            max(chart_left + 1.0, width - profile_width - 3.0)
+            if self._show_volume_profile
+            else float(width - 1)
+        )
+
         def x_of(index: int) -> float:
-            return index / (len(points) - 1) * (width - 1)
+            return chart_left + index / (len(points) - 1) * (chart_right - chart_left)
 
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
@@ -267,8 +353,10 @@ class Sparkline(QWidget):
             fill.setAlpha(FILL_ALPHA)
             painter.fillPath(area, fill)
 
-        # 千档挂单在 K 线内部右侧按相同价格轴叠加，曲线和基准线画在它上面。
-        self._draw_depth(painter, width, height, y_of)
+        # 主题2展开图：左侧历史成交量分布，右侧实时挂单分布，二者等宽；K线居中。
+        if self._show_volume_profile:
+            self._draw_traded_volume(painter, height, y_of, profile_width)
+        self._draw_depth(painter, width, height, y_of, profile_width or self._side_profile_width(width))
 
         # 昨收基准线
         if self._prev_close is not None:
@@ -278,7 +366,7 @@ class Sparkline(QWidget):
             pen.setDashPattern([4, 3])
             painter.setPen(pen)
             y = y_of(self._prev_close)
-            painter.drawLine(QPointF(0, y), QPointF(width, y))
+            painter.drawLine(QPointF(chart_left, y), QPointF(chart_right, y))
 
         # 开盘价使用区别于昨收的点虚线。
         if self._show_open_line and self._open_price is not None:
@@ -286,7 +374,7 @@ class Sparkline(QWidget):
             opening.setAlpha(BASELINE_ALPHA)
             painter.setPen(QPen(opening, 1, Qt.DotLine))
             y = y_of(self._open_price)
-            painter.drawLine(QPointF(0, y), QPointF(width, y))
+            painter.drawLine(QPointF(chart_left, y), QPointF(chart_right, y))
 
         pen = QPen(self._color, 1.4)
         pen.setJoinStyle(Qt.RoundJoin)
@@ -297,5 +385,6 @@ class Sparkline(QWidget):
         if self._show_high_low:
             painter.setFont(self._annotation_font)
             painter.setPen(QColor(150, 150, 150) if self._grayscale else self._color)
-            painter.drawText(2, painter.fontMetrics().ascent() + 1, f"{price_high:.2f}")
-            painter.drawText(2, height - 2, f"{price_low:.2f}")
+            label_x = round(chart_left + 2)
+            painter.drawText(label_x, painter.fontMetrics().ascent() + 1, f"{price_high:.2f}")
+            painter.drawText(label_x, height - 2, f"{price_low:.2f}")
