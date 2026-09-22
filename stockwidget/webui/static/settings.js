@@ -5,6 +5,7 @@ const el = (id) => document.getElementById(id);
 const api = (path) => `${path}${path.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`;
 
 const CHECKBOXES = [
+  'debug_mode',
   'always_on_top',
   'click_through',
   'show_title_buttons',

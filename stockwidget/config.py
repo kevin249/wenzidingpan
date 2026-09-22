@@ -81,6 +81,8 @@ class Config:
     provider: str = DEFAULT_PROVIDER
     symbols: list[str] = field(default_factory=lambda: ["600519", "000001", "300750", "601318"])
     refresh_seconds: int = 5
+    # Debug 模式绕过交易时段限制，便于收盘后调试实时行情 / K线 / MCP深度。
+    debug_mode: bool = False
     color_scheme: str = "cn"  # cn = 红涨绿跌，us = 绿涨红跌
     opacity: float = 0.95  # 整窗透明度，文字也会跟着变淡
     background_color: str = "#11141c"
@@ -276,6 +278,7 @@ def sanitize(raw: Any) -> Config:
         out.mcp_api_key = mcp_api_key.strip()[:512]
 
     for key in (
+        "debug_mode",
         "always_on_top",
         "show_title_buttons",
         "show_sparkline",

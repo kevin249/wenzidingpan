@@ -14,6 +14,7 @@ from mcp.client.streamable_http import streamable_http_client
 from PySide6.QtCore import QThread, Signal
 
 from .config import Config
+from .market_hours import OFF_HOURS_WAKE_SECONDS, active_updates_allowed
 from .mcp_bs import record_volatility_bs
 from .mcp_notifications import SSE_TIMEOUT, _api_key, _bounded, _tool_payload
 from .symbols import classify
@@ -291,6 +292,7 @@ class McpDepthPoller(QThread):
                 config.show_sparkline,
                 config.intraday_chart,
                 config.display_theme,
+                config.debug_mode,
             ) != (
                 self._config.mcp_url,
                 _api_key(self._config),
@@ -298,6 +300,7 @@ class McpDepthPoller(QThread):
                 self._config.show_sparkline,
                 self._config.intraday_chart,
                 self._config.display_theme,
+                self._config.debug_mode,
             )
             self._config = config
         if changed:
@@ -325,6 +328,12 @@ class McpDepthPoller(QThread):
             if not self._enabled(config):
                 self._emit_status("已关闭")
                 self._wake.wait(3600)
+                self._wake.clear()
+                continue
+
+            if not active_updates_allowed(config.debug_mode):
+                self._emit_status("已休眠 · 非交易时段仅保留 MCP 被动提醒")
+                self._wake.wait(OFF_HOURS_WAKE_SECONDS)
                 self._wake.clear()
                 continue
 

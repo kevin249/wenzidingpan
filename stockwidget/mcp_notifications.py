@@ -19,6 +19,7 @@ from mcp.shared.exceptions import MCPDeprecationWarning
 from PySide6.QtCore import QThread, Signal
 
 from .config import Config
+from .market_hours import active_updates_allowed
 from .mcp_bs import record_notification
 
 MCP_API_KEY_ENV = "GUPIAO_MCP_API_KEY"
@@ -168,14 +169,17 @@ class McpNotificationListener(QThread):
 
     def apply_config(self, config: Config) -> None:
         with self._lock:
-            changed = self._identity(config) != self._identity(self._config)
+            identity_changed = self._identity(config) != self._identity(self._config)
+            mode_changed = config.debug_mode != self._config.debug_mode
             self._config = config
-            if changed:
+            if identity_changed:
                 self._baseline_ready = False
                 self._last_sequence = None
                 self._seen_order.clear()
                 self._seen_ids.clear()
-        if changed:
+        # Debug 切换也重连一次，让“被动订阅 / 盘中兜底轮询”立即切换；
+        # 但不清 baseline/seen，避免把历史事件重新当新提醒。
+        if identity_changed or mode_changed:
             self._wake.set()
             self._cancel_connection()
 
@@ -194,6 +198,11 @@ class McpNotificationListener(QThread):
         if status != self._last_status:
             self._last_status = status
             self.status_changed.emit(status)
+
+    def _passive_only(self) -> bool:
+        with self._lock:
+            config = self._config
+        return not active_updates_allowed(config.debug_mode)
 
     def run(self) -> None:  # noqa: D102
         while not self._stopping.is_set():
@@ -326,11 +335,19 @@ class McpNotificationListener(QThread):
                 if event_task.result() == uri:
                     await self._deliver_resource(session, uri, cancel_event)
                 continue
+            if self._passive_only():
+                # 非交易时段保持 SSE/resource subscription 长连接，只响应服务端推送；
+                # 不再每 60 秒主动 read_resource，降低收盘后的 MCP 和服务端开销。
+                self._emit_status("已连接 · 非交易时段被动订阅")
+                continue
             await self._deliver_resource(session, uri, cancel_event)
 
     def _emit_delivery_status(self, missing: int) -> None:
         if missing > 0:
             self._emit_status(f"已连接 · 警告：MCP 消息缺失 {missing} 条")
+            return
+        if self._passive_only():
+            self._emit_status("已连接 · 非交易时段被动订阅")
             return
         self._emit_status("已连接 · 实时订阅")
 

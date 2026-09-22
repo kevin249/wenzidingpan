@@ -12,6 +12,7 @@ from . import providers
 from .config import Config
 from .darktrade import DarkTradeClient
 from .intraday import IntradayClient, Trend
+from .market_hours import OFF_HOURS_WAKE_SECONDS, active_updates_allowed
 from .providers.base import Quote
 from .symbols import classify
 
@@ -88,6 +89,15 @@ class Poller(QThread):
         while not self._stopping.is_set():
             with self._lock:
                 config = self._config
+
+            # 非 Debug 模式下，非交易时段不做任何主动行情 / K线请求。
+            # 线程只低频醒来检查是否进入交易窗口；MCP 通知由独立订阅线程继续接收。
+            if not active_updates_allowed(config.debug_mode):
+                self._wake.wait(OFF_HOURS_WAKE_SECONDS)
+                self._wake.clear()
+                force_quotes = False
+                continue
+
             self.snapshot_ready.emit(self._tick(config, force_quotes=force_quotes))
             woke = self._wake.wait(self._loop_interval(config))
             self._wake.clear()

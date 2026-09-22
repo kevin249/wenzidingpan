@@ -39,6 +39,16 @@
       </section>
 
       <section class="card">
+        <h2>运行模式</h2>
+        <div class="checks">
+          <label><input id="debug_mode" name="debug_mode" type="checkbox"
+                        {% if config.debug_mode %}checked{% endif %} />
+            Debug 模式：非交易时段仍主动刷新行情、K线、千档和 B/S</label>
+        </div>
+        <p class="hint">默认关闭。关闭时仅在 A 股活跃窗口（上海时区，周一至周五 09:15–11:30、13:00–15:00）主动拉实时数据；其余时间停止行情/K线/深度轮询，只保留 MCP 通知资源的被动订阅。Debug 模式用于收盘后联调。</p>
+      </section>
+
+      <section class="card">
         <h2>显示</h2>
         <div class="grid">
           <div class="field">
