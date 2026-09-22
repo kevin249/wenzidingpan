@@ -806,6 +806,10 @@ class TickerWindow(QWidget):
             self.setMaximumHeight(16777215)
             if not self._rows:
                 return
+            if self._theme2_collapsed_frame_width > 0:
+                # 详情展开是临时几何态：行情刷新只更新数据，不能重新估宽让窗口跳动。
+                self._keep_on_screen()
+                return
             sample = next(iter(self._rows.values()))
             rows = len(self._rows)
             total_height = chrome + sample.sizeHint().height() * rows + 8
