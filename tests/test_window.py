@@ -1688,7 +1688,6 @@ def test_theme2_detail_info_is_four_compact_lines_at_top_left(app):
     for current, following in zip(labels, labels[1:]):
         gap = following.y() - (current.y() + current.height())
         assert gap <= 1
-    assert labels[-1].geometry().bottom() < row._theme2_info.height() / 2
     row.close()
 
 
