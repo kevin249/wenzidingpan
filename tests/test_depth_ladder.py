@@ -183,7 +183,7 @@ def test_theme2_left_mirror_puts_price_right_and_depth_after_left_axis(app):
 
 
 
-def test_theme2_depth_width_changes_only_order_book_span(app):
+def test_theme2_depth_width_controls_natural_width_but_manual_resize_wins(app):
     narrow = DepthLadder()
     narrow.apply_config(
         Config(display_theme="theme2", theme2_side="right", theme2_depth_width=60)
@@ -193,13 +193,16 @@ def test_theme2_depth_width_changes_only_order_book_span(app):
         Config(display_theme="theme2", theme2_side="right", theme2_depth_width=220)
     )
 
-    _, narrow_axis, narrow_inner, narrow_price_left, narrow_price_right = narrow._horizontal_geometry()
-    _, wide_axis, wide_inner, wide_price_left, wide_price_right = wide._horizontal_geometry()
+    # 配置只决定启动/自然宽度。
+    assert wide.sizeHint().width() - narrow.sizeHint().width() == 160
 
-    assert narrow_axis - narrow_inner == pytest.approx(60)
-    assert wide_axis - wide_inner == pytest.approx(220)
-    assert wide.width() - narrow.width() == 160
-    # 股价文字区本身不随盘口宽度变化，只把盘口区域拉宽。
-    assert narrow_price_right - narrow_price_left == pytest.approx(
-        wide_price_right - wide_price_left
-    )
+    # 真正显示时，右下角拖出来的实际控件宽度决定盘口跨度。
+    narrow.resize(240, 100)
+    _, axis1, inner1, price_left1, price_right1 = narrow._horizontal_geometry()
+    narrow.resize(400, 100)
+    _, axis2, inner2, price_left2, price_right2 = narrow._horizontal_geometry()
+
+    assert axis2 - inner2 > axis1 - inner1
+    assert axis2 - inner2 - (axis1 - inner1) == pytest.approx(160)
+    assert price_right1 - price_left1 == pytest.approx(price_right2 - price_left2)
+
