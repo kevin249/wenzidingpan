@@ -1752,3 +1752,85 @@ def test_theme2_expanded_chart_receives_minute_volume_and_latest_depth(app):
     assert row.theme2_chart._configured_profile_width == config.theme2_depth_width
     assert row.theme2_chart._depth is snapshot
     row.close()
+
+
+
+def test_theme2_expansion_keeps_sibling_depth_width_and_never_shrinks_frame(app):
+    from stockwidget.providers.base import Quote
+
+    config = Config(display_theme="theme2", show_title_buttons=False)
+    window = TickerWindow(config)
+    quotes = [
+        Quote.from_prices("600519", "贵州茅台", 1304.66, 1272.83),
+        Quote.from_prices("603986", "兆易创新", 404.97, 432.37),
+        Quote.from_prices("300223", "北京君正", 381.66, 386.48),
+    ]
+    window._sync_rows(quotes)
+    window.show()
+    app.processEvents()
+
+    # 模拟用户已经把主窗口手工拖宽：这是之前最容易被 sizeHint 缩回去的场景。
+    requested = QSize(window.width() + 180, window.height())
+    window._on_grip_drag_started(window.size())
+    window._on_grip_dragged(requested)
+    window._on_grip_drag_finished()
+    app.processEvents()
+
+    before_frame_width = window.width()
+    first = window._rows["600519"]
+    sibling = window._rows["603986"]
+    first_depth_width = first.theme2_depth.width()
+    sibling_depth_width = sibling.theme2_depth.width()
+    sibling_geometry = sibling.theme2_depth._horizontal_geometry()
+
+    first.theme2_depth.price_clicked.emit()
+    app.processEvents()
+
+    assert window.width() > before_frame_width
+    assert first.theme2_depth.width() == first_depth_width
+    assert sibling.theme2_depth.width() == sibling_depth_width
+    assert sibling.theme2_depth._horizontal_geometry() == sibling_geometry
+    assert first.theme2_detail.isVisible() is True
+
+    expanded_width = window.width()
+    expanded_chart_width = first.theme2_chart.width()
+    assert expanded_chart_width > 0
+
+    # 模拟下一次行情刷新：外框、下方盘口、弹出 K 线宽度都不能再跳。
+    window._sync_rows(quotes)
+    app.processEvents()
+    assert window.width() == expanded_width
+    assert sibling.theme2_depth.width() == sibling_depth_width
+    assert sibling.theme2_depth._horizontal_geometry() == sibling_geometry
+    assert first.theme2_chart.width() == expanded_chart_width
+
+    first.leaveEvent(None)
+    app.processEvents()
+    assert window.width() == before_frame_width
+    window.close()
+
+
+def test_theme2_expansion_uses_current_real_width_not_default_size_hint(app):
+    from stockwidget.providers.base import Quote
+
+    config = Config(display_theme="theme2", show_title_buttons=False)
+    window = TickerWindow(config)
+    window._sync_rows([Quote.from_prices("600519", "贵州茅台", 1304.66, 1272.83)])
+    window.show()
+    app.processEvents()
+
+    # 宽到明显超过自然宽度，展开只能继续变宽，绝不能反向缩小。
+    window.resize(window.width() + 260, window.height())
+    window._manual_size = True
+    app.processEvents()
+    before = window.width()
+    row = window._rows["600519"]
+    natural = row.theme2_depth.sizeHint().width()
+    assert row.theme2_depth.width() > natural
+
+    row.theme2_depth.price_clicked.emit()
+    app.processEvents()
+
+    assert window.width() > before
+    assert row.theme2_depth.width() > natural
+    window.close()
