@@ -241,7 +241,6 @@ class QuoteRow(QWidget):
             # 仅被点击的这一行需要重新查询 Preferred 宽度；其它行只重绘。
             self.theme2_depth.updateGeometry()
             self._layout.invalidate()
-            self.updateGeometry()
 
     def set_theme2_expanded(self, expanded: bool, *, notify: bool = True) -> None:
         expanded = bool(expanded and self._config.display_theme == "theme2")
@@ -256,12 +255,11 @@ class QuoteRow(QWidget):
         if expanded:
             # resize/move 可能制造一次假的 leaveEvent，短暂屏蔽，防止展开/收起重入。
             self._theme2_ignore_leave = True
-            QTimer.singleShot(0, self._clear_theme2_leave_guard)
+            QTimer.singleShot(50, self._clear_theme2_leave_guard)
         else:
             self._theme2_ignore_leave = False
         self.theme2_detail.setVisible(expanded)
         self._update_layout_mode()
-        self.updateGeometry()
         if notify:
             self.theme2_expansion_changed.emit(self.symbol, expanded)
 
@@ -269,7 +267,7 @@ class QuoteRow(QWidget):
         if (
             self._config.display_theme == "theme2"
             and self._theme2_expanded
-            and not self._theme2_ignore_leave
+            and (event is None or not self._theme2_ignore_leave)
         ):
             self.set_theme2_expanded(False)
         if event is not None:
