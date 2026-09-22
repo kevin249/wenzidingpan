@@ -11,7 +11,15 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QBoxLayout, QGridLayout, QHBoxLayout, QLabel, QSizePolicy, QWidget
+from PySide6.QtWidgets import (
+    QBoxLayout,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
+)
 
 from .. import mcp_bs
 from ..config import Config
@@ -84,23 +92,30 @@ class QuoteRow(QWidget):
         theme2_detail_layout.setContentsMargins(6, 4, 6, 4)
         theme2_detail_layout.setSpacing(8)
         theme2_info = QWidget()
-        theme2_info_layout = QGridLayout(theme2_info)
+        theme2_info_layout = QVBoxLayout(theme2_info)
         theme2_info_layout.setContentsMargins(0, 0, 0, 0)
-        theme2_info_layout.setHorizontalSpacing(4)
-        theme2_info_layout.setVerticalSpacing(2)
+        theme2_info_layout.setSpacing(0)
         self.theme2_name_label = QLabel()
         self.theme2_code_label = QLabel()
         self.theme2_dark_label = QLabel()
         self.theme2_high_low_label = QLabel()
-        theme2_info_layout.addWidget(self.theme2_name_label, 0, 0)
-        theme2_info_layout.addWidget(self.theme2_code_label, 1, 0)
-        theme2_info_layout.addWidget(self.theme2_dark_label, 2, 0)
-        theme2_info_layout.addWidget(self.theme2_high_low_label, 3, 0)
+        for label in (
+            self.theme2_name_label,
+            self.theme2_code_label,
+            self.theme2_dark_label,
+            self.theme2_high_low_label,
+        ):
+            label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+            label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+            theme2_info_layout.addWidget(label, 0, Qt.AlignLeft | Qt.AlignTop)
+        # 四行信息只贴左上角排布，剩余高度全部留白，不再平均摊到四行之间。
+        theme2_info_layout.addStretch(1)
         self.theme2_chart = Sparkline()
         self.theme2_chart.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         theme2_detail_layout.addWidget(theme2_info)
         theme2_detail_layout.addWidget(self.theme2_chart, 1)
         self._theme2_info = theme2_info
+        self._theme2_info_layout = theme2_info_layout
         self._theme2_detail_layout = theme2_detail_layout
         self.theme2_detail.hide()
         self.theme2_depth.hide()

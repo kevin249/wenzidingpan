@@ -7,6 +7,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 
 try:
+    from PySide6.QtCore import Qt
     from PySide6.QtGui import QColor
     from PySide6.QtWidgets import QApplication
 except (ImportError, OSError) as error:
@@ -206,3 +207,60 @@ def test_theme2_depth_width_controls_natural_width_but_manual_resize_wins(app):
     assert axis2 - inner2 - (axis1 - inner1) == pytest.approx(160)
     assert price_right1 - price_left1 == pytest.approx(price_right2 - price_left2)
 
+
+
+
+class _ClickEvent:
+    def __init__(self, x, y):
+        from PySide6.QtCore import QPointF
+
+        self._position = QPointF(x, y)
+        self.accepted = False
+
+    def button(self):
+        return Qt.LeftButton
+
+    def position(self):
+        return self._position
+
+    def accept(self):
+        self.accepted = True
+
+
+def test_theme2_price_click_target_covers_full_price_column(app):
+    widget = DepthLadder()
+    widget.apply_config(Config(display_theme="theme2", theme2_side="right"))
+    widget.resize(widget.sizeHint())
+    widget.set_quote(100.0, 1.25, QColor(154, 163, 184))
+    widget.grab()  # 触发 paintEvent，建立点击热区。
+
+    mirror, _axis_x, _depth_inner_x, price_left, price_right = widget._horizontal_geometry()
+    assert mirror is False
+    assert widget._price_rect.top() == pytest.approx(0.0)
+    assert widget._price_rect.bottom() == pytest.approx(widget.height())
+
+    clicks = []
+    widget.price_clicked.connect(lambda: clicks.append(True))
+
+    # 即使点在价格列顶部/底部附近，也应容易展开，不要求精准点中文字。
+    for y in (2, widget.height() / 2, widget.height() - 2):
+        event = _ClickEvent((price_left + price_right) / 2, y)
+        widget.mouseReleaseEvent(event)
+        assert event.accepted is True
+
+    assert len(clicks) == 3
+
+
+def test_theme2_orderbook_area_does_not_trigger_price_click(app):
+    widget = DepthLadder()
+    widget.apply_config(Config(display_theme="theme2", theme2_side="right"))
+    widget.resize(widget.sizeHint())
+    widget.set_quote(100.0, 1.25, QColor(154, 163, 184))
+    widget.grab()
+
+    clicks = []
+    widget.price_clicked.connect(lambda: clicks.append(True))
+    event = _ClickEvent(widget.width() - 10, widget.height() / 2)
+    widget.mouseReleaseEvent(event)
+
+    assert clicks == []
