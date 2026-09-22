@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QGridLayout, QHBoxLayout, QLabel, QSizePolicy, QWidget
+from PySide6.QtWidgets import QBoxLayout, QGridLayout, QHBoxLayout, QLabel, QSizePolicy, QWidget
 
 from ..config import Config
 from ..intraday import Trend, calculate_bs_points
@@ -163,6 +163,9 @@ class QuoteRow(QWidget):
         info_width = max(104, round(config.font_size * 8.5))
         self.theme2_detail.setFixedSize(detail_width, row_height)
         self._theme2_info.setFixedWidth(info_width)
+        self._theme2_detail_layout.setDirection(
+            QBoxLayout.RightToLeft if config.theme2_side == "left" else QBoxLayout.LeftToRight
+        )
         self.theme2_chart.set_preferred_height(max(60, row_height - 10))
         self.theme2_name_label.setFont(
             make_font(config, bold=True, pixel_size=config.stock_name_font_size)
@@ -205,7 +208,7 @@ class QuoteRow(QWidget):
         """按所选版式摆放文字；各类字体保持用户设置的比例。"""
         config = self._config
         if config.display_theme == "theme2":
-            theme2_state = ("theme2",)
+            theme2_state = ("theme2", config.theme2_side)
             if self._layout_state != theme2_state:
                 for widget in (
                     self.name_label,
@@ -217,12 +220,20 @@ class QuoteRow(QWidget):
                     self.theme2_depth,
                 ):
                     self._layout.removeWidget(widget)
-                self._layout.addWidget(
-                    self.theme2_detail, 0, 0, 2, 1, Qt.AlignRight | Qt.AlignVCenter
-                )
-                self._layout.addWidget(
-                    self.theme2_depth, 0, 1, 2, 1, Qt.AlignRight | Qt.AlignVCenter
-                )
+                if config.theme2_side == "left":
+                    self._layout.addWidget(
+                        self.theme2_depth, 0, 0, 2, 1, Qt.AlignLeft | Qt.AlignVCenter
+                    )
+                    self._layout.addWidget(
+                        self.theme2_detail, 0, 1, 2, 1, Qt.AlignLeft | Qt.AlignVCenter
+                    )
+                else:
+                    self._layout.addWidget(
+                        self.theme2_detail, 0, 0, 2, 1, Qt.AlignRight | Qt.AlignVCenter
+                    )
+                    self._layout.addWidget(
+                        self.theme2_depth, 0, 1, 2, 1, Qt.AlignRight | Qt.AlignVCenter
+                    )
                 self._layout.setColumnStretch(0, 0)
                 self._layout.setColumnStretch(1, 0)
                 self._layout.setColumnStretch(2, 0)
