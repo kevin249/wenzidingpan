@@ -329,10 +329,6 @@ class QuoteRow(QWidget):
                 else:
                     self._layout.setColumnStretch(0, 0)
                     self._layout.setColumnStretch(1, 1)
-            if config.theme2_side == "left":
-                self._layout.setAlignment(self.theme2_depth, Qt.AlignLeft | Qt.AlignVCenter)
-            else:
-                self._layout.setAlignment(self.theme2_depth, Qt.AlignRight | Qt.AlignVCenter)
             self._narrow = False
             return
 
