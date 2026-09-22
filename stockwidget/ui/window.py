@@ -698,6 +698,11 @@ class TickerWindow(QWidget):
                     other_row.set_theme2_depth_width_override(
                         width, relayout=other_symbol == symbol
                     )
+            else:
+                # 已有弹出框时切换股票，沿用第一次冻结的盘口宽度。
+                frozen_width = row.theme2_depth.width_override
+                if frozen_width is not None:
+                    row.set_theme2_depth_width_override(frozen_width, relayout=True)
 
             self._theme2_expanded_symbol = symbol
             for other_symbol, other_row in self._rows.items():
