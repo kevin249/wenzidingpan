@@ -119,6 +119,12 @@ def test_display_theme_defaults_to_classic_and_accepts_theme2():
     assert sanitize({"display_theme": "unknown"}).display_theme == "theme1"
 
 
+def test_theme2_side_defaults_right_and_accepts_left_mirror():
+    assert sanitize({}).theme2_side == "right"
+    assert sanitize({"theme2_side": "left"}).theme2_side == "left"
+    assert sanitize({"theme2_side": "inside"}).theme2_side == "right"
+
+
 def test_row_style_falls_back_to_left_middle_right():
     assert sanitize({}).row_style == "sides"
     assert sanitize({"row_style": "stacked"}).row_style == "stacked"
