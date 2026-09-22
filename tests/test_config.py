@@ -113,6 +113,12 @@ def test_mcp_bell_channels_default_on_and_toggle_independently(tmp_path):
     assert sanitize({"mcp_bell_tray_icon": 0}).mcp_bell_tray_icon is True
 
 
+def test_display_theme_defaults_to_classic_and_accepts_theme2():
+    assert sanitize({}).display_theme == "theme1"
+    assert sanitize({"display_theme": "theme2"}).display_theme == "theme2"
+    assert sanitize({"display_theme": "unknown"}).display_theme == "theme1"
+
+
 def test_row_style_falls_back_to_left_middle_right():
     assert sanitize({}).row_style == "sides"
     assert sanitize({"row_style": "stacked"}).row_style == "stacked"
