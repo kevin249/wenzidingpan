@@ -105,6 +105,7 @@ class Config:
     display_theme: str = "theme1"  # theme1 = 经典网格，theme2 = 千档竖列
     theme2_side: str = "right"  # right = 靠右/向左展，left = 靠左镜像/向右展
     theme2_depth_width: int = 84  # 主题2挂单分布区域宽度（不含股价文字区），像素
+    theme2_popup_font_size: int = 11  # 主题2弹出详情四行文字与K线标注字号
     layout: str = "multi"  # multi = 多行列表，single = 单行滚动
     # sides = 左中右：左侧名称/暗盘两行，右侧现价/涨跌幅两行，走势图在中间；
     # stacked = 上中下：名称与现价同一行，暗盘与涨跌幅同一行，走势图永远在中间。
@@ -220,6 +221,7 @@ def sanitize(raw: Any) -> Config:
         "stock_percent_font_size": round(out.font_size * 0.85),
         "dark_trade_font_size": round(out.font_size * 0.75),
         "chart_label_font_size": round(out.font_size * 0.7),
+        "theme2_popup_font_size": round(out.font_size * 0.85),
     }
     for key, legacy_default in font_defaults.items():
         size = _as_number(raw.get(key))

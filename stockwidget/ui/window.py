@@ -689,9 +689,15 @@ class TickerWindow(QWidget):
                     width = (
                         other_row.theme2_collapsed_depth_width()
                         if other_symbol == symbol
-                        else max(other_row.theme2_depth.width(), other_row.theme2_depth.sizeHint().width())
+                        else max(
+                            other_row.theme2_depth.width(),
+                            other_row.theme2_depth.sizeHint().width(),
+                        )
                     )
-                    other_row.set_theme2_depth_width_override(width)
+                    # 所有行只写入绘制冻结值，不做逐行 geometry invalidation。
+                    # 点击行已在 set_theme2_expanded() 进入 Preferred 布局前锁好 sizeHint。
+                    if other_symbol != symbol:
+                        other_row.set_theme2_depth_width_override(width)
 
             self._theme2_expanded_symbol = symbol
             for other_symbol, other_row in self._rows.items():

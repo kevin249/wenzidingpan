@@ -51,6 +51,8 @@ def test_settings_page_renders(server):
     assert "靠左 · 镜像向右展开" in body
     assert "主题 2 挂单宽度" in body
     assert 'id="theme2_depth_width" name="theme2_depth_width" type="number"' in body
+    assert "主题 2 弹出框字号" in body
+    assert 'id="theme2_popup_font_size" name="theme2_popup_font_size" type="number"' in body
     assert "行内样式" in body
     assert "左中右" in body
     assert "上中下" in body
@@ -191,14 +193,17 @@ def test_write_config_accepts_display_theme(server):
             "display_theme": "theme2",
             "theme2_side": "left",
             "theme2_depth_width": 176,
+            "theme2_popup_font_size": 17,
         },
     ).get_json()["config"]
     assert config["display_theme"] == "theme2"
     assert config["theme2_side"] == "left"
     assert config["theme2_depth_width"] == 176
+    assert config["theme2_popup_font_size"] == 17
     assert server.applied[-1].display_theme == "theme2"
     assert server.applied[-1].theme2_side == "left"
     assert server.applied[-1].theme2_depth_width == 176
+    assert server.applied[-1].theme2_popup_font_size == 17
 
 
 def test_write_config_accepts_row_style_and_chart_height(server):

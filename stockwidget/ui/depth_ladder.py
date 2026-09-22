@@ -35,6 +35,7 @@ class DepthLadder(QWidget):
         self._preferred_height = 104
         self._base_minimum_width = 120
         self._width_override: int | None = None
+        self._width_override_in_size_hint = False
         self._price_rect = QRectF()
         self.setCursor(Qt.PointingHandCursor)
         self.setMouseTracking(True)
@@ -50,25 +51,31 @@ class DepthLadder(QWidget):
         self._preferred_height = max(88, round(config.font_size * 7.2))
         # 配置宽度只决定默认/自然尺寸；用户拖右下角后，实际宽高由父布局分配。
         self._base_minimum_width = 4 + price_width + gap + 40 + 5
-        if self._width_override is None:
-            self.setMinimumWidth(self._base_minimum_width)
-            self.setMaximumWidth(16777215)
+        self.setMinimumWidth(self._base_minimum_width)
+        self.setMaximumWidth(16777215)
         self.setMaximumHeight(16777215)
         self.updateGeometry()
         self.update()
 
-    def set_width_override(self, width: int | None) -> None:
-        """临时冻结盘口实际宽度；用于弹出详情时保护其它股票不跟着横向变形。"""
+    def set_width_override(
+        self, width: int | None, *, use_size_hint: bool = False
+    ) -> None:
+        """冻结绘制宽度；仅被点击行可选择把该值暴露给 sizeHint。"""
         value = None if width is None else max(self._base_minimum_width, int(width))
-        if value == self._width_override:
+        hint = bool(use_size_hint and value is not None)
+        if value == self._width_override and hint == self._width_override_in_size_hint:
             return
         self._width_override = value
-        if value is None:
-            self.setMinimumWidth(self._base_minimum_width)
-            self.setMaximumWidth(16777215)
-        else:
-            self.setFixedWidth(value)
-        self.updateGeometry()
+        self._width_override_in_size_hint = hint
+        self.update()
+
+    @property
+    def has_width_override(self) -> bool:
+        return self._width_override is not None
+
+    @property
+    def width_override(self) -> int | None:
+        return self._width_override
 
     def set_depth(self, snapshot: DepthSnapshot | None) -> None:
         if snapshot != self._depth:
@@ -98,7 +105,12 @@ class DepthLadder(QWidget):
             self.update()
 
     def sizeHint(self) -> QSize:  # noqa: N802
-        return QSize(self._preferred_width, self._preferred_height)
+        width = (
+            self._width_override
+            if self._width_override_in_size_hint and self._width_override is not None
+            else self._preferred_width
+        )
+        return QSize(width, self._preferred_height)
 
     def _book_mid_price(self, levels) -> float | None:
         if self._price is not None and self._price > 0:
@@ -115,18 +127,24 @@ class DepthLadder(QWidget):
         depth_inner_x 是盘口靠近股价一侧的边界；挂单只能在它与价格轴之间出现。
         """
         mirror = self._config.theme2_side == "left"
-        axis_x = 5.0 if mirror else float(self.width() - 5)
+        actual_width = float(self.width())
+        visual_width = min(
+            actual_width,
+            float(self._width_override) if self._width_override is not None else actual_width,
+        )
+        # 展开详情时，未展开行仍占整行，但盘口只在屏幕外沿的原宽度区域绘制。
+        content_left = 0.0 if mirror else actual_width - visual_width
+        content_right = visual_width if mirror else actual_width
+        axis_x = content_left + 5.0 if mirror else content_right - 5.0
         outer = 4.0
         gap = max(6.0, round(self._config.font_size * 0.45))
         price_width = max(66.0, round(self._config.stock_price_font_size * 4.6))
-        # 实际窗口宽度优先：右下角拖宽/拖窄时盘口自动吃掉剩余空间。
-        # theme2_depth_width 仅作为 sizeHint 的默认盘口宽度。
         if mirror:
-            price_right = float(self.width()) - outer
+            price_right = content_right - outer
             price_left = price_right - price_width
             depth_inner_x = price_left - gap
         else:
-            price_left = outer
+            price_left = content_left + outer
             price_right = price_left + price_width
             depth_inner_x = price_right + gap
         return mirror, axis_x, depth_inner_x, price_left, price_right
@@ -145,30 +163,39 @@ class DepthLadder(QWidget):
 
         mirror, axis_x, depth_inner_x, _, _ = self._horizontal_geometry()
         center_y = self.height() / 2.0
-        upper_span = max(1.0, center_y - 6.0)
-        lower_span = max(1.0, self.height() - center_y - 6.0)
         max_bar = (
             max(1.0, depth_inner_x - axis_x)
             if mirror
             else max(1.0, axis_x - depth_inner_x)
         )
 
-        asks = [row for row in levels if row.side == "ask" and row.price >= mid_price]
-        bids = [row for row in levels if row.side == "bid" and row.price <= mid_price]
-        ask_span = max((row.price - mid_price for row in asks), default=0.0)
-        bid_span = max((mid_price - row.price for row in bids), default=0.0)
-        ask_span = ask_span or max(abs(mid_price) * 0.001, 0.01)
-        bid_span = bid_span or max(abs(mid_price) * 0.001, 0.01)
+        ask_by_price: dict[float, float] = {}
+        bid_by_price: dict[float, float] = {}
+        for row in levels:
+            if row.side == "ask" and row.price >= mid_price:
+                ask_by_price[row.price] = ask_by_price.get(row.price, 0.0) + row.volume
+            elif row.side == "bid" and row.price <= mid_price:
+                bid_by_price[row.price] = bid_by_price.get(row.price, 0.0) + row.volume
+
+        # 主窗口按档位顺序平均占满上下半区，不按绝对价差压缩。
+        asks = sorted(ask_by_price.items(), key=lambda item: item[0])  # 近 -> 远
+        bids = sorted(bid_by_price.items(), key=lambda item: item[0], reverse=True)  # 近 -> 远
+
+        def distributed_y(index: int, count: int, *, upper: bool) -> int:
+            near = center_y - 4.0 if upper else center_y + 4.0
+            far = 2.0 if upper else float(self.height() - 2)
+            if count <= 1:
+                return round((near + far) / 2.0)
+            ratio = index / (count - 1)
+            return round(near + (far - near) * ratio)
 
         buckets: dict[tuple[int, str], float] = {}
-        for row in asks:
-            ratio = min(max((row.price - mid_price) / ask_span, 0.0), 1.0)
-            y = max(2, round(center_y - 3.0 - ratio * upper_span))
-            buckets[(y, "ask")] = buckets.get((y, "ask"), 0.0) + row.volume
-        for row in bids:
-            ratio = min(max((mid_price - row.price) / bid_span, 0.0), 1.0)
-            y = min(self.height() - 2, round(center_y + 3.0 + ratio * lower_span))
-            buckets[(y, "bid")] = buckets.get((y, "bid"), 0.0) + row.volume
+        for index, (_price, volume) in enumerate(asks):
+            y = distributed_y(index, len(asks), upper=True)
+            buckets[(y, "ask")] = buckets.get((y, "ask"), 0.0) + volume
+        for index, (_price, volume) in enumerate(bids):
+            y = distributed_y(index, len(bids), upper=False)
+            buckets[(y, "bid")] = buckets.get((y, "bid"), 0.0) + volume
         if not buckets:
             return
 

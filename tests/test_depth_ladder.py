@@ -264,3 +264,82 @@ def test_theme2_orderbook_area_does_not_trigger_price_click(app):
     widget.mouseReleaseEvent(event)
 
     assert clicks == []
+
+
+
+def _row_clusters(rows):
+    rows = sorted(set(rows))
+    if not rows:
+        return []
+    clusters = [[rows[0]]]
+    for value in rows[1:]:
+        if value <= clusters[-1][-1] + 1:
+            clusters[-1].append(value)
+        else:
+            clusters.append([value])
+    return [round(sum(cluster) / len(cluster)) for cluster in clusters]
+
+
+def test_theme2_depth_levels_are_evenly_distributed_over_window_height(app):
+    widget = DepthLadder()
+    widget.apply_config(Config(display_theme="theme2", theme2_side="right"))
+    widget.resize(260, 240)
+    widget.set_quote(100.0, 0.0, QColor(154, 163, 184))
+    widget.set_depth(
+        DepthSnapshot(
+            symbol="600000",
+            available=True,
+            levels=tuple(
+                [DepthLevel("ask", 100.01 + index * 0.37, 100 + index) for index in range(8)]
+                + [DepthLevel("bid", 99.99 - index * 0.91, 120 + index) for index in range(8)]
+            ),
+            ask_count=8,
+            bid_count=8,
+        )
+    )
+    image = widget.grab().toImage()
+    center = image.height() // 2
+
+    green_rows = []
+    red_rows = []
+    for y in range(image.height()):
+        for x in range(image.width()):
+            pixel = image.pixelColor(x, y)
+            if _is_green(pixel):
+                green_rows.append(y)
+            if _is_red(pixel):
+                red_rows.append(y)
+
+    asks = [y for y in _row_clusters(green_rows) if y < center - 1]
+    bids = [y for y in _row_clusters(red_rows) if y > center + 1]
+    assert len(asks) >= 8
+    assert len(bids) >= 8
+
+    asks = asks[-8:] if len(asks) > 8 else asks
+    bids = bids[:8] if len(bids) > 8 else bids
+    ask_gaps = [b - a for a, b in zip(asks, asks[1:])]
+    bid_gaps = [b - a for a, b in zip(bids, bids[1:])]
+
+    assert max(ask_gaps) - min(ask_gaps) <= 3
+    assert max(bid_gaps) - min(bid_gaps) <= 3
+    assert min(asks) <= 5
+    assert max(bids) >= image.height() - 5
+
+
+
+def test_theme2_width_override_never_turns_depth_into_fixed_widget(app):
+    widget = DepthLadder()
+    widget.apply_config(Config(display_theme="theme2"))
+    minimum = widget.minimumWidth()
+    maximum = widget.maximumWidth()
+
+    widget.set_width_override(220)
+    assert widget.width_override == 220
+    assert widget.minimumWidth() == minimum
+    assert widget.maximumWidth() == maximum
+    assert widget.minimumWidth() != widget.maximumWidth()
+
+    widget.set_width_override(None)
+    assert widget.width_override is None
+    assert widget.minimumWidth() == minimum
+    assert widget.maximumWidth() == maximum
