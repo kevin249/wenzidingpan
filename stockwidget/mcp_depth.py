@@ -261,6 +261,8 @@ class McpDepthPoller(QThread):
         self._lock = threading.Lock()
         self._last_status = ""
         self._last_bs_fetch_at = 0.0
+        self._depth_modes: dict[str, str] = {}
+        self._next_depth_due: dict[str, float] = {}
 
     @staticmethod
     def _enabled(config: Config) -> bool:
@@ -289,6 +291,9 @@ class McpDepthPoller(QThread):
             )
             self._config = config
         if changed:
+            with self._lock:
+                self._depth_modes.clear()
+                self._next_depth_due.clear()
             self._wake.set()
 
     def refresh_now(self) -> None:
@@ -341,7 +346,12 @@ class McpDepthPoller(QThread):
         if not key:
             return False
         headers = {"Authorization": f"Bearer {key}"}
-        all_full_depth = True
+        now = time.monotonic()
+        valid_codes = [
+            item.code
+            for raw in config.symbols
+            if (item := classify(raw)) is not None
+        ]
         async with httpx2.AsyncClient(headers=headers, timeout=SSE_TIMEOUT) as client:
             async with streamable_http_client(
                 config.mcp_url,
@@ -357,6 +367,11 @@ class McpDepthPoller(QThread):
                         if symbol is None:
                             continue
 
+                        due = self._next_depth_due.get(symbol.code, 0.0)
+                        depth_due = now >= due
+                        if not depth_due and not fetch_bs:
+                            continue
+
                         if fetch_bs:
                             try:
                                 await _fetch_volatility_bs(session, symbol.code)
@@ -364,9 +379,16 @@ class McpDepthPoller(QThread):
                                 # B/S 与盘口恢复独立；B/S 失败不阻断深度降级。
                                 pass
 
-                        snapshot = await _fetch_depth_with_fallback(session, symbol.code)
-                        if not snapshot.full_depth:
-                            all_full_depth = False
-                        # 十档/五档/不可用都要发给 UI，不能让旧千档永久卡住。
-                        self.depth_ready.emit(snapshot)
-        return all_full_depth
+                        if depth_due:
+                            snapshot = await _fetch_depth_with_fallback(session, symbol.code)
+                            self._depth_modes[symbol.code] = snapshot.depth_mode
+                            self._next_depth_due[symbol.code] = time.monotonic() + _poll_seconds(
+                                snapshot.full_depth
+                            )
+                            # 十档/五档/不可用都要发给 UI，不能让旧千档永久卡住。
+                            self.depth_ready.emit(snapshot)
+
+        # 未抓过的股票也视为未恢复；它们会在下一轮立刻到期。
+        return bool(valid_codes) and all(
+            self._depth_modes.get(code) == DEPTH_FULL for code in valid_codes
+        )
