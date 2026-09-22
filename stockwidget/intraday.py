@@ -50,6 +50,7 @@ class Trend:
     """一只股票的当日分时曲线。"""
 
     prices: list[float] = field(default_factory=list)
+    volumes: list[float] = field(default_factory=list)
     prev_close: float | None = None
     open_price: float | None = None
     high_price: float | None = None
@@ -120,6 +121,7 @@ def parse_eastmoney(payload: object) -> Trend:
         return Trend(error="返回格式异常")
 
     prices: list[float] = []
+    volumes: list[float] = []
     open_price: float | None = None
     high_price: float | None = None
     low_price: float | None = None
@@ -140,9 +142,12 @@ def parse_eastmoney(payload: object) -> Trend:
             if low is not None and low > 0:
                 low_price = low if low_price is None else min(low_price, low)
             prices.append(close)
+            volume = _number(parts[5]) if len(parts) > 5 else None
+            volumes.append(volume if volume is not None and volume > 0 else 0.0)
 
     return Trend(
         prices=prices,
+        volumes=volumes,
         prev_close=_number(data.get("preClose")),
         open_price=open_price,
         high_price=high_price if high_price is not None else (max(prices) if prices else None),
@@ -156,6 +161,7 @@ def parse_tencent(payload: object, key: str) -> Trend:
     block = (((payload.get("data") or {}).get(key) or {}).get("data") or {}).get("data") or []
 
     prices: list[float] = []
+    volumes: list[float] = []
     for line in block:
         parts = str(line or "").split(" ")
         if len(parts) < 2 or len(parts[0]) < 4 or not parts[0].isdigit():
@@ -164,9 +170,12 @@ def parse_tencent(payload: object, key: str) -> Trend:
         price = _number(parts[1])
         if price is not None and price > 0 and _is_trading_minute(minute):
             prices.append(price)
+            volume = _number(parts[2]) if len(parts) > 2 else None
+            volumes.append(volume if volume is not None and volume > 0 else 0.0)
 
     return Trend(
         prices=prices,
+        volumes=volumes,
         open_price=prices[0] if prices else None,
         high_price=max(prices) if prices else None,
         low_price=min(prices) if prices else None,
