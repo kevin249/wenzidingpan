@@ -41,6 +41,7 @@ const FONT_SIZES = [
 const NUMBERS = [
   'visible_rows',
   'chart_height',
+  'theme2_depth_width',
   ...FONT_SIZES,
   'refresh_seconds',
   'opacity',
@@ -250,6 +251,7 @@ function refreshHints() {
   const mirrorLeft = el('theme2_side').value === 'left';
   const single = !theme2 && el('layout').value === 'single';
   el('theme2_side').disabled = !theme2;
+  el('theme2_depth_width').disabled = !theme2;
   el('layout').disabled = theme2;
   for (const id of ['visible_rows', 'row_style', 'chart_height']) {
     el(id).disabled = single || theme2;
@@ -332,6 +334,7 @@ for (const id of FONT_SIZES) {
 for (const id of [
   'visible_rows',
   'chart_height',
+  'theme2_depth_width',
   'font_family',
   'refresh_seconds',
   'mcp_url',
