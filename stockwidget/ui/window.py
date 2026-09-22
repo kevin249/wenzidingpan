@@ -406,7 +406,9 @@ class TickerWindow(QWidget):
     # ------------------------------------------------------------ 外观
 
     def scaled_config(self) -> Config:
-        """所有独立字号统一乘窗口缩放系数，保持用户设置的相对比例。"""
+        """主题1按窗口缩放字体；主题2只调整几何尺寸，字体始终保持配置值。"""
+        if self._config.display_theme == "theme2":
+            return self._config
         if abs(self._scale - 1.0) < 0.01:
             return self._config
 
@@ -975,8 +977,11 @@ class TickerWindow(QWidget):
             self._on_grip_drag_started(self.size())
         size = self._bounded_drag_size(size)
         self.resize(size)
+        if self._config.display_theme == "theme2":
+            # 主题2拖宽/拖高只改变版面与每行可用空间，绝不联动字号/字体缩放。
+            return
         start_height = max(1, self._drag_start_size.height())
-        # 字体由高度决定；宽度只负责给走势图更多或更少的横向空间。
+        # 主题1字体由高度决定；宽度只负责给走势图更多或更少的横向空间。
         # 有行情行时使用绝对基准，避免历史上的错误 scale 一直累积。
         if self._drag_reference_height > 0:
             scale = _clamp(size.height() / self._drag_reference_height, 0.6, 3.0)
