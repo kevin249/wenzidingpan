@@ -754,6 +754,8 @@ class TickerWindow(QWidget):
         """高度按网格行数算，宽度按列数摊开——1 行就是全部横向铺满。"""
         chrome = self._chrome_height()
         if self._config.display_theme == "theme2":
+            self.setMinimumWidth(0)
+            self.setMaximumWidth(16777215)
             self.setMinimumHeight(0)
             self.setMaximumHeight(16777215)
             if not self._rows:
