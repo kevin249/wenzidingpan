@@ -7,7 +7,7 @@ from PySide6.QtGui import QColor, QFontMetricsF, QPainter, QPen
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from ..config import Config
-from ..mcp_depth import DepthSnapshot
+from ..mcp_depth import DEPTH_FIVE, DEPTH_FULL, DEPTH_TEN, DepthSnapshot
 from .theme import MUTED, make_font
 
 BID_COLOR = QColor(240, 79, 90)
@@ -56,6 +56,12 @@ class DepthLadder(QWidget):
     def set_depth(self, snapshot: DepthSnapshot | None) -> None:
         if snapshot != self._depth:
             self._depth = snapshot
+            mode = {
+                DEPTH_FULL: "千档",
+                DEPTH_TEN: "十档（千档5秒重试中）",
+                DEPTH_FIVE: "五档（千档5秒重试中）",
+            }.get(snapshot.depth_mode if snapshot else "", "盘口不可用")
+            self.setToolTip(f"盘口：{mode}")
             self.update()
 
     def set_quote(

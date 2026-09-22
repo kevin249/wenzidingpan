@@ -13,7 +13,7 @@ from PySide6.QtCore import QPointF, QRectF, QSize, Qt
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QWidget
 
-from ..mcp_depth import DepthSnapshot
+from ..mcp_depth import DEPTH_FIVE, DEPTH_FULL, DEPTH_TEN, DepthSnapshot
 
 SAMPLE_LEN = 40  # 回退模式下保留的采样点数
 FILL_ALPHA = 38  # 面积填充的透明度，压得比曲线淡很多
@@ -163,7 +163,7 @@ class Sparkline(QWidget):
 
     def _draw_depth(self, painter: QPainter, width: int, height: int, y_of) -> None:
         snapshot = self._depth
-        if snapshot is None or not snapshot.available or len(snapshot.levels) < 11:
+        if snapshot is None or not snapshot.available or not snapshot.levels:
             return
 
         # 只画当前 K 线价格窗口内可见的挂单；千档价格绝不能反向撑大 K 线 Y 轴。
@@ -193,7 +193,13 @@ class Sparkline(QWidget):
             color.setAlpha(88)
             painter.fillRect(QRectF(right - bar_width, row - 0.7, bar_width, 1.4), color)
 
-        label = "千档" if snapshot.full_depth else "千档*"
+        label = {
+            DEPTH_FULL: "千档",
+            DEPTH_TEN: "十档",
+            DEPTH_FIVE: "五档",
+        }.get(snapshot.depth_mode, "盘口")
+        if snapshot.depth_mode != DEPTH_FULL:
+            label += "·降级"
         if snapshot.received_at and time.time() - snapshot.received_at > DEPTH_STALE_SECONDS:
             label += "·延迟"
         label += f" {snapshot.bid_count}/{snapshot.ask_count}"
