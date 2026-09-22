@@ -180,3 +180,26 @@ def test_theme2_left_mirror_puts_price_right_and_depth_after_left_axis(app):
     assert colored_inside_price_side == 0, "镜像后挂单不能侵入最右股价区域"
     assert upper_green_right > 0, "镜像后卖盘仍应在中线上方并向右延伸"
     assert lower_red_right > 0, "镜像后买盘仍应在中线下方并向右延伸"
+
+
+
+def test_theme2_depth_width_changes_only_order_book_span(app):
+    narrow = DepthLadder()
+    narrow.apply_config(
+        Config(display_theme="theme2", theme2_side="right", theme2_depth_width=60)
+    )
+    wide = DepthLadder()
+    wide.apply_config(
+        Config(display_theme="theme2", theme2_side="right", theme2_depth_width=220)
+    )
+
+    _, narrow_axis, narrow_inner, narrow_price_left, narrow_price_right = narrow._horizontal_geometry()
+    _, wide_axis, wide_inner, wide_price_left, wide_price_right = wide._horizontal_geometry()
+
+    assert narrow_axis - narrow_inner == pytest.approx(60)
+    assert wide_axis - wide_inner == pytest.approx(220)
+    assert wide.width() - narrow.width() == 160
+    # 股价文字区本身不随盘口宽度变化，只把盘口区域拉宽。
+    assert narrow_price_right - narrow_price_left == pytest.approx(
+        wide_price_right - wide_price_left
+    )
