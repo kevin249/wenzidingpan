@@ -1783,25 +1783,36 @@ def test_theme2_expansion_keeps_sibling_depth_width_and_never_shrinks_frame(app)
     sibling_depth_width = sibling.theme2_depth.width()
     sibling_geometry = sibling.theme2_depth._horizontal_geometry()
 
+    def relative_depth_geometry(widget):
+        _mirror, axis_x, depth_inner_x, price_left, price_right = widget._horizontal_geometry()
+        return (
+            round(axis_x - depth_inner_x),
+            round(depth_inner_x - price_right),
+            round(price_right - price_left),
+        )
+
+    sibling_shape = relative_depth_geometry(sibling.theme2_depth)
+
     first.theme2_depth.price_clicked.emit()
     app.processEvents()
 
     assert window.width() > before_frame_width
     assert first.theme2_depth.width() == first_depth_width
-    assert sibling.theme2_depth.width() == sibling_depth_width
-    assert sibling.theme2_depth._horizontal_geometry() == sibling_geometry
+    # 其它行可以占满新外框，但实际盘口绘制形状/宽度必须保持不变。
+    assert sibling.theme2_depth.width_override == sibling_depth_width
+    assert relative_depth_geometry(sibling.theme2_depth) == sibling_shape
     assert first.theme2_detail.isVisible() is True
 
     expanded_width = window.width()
     expanded_chart_width = first.theme2_chart.width()
     assert expanded_chart_width > 0
 
-    # 模拟下一次行情刷新：外框、下方盘口、弹出 K 线宽度都不能再跳。
+    # 模拟下一次行情刷新：外框、下方盘口形状、弹出 K 线宽度都不能再跳。
     window._sync_rows(quotes)
     app.processEvents()
     assert window.width() == expanded_width
-    assert sibling.theme2_depth.width() == sibling_depth_width
-    assert sibling.theme2_depth._horizontal_geometry() == sibling_geometry
+    assert sibling.theme2_depth.width_override == sibling_depth_width
+    assert relative_depth_geometry(sibling.theme2_depth) == sibling_shape
     assert first.theme2_chart.width() == expanded_chart_width
 
     first.leaveEvent(None)
