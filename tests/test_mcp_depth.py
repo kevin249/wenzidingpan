@@ -99,7 +99,7 @@ def test_active_bs_fetch_requests_all_today_markers(monkeypatch):
     assert calls == [
         (
             "get_volatility_bs",
-            {"symbol": "600000", "trade_date": "", "limit": 200},
+            {"symbol": "600000", "trade_date": "", "limit": 1000},
         )
     ]
     assert payload["markers"][0]["type"] == "buy_first"
