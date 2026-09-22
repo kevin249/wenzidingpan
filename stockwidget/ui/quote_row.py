@@ -210,9 +210,9 @@ class QuoteRow(QWidget):
         )
 
     def theme2_target_width(self) -> int:
+        """自动/启动布局只看自然宽度；真实当前宽度只在点击展开路径使用。"""
         margins = self._layout.contentsMargins()
-        depth_width = max(self.theme2_depth.width(), self.theme2_depth.sizeHint().width())
-        width = depth_width + margins.left() + margins.right()
+        width = self.theme2_depth.sizeHint().width() + margins.left() + margins.right()
         if self._theme2_expanded:
             width += self.theme2_detail_extra_width()
         return width
