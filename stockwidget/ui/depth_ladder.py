@@ -232,18 +232,14 @@ class DepthLadder(QWidget):
             QRectF(axis_x - 1.8, center_y - 1.8, 3.6, 3.6)
         )
 
-        # 点击热区覆盖当前价与涨跌幅，但不再用中间悬浮卡片遮住盘口。
+        # 点击热区扩成整个价格列。用户不需要精确点中文字，只要点到股价这一列
+        # 就能展开；同时不侵入右侧盘口区域，避免误触。
         percent_height = max(16.0, self._config.stock_percent_font_size + 6.0)
-        panel_top = price_text_rect.top() - 2.0
-        panel_bottom = min(
-            float(self.height() - 2),
-            price_text_rect.bottom() + percent_height + 4.0,
-        )
         self._price_rect = QRectF(
             price_left,
-            panel_top,
+            0.0,
             price_right - price_left,
-            panel_bottom - panel_top,
+            float(self.height()),
         )
 
         if self._error:
