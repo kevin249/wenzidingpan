@@ -68,9 +68,6 @@ class DepthLadder(QWidget):
     def _draw_depth(self, painter: QPainter) -> None:
         snapshot = self._depth
         if snapshot is None or not snapshot.available or not snapshot.levels:
-            painter.setPen(QColor(MUTED))
-            painter.setFont(make_font(self._config, pixel_size=max(7, self._config.chart_label_font_size)))
-            painter.drawText(self.rect(), Qt.AlignCenter, "千档等待中")
             return
 
         levels = [row for row in snapshot.levels if row.price > 0 and row.volume > 0]
