@@ -335,7 +335,8 @@ class McpNotificationListener(QThread):
                 if event_task.result() == uri:
                     await self._deliver_resource(session, uri, cancel_event)
                 continue
-            if self._passive_only():
+            passive_check = getattr(self, "_passive_only", None)
+            if callable(passive_check) and passive_check():
                 # 非交易时段保持 SSE/resource subscription 长连接，只响应服务端推送；
                 # 不再每 60 秒主动 read_resource，降低收盘后的 MCP 和服务端开销。
                 self._emit_status("已连接 · 非交易时段被动订阅")
