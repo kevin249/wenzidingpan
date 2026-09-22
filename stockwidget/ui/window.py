@@ -26,6 +26,7 @@ from ..desktop import keep_visible_when_inactive
 from ..mcp_depth import DepthSnapshot
 from ..poller import Snapshot
 from ..symbols import classify
+from .depth_ladder import DepthLadder
 from .marquee import Marquee
 from .quote_row import QuoteRow
 from .theme import BORDER, MUTED, TEXT, make_font
@@ -915,8 +916,12 @@ class TickerWindow(QWidget):
         if not mouse_event:
             return super().eventFilter(watched, event)
 
-        # 标题栏已有等价的原生处理；滚动条和缩放柄不能被移动手势抢占。
-        if watched is self.title_bar or isinstance(watched, (QAbstractSlider, ResizeGrip)):
+        # 标题栏已有等价的原生处理；滚动条、缩放柄和主题2盘口都不能被
+        # 整窗移动手势抢占。DepthLadder 内部负责“点股价展开”，若允许这里
+        # 把轻微鼠标移动判成拖窗，会导致 mouseRelease 收不到而经常点不开。
+        if watched is self.title_bar or isinstance(
+            watched, (QAbstractSlider, ResizeGrip, DepthLadder)
+        ):
             return super().eventFilter(watched, event)
 
         if self._config.click_through:
