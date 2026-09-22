@@ -163,7 +163,7 @@ class QuoteRow(QWidget):
             grayscale=config.grayscale,
         )
         self.theme2_chart.set_annotation_font(
-            make_font(config, pixel_size=config.chart_label_font_size)
+            make_font(config, pixel_size=config.theme2_popup_font_size)
         )
         self.theme2_chart.set_side_profile_width(config.theme2_depth_width)
         self.theme2_depth.apply_config(config)
@@ -179,7 +179,7 @@ class QuoteRow(QWidget):
     def _apply_theme2_metrics(self, config: Config) -> None:
         row_height = max(88, round(config.font_size * 7.2))
         detail_width = max(330, round(config.font_size * 27))
-        info_width = max(104, round(config.font_size * 8.5))
+        info_width = max(104, round(config.theme2_popup_font_size * 9.5))
         self.theme2_detail.setMinimumWidth(detail_width)
         self.theme2_detail.setMaximumWidth(MAX_WIDGET_SIZE)
         self.theme2_detail.setMinimumHeight(0)
@@ -192,17 +192,18 @@ class QuoteRow(QWidget):
             else QBoxLayout.Direction.LeftToRight
         )
         self.theme2_chart.set_preferred_height(max(60, row_height - 10))
+        popup_size = config.theme2_popup_font_size
         self.theme2_name_label.setFont(
-            make_font(config, bold=True, pixel_size=config.stock_name_font_size)
+            make_font(config, bold=True, pixel_size=popup_size)
         )
         self.theme2_code_label.setFont(
-            make_font(config, pixel_size=max(7, config.stock_percent_font_size))
+            make_font(config, pixel_size=popup_size)
         )
         self.theme2_dark_label.setFont(
-            make_font(config, bold=config.dark_trade_bold, pixel_size=config.dark_trade_font_size)
+            make_font(config, bold=config.dark_trade_bold, pixel_size=popup_size)
         )
         self.theme2_high_low_label.setFont(
-            make_font(config, pixel_size=max(7, config.stock_percent_font_size))
+            make_font(config, pixel_size=popup_size)
         )
 
     def _request_theme2_expand(self) -> None:
@@ -232,12 +233,15 @@ class QuoteRow(QWidget):
             self.theme2_depth.width(), self.theme2_depth.sizeHint().width()
         )
 
-    def set_theme2_depth_width_override(self, width: int | None) -> None:
+    def set_theme2_depth_width_override(
+        self, width: int | None, *, relayout: bool = False
+    ) -> None:
         self.theme2_depth.set_width_override(width)
-        if self._config.theme2_side == "left":
-            self._layout.setAlignment(self.theme2_depth, Qt.AlignLeft | Qt.AlignVCenter)
-        else:
-            self._layout.setAlignment(self.theme2_depth, Qt.AlignRight | Qt.AlignVCenter)
+        if relayout:
+            # 仅被点击的这一行需要重新查询 Preferred 宽度；其它行只重绘。
+            self.theme2_depth.updateGeometry()
+            self._layout.invalidate()
+            self.updateGeometry()
 
     def set_theme2_expanded(self, expanded: bool, *, notify: bool = True) -> None:
         expanded = bool(expanded and self._config.display_theme == "theme2")
@@ -322,12 +326,8 @@ class QuoteRow(QWidget):
                     self._layout.setColumnStretch(0, 1)
                     self._layout.setColumnStretch(1, 0)
             else:
-                self.theme2_depth.setSizePolicy(
-                    QSizePolicy.Preferred
-                    if self.theme2_depth.has_width_override
-                    else QSizePolicy.Expanding,
-                    QSizePolicy.Expanding,
-                )
+                # 未展开行始终占满整行；width_override 只限制实际盘口绘制区域。
+                self.theme2_depth.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
                 if config.theme2_side == "left":
                     self._layout.setColumnStretch(0, 1)
                     self._layout.setColumnStretch(1, 0)
