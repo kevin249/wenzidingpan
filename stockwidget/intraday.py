@@ -162,6 +162,7 @@ def parse_tencent(payload: object, key: str) -> Trend:
 
     prices: list[float] = []
     volumes: list[float] = []
+    prev_volume = 0.0
     for line in block:
         parts = str(line or "").split(" ")
         if len(parts) < 2 or len(parts[0]) < 4 or not parts[0].isdigit():
@@ -170,8 +171,13 @@ def parse_tencent(payload: object, key: str) -> Trend:
         price = _number(parts[1])
         if price is not None and price > 0 and _is_trading_minute(minute):
             prices.append(price)
-            volume = _number(parts[2]) if len(parts) > 2 else None
-            volumes.append(volume if volume is not None and volume > 0 else 0.0)
+            cumulative = _number(parts[2]) if len(parts) > 2 else None
+            if cumulative is not None and cumulative > 0:
+                volume = max(cumulative - prev_volume, 0.0)
+                prev_volume = cumulative
+            else:
+                volume = 0.0
+            volumes.append(volume)
 
     return Trend(
         prices=prices,
