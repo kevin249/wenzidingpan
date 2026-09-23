@@ -343,3 +343,57 @@ def test_theme2_width_override_never_turns_depth_into_fixed_widget(app):
     assert widget.width_override is None
     assert widget.minimumWidth() == minimum
     assert widget.maximumWidth() == maximum
+
+
+def test_theme2_depth_error_activates_on_third_consecutive_thousand_miss(app):
+    widget = DepthLadder()
+    widget.apply_config(Config(display_theme="theme2"))
+    cached_levels = (
+        DepthLevel("ask", 100.1, 120),
+        DepthLevel("bid", 99.9, 140),
+    )
+
+    widget.set_depth(
+        DepthSnapshot(
+            symbol="600000",
+            levels=cached_levels,
+            available=True,
+            full_depth=True,
+            depth_mode="FULL_DEPTH",
+            full_depth_failures=2,
+            using_cached_full_depth=True,
+            latest_depth_mode="TEN_LEVEL",
+        )
+    )
+    assert widget._depth_error_active() is False
+    assert "连续2次" in widget.toolTip()
+
+    widget.set_depth(
+        DepthSnapshot(
+            symbol="600000",
+            levels=cached_levels,
+            available=True,
+            full_depth=True,
+            depth_mode="FULL_DEPTH",
+            full_depth_failures=3,
+            using_cached_full_depth=True,
+            latest_depth_mode="TEN_LEVEL",
+        )
+    )
+    assert widget._depth_error_active() is True
+    assert "连续3次" in widget.toolTip()
+
+    widget.set_depth(
+        DepthSnapshot(
+            symbol="600000",
+            levels=cached_levels,
+            available=True,
+            full_depth=True,
+            depth_mode="FULL_DEPTH",
+            full_depth_failures=0,
+            using_cached_full_depth=False,
+            latest_depth_mode="FULL_DEPTH",
+        )
+    )
+    assert widget._depth_error_active() is False
+    assert widget.toolTip() == "盘口：千档"
