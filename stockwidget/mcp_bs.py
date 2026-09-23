@@ -151,11 +151,18 @@ def _side(payload: dict[str, Any], title: str, body: str) -> str:
     if direction == "sell_first":
         return "S"
     signal = str(payload.get("side") or payload.get("signal") or "").strip().upper()
-    if signal in {"B", "S"}:
-        return signal
+    if re.fullmatch(r"[BS][1234]?", signal):
+        return signal[0]
     text = f"{title}\n{body}"
-    match = re.search(r"(?:信号[：:]?\s*)?\b([BS])(?:[234])?\b", text, re.IGNORECASE)
+    match = re.search(r"(?:信号[：:]?\s*)?\b([BS])(?:[1234])?\b", text, re.IGNORECASE)
     return match.group(1).upper() if match else ""
+
+
+def _display_signal(payload: dict[str, Any], side: str) -> str:
+    if isinstance(payload.get("l2_confirmed"), bool):
+        return side if payload["l2_confirmed"] else side + "1"
+    signal = str(payload.get("signal") or "").upper()
+    return signal if signal in {side, side + "1"} else side
 
 
 def record_notification(notification: Any) -> None:
@@ -274,7 +281,12 @@ def _nearest_price_index(prices: list[float], expected: int, value: Any) -> int:
     hi = min(len(prices), expected + 4)
     if lo >= hi:
         return expected
-    nearest = min(range(lo, hi), key=lambda index: abs(prices[index] - target))
+    # 价格并列时（横盘、一字板、价格未变动）必须回落到分钟索引本身，
+    # 否则最左候选会赢，B/S 点被画到左侧最多 3 格。
+    nearest = min(
+        range(lo, hi),
+        key=lambda index: (abs(prices[index] - target), abs(index - expected)),
+    )
     # 只在价格足够接近时校正，避免把别的同价波动误吸过来。
     return nearest if abs(prices[nearest] - target) / target <= 0.005 else expected
 
@@ -344,7 +356,7 @@ def bs_points(symbol: str, prices: list[float], now: datetime | None = None) -> 
                 seen,
                 prices,
                 _active_marker_time(marker, day.isoformat()),
-                side,
+                _display_signal(marker, side),
                 marker.get("price"),
             )
         result.sort(key=lambda item: item[0])
@@ -360,7 +372,7 @@ def bs_points(symbol: str, prices: list[float], now: datetime | None = None) -> 
         if side not in {"B", "S"}:
             continue
         payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
-        _append_point(result, seen, prices, signal_at, side, payload.get("price"))
+        _append_point(result, seen, prices, signal_at, _display_signal(payload, side), payload.get("price"))
     result.sort(key=lambda item: item[0])
     return result
 

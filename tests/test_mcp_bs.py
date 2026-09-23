@@ -16,6 +16,16 @@ def setup_function():
     mcp_bs.reset_for_tests()
 
 
+def test_base_and_l2_markers_remain_distinct_on_chart():
+    mcp_bs.record_volatility_bs({'available': True, 'code': '600000', 'trade_date': '2026-09-14',
+        'markers': [dict(time='10:00', signal='B1', l2_confirmed=False, price=100),
+                    dict(time='10:01', signal='B', l2_confirmed=True, price=100),
+                    dict(time='10:02', signal='S1', l2_confirmed=False, price=100),
+                    dict(time='10:03', signal='S', l2_confirmed=True, price=100)]})
+    assert mcp_bs.bs_points('600000', [100.] * 242, datetime(2026,9,14,14,tzinfo=TZ)) == [
+        (30,'B1'), (31,'B'), (32,'S1'), (33,'S')]
+
+
 def test_source_is_persisted(monkeypatch, tmp_path):
     path = tmp_path / "source.json"
     monkeypatch.setattr(mcp_bs, "_source_path", lambda: path)

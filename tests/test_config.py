@@ -6,7 +6,14 @@ import json
 
 import pytest
 
-from stockwidget.config import MIN_OPACITY, Store, sanitize
+from stockwidget.config import (
+    DEFAULT_GRAYSCALE_LEVEL,
+    GRAYSCALE_LEVEL_MAX,
+    GRAYSCALE_LEVEL_MIN,
+    MIN_OPACITY,
+    Store,
+    sanitize,
+)
 
 
 def test_empty_input_falls_back_to_defaults():
@@ -339,6 +346,24 @@ def test_chart_annotation_and_label_switches_are_sanitized():
     assert sanitize({"show_bs_points": "false"}).show_bs_points is True
     assert sanitize({}).show_sparkline_fill is False
     assert sanitize({"show_sparkline_fill": True}).show_sparkline_fill is True
+
+
+def test_grayscale_level_is_clamped_and_kept_per_theme(tmp_path):
+    """灰度值是一个 0–255 的灰阶，越界夹取、脏数据回落，且两个主题各存一份。"""
+    assert sanitize({}).grayscale_level == DEFAULT_GRAYSCALE_LEVEL
+    assert sanitize({"grayscale_level": 999}).grayscale_level == GRAYSCALE_LEVEL_MAX
+    assert sanitize({"grayscale_level": -40}).grayscale_level == GRAYSCALE_LEVEL_MIN
+    assert sanitize({"grayscale_level": 206.4}).grayscale_level == 206
+    # 字符串 "150" 不能冒充数字，回落到默认值。
+    assert sanitize({"grayscale_level": "150"}).grayscale_level == DEFAULT_GRAYSCALE_LEVEL
+
+    store = Store(tmp_path / "config.json")
+    store.update({"grayscale": True, "grayscale_level": 90})
+    # 切到另一个主题时用该主题自己的灰阶（不继承当前主题）。
+    assert store.update({"display_theme": "theme2"}).grayscale_level == DEFAULT_GRAYSCALE_LEVEL
+    restored = store.update({"display_theme": "theme1"})
+    assert restored.grayscale is True
+    assert restored.grayscale_level == 90
 
 
 def test_theme_profiles_keep_display_settings_and_bounds_independent(tmp_path):

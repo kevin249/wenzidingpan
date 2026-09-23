@@ -22,6 +22,9 @@ CONFIG_FILE_NAME = "config.json"
 
 LAYOUTS = ("multi", "single")
 DISPLAY_THEMES = ("theme1", "theme2")
+# K 线（日 K / 分钟 K）数据源。元组顺序即 auto 的降级顺序，
+# stockwidget/kline.py 直接读它，两边不会再各写一份。
+KLINE_SOURCES = ("auto", "eastmoney", "tencent", "sina")
 THEME2_SIDES = ("right", "left")
 # sides = 左中右（左右各两行文字），stacked = 上中下（上下各一行文字）
 ROW_STYLES = ("sides", "stacked")
@@ -45,6 +48,7 @@ THEME_SCOPED_FIELDS = (
     "show_stock_name",
     "show_stock_price",
     "grayscale",
+    "grayscale_level",
     "intraday_chart",
     "show_dark_trade",
     "compact",
@@ -82,6 +86,12 @@ MAX_SYMBOLS = 50
 # 桌面上就多出一块看不见又点不穿的死区。想彻底看不见请配合「鼠标穿透」使用。
 # WebUI 的滑块下限也读这个值，两边不会再各写一份。
 MIN_OPACITY = 0.05
+
+# 灰度显示统一使用的单一灰阶取值范围（0 = 全黑，255 = 全白）。
+# 校验、WebUI 滑块上下限与绘制端都读这两个常量，不会各写一份。
+GRAYSCALE_LEVEL_MIN = 0
+GRAYSCALE_LEVEL_MAX = 255
+DEFAULT_GRAYSCALE_LEVEL = 150
 
 
 def config_dir() -> Path:
@@ -125,6 +135,8 @@ class Bounds:
 @dataclass
 class Config:
     provider: str = DEFAULT_PROVIDER
+    # K 线数据源：与行情快照的 provider 相互独立，但同样只走东财/腾讯/新浪公开接口。
+    kline_source: str = KLINE_SOURCES[0]
     symbols: list[str] = field(default_factory=lambda: ["600519", "000001", "300750", "601318"])
     refresh_seconds: int = 5
     # Debug 模式绕过交易时段限制，便于收盘后调试实时行情 / K线 / MCP深度。
@@ -146,14 +158,17 @@ class Config:
     show_stock_name: bool = True
     show_stock_price: bool = True
     grayscale: bool = False
+    # 灰度显示时**唯一**的灰阶：涨跌色、盘口买卖、B/S、K线、曲线与用户配置的固定色
+    # 全部统一成这一个灰，深浅层次只由 alpha 承担；关掉灰度显示时本项不参与绘制。
+    grayscale_level: int = DEFAULT_GRAYSCALE_LEVEL
     # 走势图画当日分时曲线（联网取分钟数据）；关掉则只画组件运行期间的采样点
     intraday_chart: bool = True
     show_dark_trade: bool = True
     compact: bool = False
     display_theme: str = "theme1"  # theme1 = 经典网格，theme2 = 千档竖列
-    theme2_side: str = "right"  # right = 靠右/向左展，left = 靠左镜像/向右展
-    theme2_depth_width: int = 84  # 主题2挂单分布区域宽度（不含股价文字区），像素
-    theme2_popup_font_size: int = 11  # 主题2弹出详情四行文字与K线标注字号
+    theme2_side: str = "right"  # right = 股价列靠右/盘口向左长，left = 靠左镜像
+    theme2_depth_width: int = 84  # 主题2千档柱长度（折叠/展开恒定，25%~70% 夹取且不越行中点），像素
+    theme2_popup_font_size: int = 11  # 主题2顶部信息条与图表小字（量标注/角标/提示）字号
     layout: str = "multi"  # multi = 多行列表，single = 单行滚动
     # sides = 左中右：左侧名称/暗盘两行，右侧现价/涨跌幅两行，走势图在中间；
     # stacked = 上中下：名称与现价同一行，暗盘与涨跌幅同一行，走势图永远在中间。
@@ -217,6 +232,9 @@ def sanitize(raw: Any, *, _include_theme_profiles: bool = True) -> Config:
     if isinstance(raw.get("provider"), str):
         out.provider = raw["provider"]
 
+    if raw.get("kline_source") in KLINE_SOURCES:
+        out.kline_source = str(raw["kline_source"])
+
     symbols = raw.get("symbols")
     if isinstance(symbols, str):  # WebUI 里是多行文本框
         symbols = re.split(r"[\n,，;；\s]+", symbols)
@@ -271,6 +289,12 @@ def sanitize(raw: Any, *, _include_theme_profiles: bool = True) -> Config:
     depth_width = _as_number(raw.get("theme2_depth_width"))
     if depth_width is not None:
         out.theme2_depth_width = int(_clamp(round(depth_width), 40, 600))
+
+    grayscale_level = _as_number(raw.get("grayscale_level"))
+    if grayscale_level is not None:
+        out.grayscale_level = int(
+            _clamp(round(grayscale_level), GRAYSCALE_LEVEL_MIN, GRAYSCALE_LEVEL_MAX)
+        )
 
     size = _as_number(raw.get("font_size"))
     if size is not None:

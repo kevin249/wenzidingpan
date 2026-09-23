@@ -7,3 +7,6 @@ dist/
 build/
 *.egg-info/
 .DS_Store
+
+# WorkBuddy 会话内部记忆（不入库）
+.workbuddy/

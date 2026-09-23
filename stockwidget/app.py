@@ -9,7 +9,7 @@ from PySide6.QtCore import QEvent, QObject, QTimer, QUrl, Qt, Signal
 from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import QApplication, QSystemTrayIcon
 
-from . import desktop, providers
+from . import desktop, kline, providers
 from .config import Config, Store
 from .hotkey import DEFAULT_WINDOW_TOGGLE_HOTKEY, WindowsGlobalHotkey
 from .mcp_depth import DepthSnapshot, McpDepthPoller
@@ -245,6 +245,10 @@ class WidgetApp:
             config = self.store.get()
 
         self.config = config
+        if previous is None or previous.kline_source != config.kline_source:
+            # K 线取数源变了：清掉数据源设置的短缓存与已缓存的 K 线，避免继续用旧源的结果。
+            kline.clear_source_memo()
+            kline.reset_cache()
         if not (config.mcp_notifications_enabled and config.mcp_bell_tray_icon):
             self._clear_unread()
         self.window.apply_config(config)
@@ -286,6 +290,10 @@ class WidgetApp:
             print(f"[MCP提醒] {status}", flush=True)
 
     def _on_mcp_notification(self, notification: McpNotification) -> None:
+        # 事件驱动：MCP 推送到达即拉一次行情与分时，保证异动发生时价格已经同步，
+        # 这也是非 Debug 模式下界面更新的主要来源。千档不在此列——它本身来自 MCP，
+        # 推送密集时再叠加深度请求只会放大服务端开销。
+        self.poller.refresh_now()
         timestamp = notification.created_at or "时间未知"
         print("\n======\n", flush=True)
         print(f"[MCP提醒] {timestamp} | {notification.title}", flush=True)
@@ -323,6 +331,8 @@ class WidgetApp:
         self.window.show()
         if self.tray is not None:
             self.tray.show()
+        # 两个轮询线程的首次循环都带显式标记，因此打开组件时必定各拉一次全套数据
+        # （行情 + 分时/K线 + 千档），不判断 Debug 也不判断是否休市。
         self.poller.start()
         self.depth_poller.start()
         self.notification_listener.start()

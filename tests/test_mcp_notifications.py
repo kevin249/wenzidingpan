@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 from stockwidget import mcp_notifications
+from stockwidget.config import Config
 from stockwidget.mcp_notifications import (
     REQUEST_TIMEOUT_SECONDS,
     SSE_TIMEOUT,
@@ -496,3 +497,10 @@ def test_consume_propagates_deliver_errors_so_the_listener_can_reconnect():
         assert "网关不可达" in str(exc)
     else:
         raise AssertionError("_deliver_resource 的异常应该原样冒泡出 _consume")
+
+
+def test_passive_subscription_follows_the_debug_flag():
+    """非 Debug 全程被动：推送静默时不再每 60 秒兜底读资源，只等下一次推送。
+    Debug 仍保留兜底轮询，方便收盘后联调。"""
+    assert McpNotificationListener(Config(debug_mode=False))._passive_only() is True
+    assert McpNotificationListener(Config(debug_mode=True))._passive_only() is False

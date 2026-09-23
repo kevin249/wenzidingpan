@@ -84,6 +84,16 @@ class _FakeTray:
         pass
 
 
+class _FakePoller:
+    """只记推送触发的刷新次数：非 Debug 模式下这是界面数据更新的主要来源。"""
+
+    def __init__(self) -> None:
+        self.refreshes = 0
+
+    def refresh_now(self) -> None:
+        self.refreshes += 1
+
+
 @pytest.fixture()
 def dispatch(monkeypatch):
     def run(config: Config, *, tray: bool = True, times: int = 1):
@@ -95,7 +105,10 @@ def dispatch(monkeypatch):
 
         window = _FakeWindow()
         tray_icon = _FakeTray() if tray else None
-        stub = SimpleNamespace(config=config, window=window, tray=tray_icon, _unread=0)
+        poller = _FakePoller()
+        stub = SimpleNamespace(
+            config=config, window=window, tray=tray_icon, _unread=0, poller=poller
+        )
         for _ in range(times):
             app_module.WidgetApp._on_mcp_notification(stub, NOTIFICATION)
         return SimpleNamespace(
@@ -103,6 +116,7 @@ def dispatch(monkeypatch):
             toast=len(tray_icon.calls) if tray_icon else 0,
             tray_icon=tray_icon.unread if tray_icon else 0,
             window=len(window.calls),
+            refresh=poller.refreshes,
         )
 
     return run
@@ -114,6 +128,11 @@ def _channels(result):
 
 def test_all_four_channels_fire_by_default(dispatch):
     assert _channels(dispatch(Config())) == (1, 1, 1, 1)
+
+
+def test_push_triggers_a_market_refresh(dispatch):
+    """推送到达要顺带刷新行情与分时：非 Debug 不做定时轮询，界面靠这条通路更新。"""
+    assert dispatch(Config(), times=3).refresh == 3
 
 
 @pytest.mark.parametrize(
@@ -274,7 +293,9 @@ def test_terminal_foreground_transition_clears_tray_unread(monkeypatch):
 
 def test_notification_does_not_create_unread_while_terminal_is_foreground(monkeypatch):
     window, tray = _FakeWindow(), _FakeTray()
-    stub = SimpleNamespace(config=Config(), window=window, tray=tray, _unread=0)
+    stub = SimpleNamespace(
+        config=Config(), window=window, tray=tray, _unread=0, poller=_FakePoller()
+    )
     stub._clear_unread = lambda: app_module.WidgetApp._clear_unread(stub)
     monkeypatch.setattr(app_module.desktop, "ring_terminal_bell", lambda: True)
     monkeypatch.setattr(app_module.desktop, "terminal_is_foreground", lambda: True)

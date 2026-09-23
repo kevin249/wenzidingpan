@@ -27,6 +27,18 @@
         </div>
 
         <div class="field">
+          <label for="kline_source">K 线数据源</label>
+          <select id="kline_source" name="kline_source">
+            <option value="auto" {% if config.kline_source == 'auto' %}selected{% endif %}>自动（东财 → 腾讯 → 新浪）</option>
+            <option value="eastmoney" {% if config.kline_source == 'eastmoney' %}selected{% endif %}>东方财富（前复权）</option>
+            <option value="tencent" {% if config.kline_source == 'tencent' %}selected{% endif %}>腾讯（前复权）</option>
+            <option value="sina" {% if config.kline_source == 'sina' %}selected{% endif %}>新浪（不复权）</option>
+          </select>
+          <p class="hint">只影响 K 线取数，与上面的行情快照数据源相互独立。K 线一律直连这三个公开接口，
+            不经过 MCP；固定成单一源后不再降级。新浪不支持 1 分钟与周 / 月 K，且仅提供不复权。</p>
+        </div>
+
+        <div class="field">
           <label for="stock-search">自选股票</label>
           <div class="search">
             <input id="stock-search" type="text" autocomplete="off" spellcheck="false"
@@ -43,9 +55,9 @@
         <div class="checks">
           <label><input id="debug_mode" name="debug_mode" type="checkbox"
                         {% if config.debug_mode %}checked{% endif %} />
-            Debug 模式：非交易时段仍主动刷新行情、K线、千档和 B/S</label>
+            Debug 模式：全天主动刷新行情、K线、千档和 B/S</label>
         </div>
-        <p class="hint">默认关闭。关闭时仅在 A 股活跃窗口（上海时区，周一至周五 09:15–11:30、13:00–15:00）主动拉实时数据；其余时间停止行情/K线/深度轮询，只保留 MCP 通知资源的被动订阅。Debug 模式用于收盘后联调。</p>
+        <p class="hint">默认关闭。关闭时不做定时轮询，只被动接收 MCP 推送 —— 推送到达即刷新一次行情与分时；仅在 A 股活跃窗口（上海时区，周一至周五 09:15–11:30、13:00–15:00）保留每 5 分钟的兜底心跳，用于发现推送通道静默失效。打开程序、手动刷新和修改自选股等取数设置时仍会无条件请求一次。Debug 模式用于收盘后联调。</p>
       </section>
 
       <section class="card">
@@ -61,17 +73,17 @@
           <div class="field">
             <label for="theme2_side">主题 2 停靠侧</label>
             <select id="theme2_side" name="theme2_side">
-              <option value="right" {% if config.theme2_side == 'right' %}selected{% endif %}>靠右 · 向左展开</option>
-              <option value="left" {% if config.theme2_side == 'left' %}selected{% endif %}>靠左 · 镜像向右展开</option>
+              <option value="right" {% if config.theme2_side == 'right' %}selected{% endif %}>靠右 · 盘口在右</option>
+              <option value="left" {% if config.theme2_side == 'left' %}selected{% endif %}>靠左 · 镜像</option>
             </select>
           </div>
           <div class="field">
-            <label for="theme2_depth_width">主题 2 挂单宽度（px）</label>
+            <label for="theme2_depth_width">主题 2 千档柱长度（px）</label>
             <input id="theme2_depth_width" name="theme2_depth_width" type="number"
                    min="40" max="600" step="4" value="{{ config.theme2_depth_width }}" />
           </div>
           <div class="field">
-            <label for="theme2_popup_font_size">主题 2 弹出框字号（px）</label>
+            <label for="theme2_popup_font_size">主题 2 代码与图注字号（px）</label>
             <input id="theme2_popup_font_size" name="theme2_popup_font_size" type="number"
                    min="7" max="48" step="1" value="{{ config.theme2_popup_font_size }}" />
           </div>
@@ -158,14 +170,14 @@
 
         <div class="grid">
           <div class="field">
-            <label for="chart_label_font_size">走势图高低价字号（px）</label>
+            <label for="chart_label_font_size">走势图 / 主题 2 高低价字号（px）</label>
             <input id="chart_label_font_size" name="chart_label_font_size" type="number"
                    min="7" max="48" step="1" value="{{ config.chart_label_font_size }}" />
           </div>
         </div>
 
         <h2>字体颜色与字重</h2>
-        <p class="hint">取消“跟随涨跌”后可选择固定颜色；颜色和加粗设置会同时应用到网格及单行模式。</p>
+        <p class="hint">取消“跟随涨跌”后可选择固定颜色；字号、颜色与加粗设置对主题 1（网格/单行）和主题 2 同时生效。</p>
         <div class="grid font-style-grid">
           <div class="font-style-field">
             <label class="font-style-title" for="stock_name_color">股票名称</label>
@@ -276,11 +288,21 @@
           <label><input id="show_stock_price" name="show_stock_price" type="checkbox"
                         {% if config.show_stock_price %}checked{% endif %} /> 显示右侧股价与涨跌</label>
           <label><input id="grayscale" name="grayscale" type="checkbox"
-                        {% if config.grayscale %}checked{% endif %} /> 灰度显示</label>
+                        {% if config.grayscale %}checked{% endif %} /> 灰度显示（所有颜色统一成一个灰，灰阶见下方「灰度值」）</label>
           <label><input id="intraday_chart" name="intraday_chart" type="checkbox"
                         {% if config.intraday_chart %}checked{% endif %} /> 走势图使用当日分时数据</label>
           <label><input id="compact" name="compact" type="checkbox"
                         {% if config.compact %}checked{% endif %} /> 紧凑模式</label>
+        </div>
+
+        <div class="field">
+          <label for="grayscale_level">灰度值 <span class="value" id="grayscale_level-value"></span></label>
+          <input id="grayscale_level" name="grayscale_level" type="range" min="{{ grayscale_level_min }}"
+                 max="{{ grayscale_level_max }}" step="1" value="{{ config.grayscale_level }}" />
+          <p class="hint">勾上「灰度显示」后，组件里所有颜色都换成这<strong>同一个</strong>灰阶：不再按红涨绿跌把红色、绿色
+            映射成深浅不同的灰，文字、分时曲线、暗盘、千档买卖柱、成交量柱、B/S 标记与日K 蜡烛全是同一个灰，
+            深浅层次只由透明度承担。0 = 全黑，255 = 全白；窗口背景、边框和标题栏按钮不参与灰度。
+            没勾「灰度显示」时本项不生效，因此不可调。</p>
         </div>
       </section>
 

@@ -1,18 +1,27 @@
 """网格里的一格行情。
 
-两种版式，中间永远是当日分时图：
+主题1有两种版式，中间永远是当日分时图：
 
 * 左中右（``row_style="sides"``）：左边名称压暗盘资金，右边现价压涨跌幅，左右各两行；
 * 上中下（``row_style="stacked"``）：上面名称与现价同一行，下面暗盘与涨跌幅同一行。
 
 选左中右时，格子窄到三列放不下才会临时退回上中下，避免文字被裁掉。
+
+主题2是另一套骨架：顶部一条「价格上方」的信息栏，下面整行交给
+:class:`DepthLadder`——它内部以当前价虚线为水平中心，一侧画千档，点击价格列后
+在另一侧展开 K 线与成交量。信息栏**收起时整条留空**（名字 / 代码 / 高低价 / 暗盘
+统统点开才出现），但两行的高度照占，所以画布高度、虚线位置、兄弟行的对齐都不随
+点击变化。盘口柱长同样与展开态无关，点击时整行只有图表出现，没有任何横向跳动。
+
+主题2 的行内配色口径（用户口径 2026-09-23）：**只有股价与涨跌幅跟随涨跌色**，
+名称、代码、高低价、分时曲线、千档一律中性色，所以「涨=红」不会再让整行飘红。
 """
 
 from __future__ import annotations
 
-from PySide6.QtCore import QTimer, Qt, Signal
+from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import (
-    QBoxLayout,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -24,19 +33,22 @@ from PySide6.QtWidgets import (
 from .. import mcp_bs
 from ..config import Config
 from ..intraday import Trend, calculate_bs_points
+from ..kline import PERIOD_DAY
 from ..mcp_depth import DepthSnapshot
 from ..providers.base import Quote
 from ..symbols import classify
-from .depth_ladder import DepthLadder
+from . import kline_loader
+from .depth_ladder import MODE_DAILY, OUTER_PAD, DepthLadder
 from .sparkline import Sparkline
 from .theme import (
     BLACK,
     MUTED,
-    configured_text_color,
+    TEXT,
     direction_color,
     fmt_money,
     fmt_price,
     make_font,
+    text_color,
 )
 
 
@@ -47,8 +59,59 @@ def _color_style(color) -> str:
     return f"color: rgba({color.red()},{color.green()},{color.blue()},{color.alpha()});"
 
 
+class _ElidedLabel(QLabel):
+    """主题2 顶部信息条专用：放不下时按省略号截断，而不是把整行顶宽。
+
+    QLabel 默认的 ``minimumSizeHint`` 就是整段文字的宽度。主题2 的信息条一层层
+    算下来会比外框还宽（默认 415px 外框里要放 450px 以上的文字），而水平滚动条
+    是关掉的——结果就是右侧内容被直接裁掉、拖窄窗口也没用。这里把最小宽度压到
+    几个字符，再由 ``elidedText`` 自己截断，任何宽度下都不会溢出。
+    """
+
+    def __init__(self, min_chars: int = 4, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._min_chars = max(1, int(min_chars))
+        self._full_text = ""
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+
+    def setText(self, text: str) -> None:  # noqa: N802 - Qt 命名
+        self._full_text = "" if text is None else str(text)
+        self._refresh_elide()
+
+    def full_text(self) -> str:
+        return self._full_text
+
+    def refresh_elide(self) -> None:
+        """字体或宽度变化后重算截断结果。"""
+        self._refresh_elide()
+
+    def _refresh_elide(self) -> None:
+        metrics = QFontMetrics(self.font())
+        available = self.width()
+        if available <= 1:
+            available = self.sizeHint().width()
+        super().setText(metrics.elidedText(self._full_text, Qt.ElideRight, max(0, available)))
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        metrics = QFontMetrics(self.font())
+        # 想要整段文字的宽度，布局有地方就给全；没地方则由 minimumSizeHint 兜底。
+        return QSize(metrics.horizontalAdvance(self._full_text), metrics.height())
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802
+        metrics = QFontMetrics(self.font())
+        return QSize(metrics.horizontalAdvance("0" * self._min_chars), metrics.height())
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._refresh_elide()
+
+
 class QuoteRow(QWidget):
     theme2_expansion_changed = Signal(str, bool)
+    # 点价格＝请求「整张自选列表一起展开 / 收起」。行自己不决定展开态：展开是
+    # 全列表级动作，而且要求「鼠标移开不收起、点任意屏幕位置才收起」，这两件事
+    # 只有窗口层拿得到（见 TickerWindow._toggle_theme2_all_expanded）。
+    theme2_expand_requested = Signal(str)
 
     def __init__(self, symbol: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -57,8 +120,6 @@ class QuoteRow(QWidget):
         self._last_trend: Trend | None = None
         self._last_depth: DepthSnapshot | None = None
         self._theme2_expanded = False
-        self._theme2_collapsed_depth_width = 0
-        self._theme2_ignore_leave = False
 
         self.name_label = QLabel()
         self.price_label = QLabel()
@@ -86,40 +147,51 @@ class QuoteRow(QWidget):
         dark_layout.addWidget(self.dark_value)
         dark_layout.addStretch(1)
 
-        # 主题2：右侧常驻千档；点击中央价格后左侧详情/K线临时展开。
+        # 主题2：顶部信息条压在价格上方（名字 / 代码 / 暗盘 / 高低；收起时只留暗盘），
+        # 高度恒定，下面是整行画布。画布内部以当前价虚线为水平中心：一侧千档，
+        # 点击价格列后在另一侧展开 K 线与成交量。
         self.theme2_depth = DepthLadder()
         self.theme2_depth.price_clicked.connect(self._request_theme2_expand)
-        self.theme2_detail = QWidget()
-        theme2_detail_layout = QHBoxLayout(self.theme2_detail)
-        theme2_detail_layout.setContentsMargins(6, 4, 6, 4)
-        theme2_detail_layout.setSpacing(8)
-        theme2_info = QWidget()
-        theme2_info_layout = QVBoxLayout(theme2_info)
-        theme2_info_layout.setContentsMargins(0, 0, 0, 0)
-        theme2_info_layout.setSpacing(0)
-        self.theme2_name_label = QLabel()
-        self.theme2_code_label = QLabel()
-        self.theme2_dark_label = QLabel()
-        self.theme2_high_low_label = QLabel()
-        for label in (
-            self.theme2_name_label,
-            self.theme2_code_label,
-            self.theme2_dark_label,
-            self.theme2_high_low_label,
-        ):
-            label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
-            label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
-            theme2_info_layout.addWidget(label, 0, Qt.AlignLeft | Qt.AlignTop)
-        # 四行信息只贴左上角排布，剩余高度全部留白，不再平均摊到四行之间。
-        theme2_info_layout.addStretch(1)
-        self.theme2_chart = Sparkline()
-        self.theme2_chart.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        theme2_detail_layout.addWidget(theme2_info)
-        theme2_detail_layout.addWidget(self.theme2_chart, 1)
-        self._theme2_info = theme2_info
-        self._theme2_info_layout = theme2_info_layout
-        self._theme2_detail_layout = theme2_detail_layout
-        self.theme2_detail.hide()
+        self.theme2_depth.chart_mode_changed.connect(self._on_theme2_chart_mode_changed)
+        kline_loader.loader().loaded.connect(self._on_kline_loaded)
+
+        self.theme2_header = QWidget()
+        theme2_header_layout = QVBoxLayout(self.theme2_header)
+        # 左右各留 OUTER_PAD：画布里的竖直价格轴就压在离外沿 OUTER_PAD 的位置，
+        # 于是「股票名称左端」与「暗盘/高低那组的右端」都正好落在轴线上
+        # （用户口径 2026-09-23：「上方股票名称和涨跌幅与轴线对齐」——价格块本身
+        # 仍居中在虚线中点，不动）。
+        theme2_header_layout.setContentsMargins(OUTER_PAD, 0, OUTER_PAD, 0)
+        theme2_header_layout.setSpacing(0)
+        self.theme2_name_label = _ElidedLabel()
+        self.theme2_code_label = _ElidedLabel()
+        self.theme2_dark_label = _ElidedLabel()
+        self.theme2_high_low_label = _ElidedLabel()
+
+        # 两行：第一行名字+代码压暗盘资金，第二行高低；都比价格靠上。
+        theme2_first = QWidget()
+        theme2_first_layout = QHBoxLayout(theme2_first)
+        theme2_first_layout.setContentsMargins(0, 0, 0, 0)
+        theme2_first_layout.addWidget(self.theme2_name_label, 0)
+        theme2_first_layout.addWidget(self.theme2_code_label, 0)
+        theme2_first_layout.addStretch(1)
+        theme2_first_layout.addWidget(self.theme2_dark_label, 0)
+
+        theme2_second = QWidget()
+        theme2_second_layout = QHBoxLayout(theme2_second)
+        theme2_second_layout.setContentsMargins(0, 0, 0, 0)
+        theme2_second_layout.addStretch(1)
+        theme2_second_layout.addWidget(self.theme2_high_low_label, 0)
+
+        theme2_header_layout.addWidget(theme2_first)
+        theme2_header_layout.addWidget(theme2_second)
+        self.theme2_header.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        self._theme2_header_layout = theme2_header_layout
+        self._theme2_first_layout = theme2_first_layout
+        self._theme2_second_layout = theme2_second_layout
+        self._theme2_first_row = theme2_first
+        self._theme2_second_row = theme2_second
+        self.theme2_header.hide()
         self.theme2_depth.hide()
 
         layout = QGridLayout(self)
@@ -161,21 +233,11 @@ class QuoteRow(QWidget):
             show_high_low=config.show_high_low,
             show_fill=config.show_sparkline_fill,
             grayscale=config.grayscale,
+            grayscale_level=config.grayscale_level,
         )
         self.sparkline.set_annotation_font(
             make_font(config, pixel_size=config.chart_label_font_size)
         )
-        self.theme2_chart.set_annotation_options(
-            show_signals=config.show_bs_points,
-            show_open_line=config.show_open_line,
-            show_high_low=config.show_high_low,
-            show_fill=config.show_sparkline_fill,
-            grayscale=config.grayscale,
-        )
-        self.theme2_chart.set_annotation_font(
-            make_font(config, pixel_size=config.theme2_popup_font_size)
-        )
-        self.theme2_chart.set_side_profile_width(config.theme2_depth_width)
         self.theme2_depth.apply_config(config)
         self._apply_theme2_metrics(config)
         self._update_layout_mode()
@@ -187,163 +249,201 @@ class QuoteRow(QWidget):
         self._update_layout_mode()
 
     def _apply_theme2_metrics(self, config: Config) -> None:
-        row_height = max(88, round(config.font_size * 7.2))
-        detail_width = max(330, round(config.font_size * 27))
-        info_width = max(104, round(config.theme2_popup_font_size * 9.5))
-        self.theme2_detail.setMinimumWidth(detail_width)
-        self.theme2_detail.setMaximumWidth(MAX_WIDGET_SIZE)
-        self.theme2_detail.setMinimumHeight(0)
-        self.theme2_detail.setMaximumHeight(MAX_WIDGET_SIZE)
-        self.theme2_detail.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self._theme2_info.setFixedWidth(info_width)
-        self._theme2_detail_layout.setDirection(
-            QBoxLayout.Direction.RightToLeft
-            if config.theme2_side == "left"
-            else QBoxLayout.Direction.LeftToRight
-        )
-        self.theme2_chart.set_preferred_height(max(60, row_height - 10))
+        """主题2只调顶部信息条与画布的字体/间距，不再靠撑宽详情区腾地方。
+
+        字号与加粗一律读设置页里同一套字段（``stock_name_font_size`` 等），不另起
+        一套：否则切到主题2 会觉得「设置没生效」。``theme2_popup_font_size``
+        只留给股票代码与图上角标这类没有独立设置项的文字。
+        """
         popup_size = config.theme2_popup_font_size
+        gap = max(4, round(config.font_size * 0.35))
+        self._theme2_first_layout.setSpacing(gap)
+        self._theme2_second_layout.setSpacing(gap)
+        self._theme2_header_layout.setSpacing(max(0, round(config.font_size * 0.15)))
         self.theme2_name_label.setFont(
-            make_font(config, bold=True, pixel_size=popup_size)
+            make_font(
+                config,
+                bold=config.stock_name_bold,
+                pixel_size=config.stock_name_font_size,
+            )
         )
         self.theme2_code_label.setFont(
             make_font(config, pixel_size=popup_size)
         )
         self.theme2_dark_label.setFont(
-            make_font(config, bold=config.dark_trade_bold, pixel_size=popup_size)
+            make_font(
+                config,
+                bold=config.dark_trade_bold,
+                pixel_size=config.dark_trade_font_size,
+            )
         )
         self.theme2_high_low_label.setFont(
-            make_font(config, pixel_size=popup_size)
+            make_font(config, pixel_size=config.chart_label_font_size)
+        )
+        for label in (
+            self.theme2_name_label,
+            self.theme2_code_label,
+            self.theme2_dark_label,
+            self.theme2_high_low_label,
+        ):
+            label.refresh_elide()
+
+        # 两行的高度写成常量：收起时名字/代码/高低价被藏起来，但这两行的位置必须
+        # 原样占住。否则画布会凭空长高，当前价虚线跟着上下跳，兄弟行的虚线也就对不齐。
+        self._pin_theme2_header_height()
+        self._sync_theme2_header_labels()
+
+    def _pin_theme2_header_height(self) -> None:
+        """把两行的高度固定下来（按真实字体实测，与谁可见无关）。
+
+        四个标签先临时全部亮出来量一遍：`height = 两行自然高 + 行距`。逐行也固定住，
+        这样收起时就算某一行整行没有可见文字，行高也不会塌，两行里的文字纵向居中
+        位置与展开态逐像素一致。
+
+        （把它写成 `2 * 字号 + 行距` 的公式是不行的：四个字段现在各读各的字号设置，
+        行高得由实际字体算。）
+        """
+        labels = (
+            self.theme2_name_label,
+            self.theme2_code_label,
+            self.theme2_dark_label,
+            self.theme2_high_low_label,
+        )
+        rows = (self._theme2_first_row, self._theme2_second_row)
+        for label in labels:
+            label.show()
+        self._theme2_header_layout.activate()
+        heights = [int(row.sizeHint().height()) for row in rows]
+        if min(heights) <= 0:
+            # 兜底：极端字体环境下 sizeHint 量不出高度。
+            popup = self._config.theme2_popup_font_size
+            heights = [popup, popup]
+        spacing = int(self._theme2_header_layout.spacing())
+        for row, height in zip(rows, heights):
+            row.setFixedHeight(height)
+        self.theme2_header.setFixedHeight(sum(heights) + spacing)
+
+    def _sync_theme2_header_labels(self) -> None:
+        """收起态信息栏整条留空：四个字段（含暗盘）**统统点开才出现**。
+
+        用户口径 2026-09-23：「未点击时候不显示股票和股票代码以及高低价」，
+        随后追加「不点暗盘也不要显示」。两行的高度照占（见
+        :meth:`_pin_theme2_header_height`），所以收起只是没有文字，画布高度与
+        当前价虚线的位置一像素都不动。
+        """
+        config = self._config
+        expanded = self._theme2_expanded
+        self.theme2_name_label.setVisible(expanded and config.show_stock_name)
+        self.theme2_code_label.setVisible(expanded and config.show_stock_name)
+        self.theme2_high_low_label.setVisible(expanded and config.show_high_low)
+        self.theme2_dark_label.setVisible(
+            expanded and config.show_dark_trade and not config.compact
         )
 
     def _request_theme2_expand(self) -> None:
-        """当前 mouseRelease 结束后再展开，避免在点击事件栈内同步 resize/move。"""
-        if self._theme2_expanded:
-            return
-        QTimer.singleShot(0, lambda: self.set_theme2_expanded(True))
+        """点价格 → 请窗口把**所有**行一起展开 / 收起（用户口径 2026-09-23）。
 
-    def _clear_theme2_leave_guard(self) -> None:
-        self._theme2_ignore_leave = False
+        行内自己不再切换展开态，也不再「鼠标移出整行就收起」——留存与否由窗口
+        统一决定：鼠标移开不动它，点屏幕任意位置（含窗口外）才收起。
+        """
+        self.theme2_expand_requested.emit(self.symbol)
 
-    def theme2_detail_extra_width(self) -> int:
-        return self._layout.horizontalSpacing() + max(
-            self.theme2_detail.minimumWidth(), self.theme2_detail.sizeHint().width()
-        )
-
-    def theme2_target_width(self) -> int:
-        """自动/启动布局只看自然宽度；真实当前宽度只在点击展开路径使用。"""
+    def theme2_natural_width(self) -> int:
+        """自动/启动布局用的自然宽度：画布自然宽 + 左右边距，展开不再追加。"""
         margins = self._layout.contentsMargins()
-        width = self.theme2_depth.sizeHint().width() + margins.left() + margins.right()
-        if self._theme2_expanded:
-            width += self.theme2_detail_extra_width()
-        return width
+        return self.theme2_depth.sizeHint().width() + margins.left() + margins.right()
 
-    def theme2_collapsed_depth_width(self) -> int:
-        return self._theme2_collapsed_depth_width or max(
-            self.theme2_depth.width(), self.theme2_depth.sizeHint().width()
-        )
+    def _request_theme2_kline(self) -> None:
+        """日K 只在「已展开且切到日K」时才拉，避免白白发请求。"""
+        if not self._theme2_expanded or self.theme2_depth.chart_mode != MODE_DAILY:
+            return
+        kline = self.theme2_depth.kline
+        if kline is not None and kline.bars:
+            return
+        self.theme2_depth.set_kline(None, "日K 加载中…")
+        kline_loader.loader().request(self.symbol, PERIOD_DAY, kline_loader.UI_LIMIT)
 
-    def set_theme2_depth_width_override(self, width: int | None) -> None:
-        self.theme2_depth.set_width_override(width, use_size_hint=False)
+    def _on_theme2_chart_mode_changed(self, mode: str) -> None:
+        if mode == MODE_DAILY:
+            self._request_theme2_kline()
+
+    def _on_kline_loaded(self, symbol: str, period: str, kline) -> None:
+        if symbol != self.symbol or period != PERIOD_DAY:
+            return
+        message = ""
+        if kline is None or not kline.bars:
+            message = (getattr(kline, "error", "") or "") or "日K 暂无数据"
+        self.theme2_depth.set_kline(kline, message)
 
     def set_theme2_expanded(self, expanded: bool, *, notify: bool = True) -> None:
+        """展开/收起只改画布内部的分区，外框宽高一个像素都不动。
+
+        展开态由窗口统一决定（``TickerWindow._set_theme2_all_expanded``），行不
+        自行改变它，也不在鼠标移出时收回。
+        """
         expanded = bool(expanded and self._config.display_theme == "theme2")
         if expanded == self._theme2_expanded:
             return
-        if expanded and not self._theme2_expanded:
-            # 在切换 Preferred 布局之前就锁定原盘口宽度；若已经作为兄弟行被冻结，
-            # 优先复用最初冻结值，绝不把展开后的整窗宽度当盘口宽度。
-            frozen = self.theme2_depth.width_override
-            if frozen is None:
-                frozen = max(self.theme2_depth.width(), self.theme2_depth.sizeHint().width())
-            self._theme2_collapsed_depth_width = frozen
-            self.theme2_depth.set_width_override(frozen, use_size_hint=True)
         self._theme2_expanded = expanded
-        if expanded:
-            # resize/move 可能制造一次假的 leaveEvent，短暂屏蔽，防止展开/收起重入。
-            self._theme2_ignore_leave = True
-            QTimer.singleShot(50, self._clear_theme2_leave_guard)
-        else:
-            self._theme2_ignore_leave = False
-        self.theme2_detail.setVisible(expanded)
-        self._update_layout_mode()
+        self.theme2_depth.set_expanded(expanded)
+        self._sync_theme2_header_labels()
         if notify:
             self.theme2_expansion_changed.emit(self.symbol, expanded)
-
-    def leaveEvent(self, event) -> None:  # noqa: N802 - Qt 命名
-        if (
-            self._config.display_theme == "theme2"
-            and self._theme2_expanded
-            and (event is None or not self._theme2_ignore_leave)
-        ):
-            self.set_theme2_expanded(False)
-        if event is not None:
-            super().leaveEvent(event)
+        if expanded:
+            self._request_theme2_kline()
 
     def _update_layout_mode(self) -> None:
         """按所选版式摆放文字；各类字体保持用户设置的比例。"""
         config = self._config
         if config.display_theme == "theme2":
-            theme2_state = ("theme2", config.theme2_side)
-            if self._layout_state != theme2_state:
+            # 顶部信息条（价格上方）恒占一行，画布吃满剩余高度；展开与否只改
+            # 画布内部的分区，行内布局本身不变，所以外框不会跟着跳。
+            if self._layout_state != ("theme2",):
                 for widget in (
                     self.name_label,
                     self.price_label,
                     self.percent_label,
                     self.dark_box,
                     self.sparkline,
-                    self.theme2_detail,
+                    self.theme2_header,
                     self.theme2_depth,
                 ):
                     self._layout.removeWidget(widget)
-                if config.theme2_side == "left":
-                    self._layout.addWidget(self.theme2_depth, 0, 0, 2, 1)
-                    self._layout.addWidget(self.theme2_detail, 0, 1, 2, 1)
-                else:
-                    self._layout.addWidget(self.theme2_detail, 0, 0, 2, 1)
-                    self._layout.addWidget(self.theme2_depth, 0, 1, 2, 1)
-                self._layout.setColumnStretch(0, 0)
-                self._layout.setColumnStretch(1, 0)
-                self._layout.setColumnStretch(2, 0)
-                self._layout_state = theme2_state
+                self._layout.addWidget(self.theme2_header, 0, 0, 1, 3)
+                self._layout.addWidget(self.theme2_depth, 1, 0, 1, 3)
+                self._layout_state = ("theme2",)
             self.name_label.hide()
             self.price_label.hide()
             self.percent_label.hide()
             self.dark_box.hide()
             self.sparkline.hide()
+            self.theme2_header.show()
             self.theme2_depth.show()
-            self.theme2_detail.setVisible(self._theme2_expanded)
             padding = max(2, round(config.font_size * 0.28))
             self._layout.setContentsMargins(padding, padding, padding, padding)
-            self._layout.setHorizontalSpacing(max(4, round(config.font_size * 0.45)))
-            self._layout.setVerticalSpacing(0)
-            # 主题2由窗口当前宽高驱动；右下角拖拽时每行和盘口一起伸缩。
+            self._layout.setHorizontalSpacing(0)
+            self._layout.setVerticalSpacing(max(1, round(config.font_size * 0.12)))
+            for column in range(3):
+                self._layout.setColumnStretch(column, 0)
+            self._layout.setColumnStretch(0, 1)
+            self._layout.setRowStretch(0, 0)
+            self._layout.setRowStretch(1, 1)
+            # 主题2由窗口当前宽高驱动；右下角拖拽时每行和画布一起伸缩。
             self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-            self.setMinimumHeight(max(52, round(config.font_size * 4.0)))
+            self.setMinimumHeight(0)
             self.setMaximumHeight(MAX_WIDGET_SIZE)
-            if self._theme2_expanded:
-                self.theme2_detail.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-                self.theme2_depth.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
-                if config.theme2_side == "left":
-                    self._layout.setColumnStretch(0, 0)
-                    self._layout.setColumnStretch(1, 1)
-                else:
-                    self._layout.setColumnStretch(0, 1)
-                    self._layout.setColumnStretch(1, 0)
-            else:
-                # 未展开行始终占满整行；width_override 只限制实际盘口绘制区域。
-                self.theme2_depth.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-                if config.theme2_side == "left":
-                    self._layout.setColumnStretch(0, 1)
-                    self._layout.setColumnStretch(1, 0)
-                else:
-                    self._layout.setColumnStretch(0, 0)
-                    self._layout.setColumnStretch(1, 1)
             self._narrow = False
             return
 
-        self.theme2_detail.hide()
+        # 主题2 的两个部件还挂在 (0,0,1,3)/(1,0,1,3) 的跨列格子上，必须先摘下来，
+        # 否则和经典主题的 (0,0)(0,1)(0,2)… 是重叠的格子项，行列表格会被一起撑大。
+        for widget in (self.theme2_header, self.theme2_depth):
+            if self._layout.indexOf(widget) >= 0:
+                self._layout.removeWidget(widget)
+        self.theme2_header.hide()
         self.theme2_depth.hide()
+        self._layout.setRowStretch(0, 0)
+        self._layout.setRowStretch(1, 0)
         self.name_label.setVisible(config.show_stock_name)
         self.price_label.setVisible(config.show_stock_price)
         self.percent_label.setVisible(config.show_stock_price)
@@ -526,7 +626,7 @@ class QuoteRow(QWidget):
         self._update_theme2_data(quote, config, trend, color)
         self.name_label.setText(quote.name or quote.symbol)
         self.name_label.setStyleSheet(
-            _color_style(configured_text_color(config.stock_name_color, color))
+            _color_style(text_color(config, config.stock_name_color, color))
         )
 
         if quote.error:
@@ -539,7 +639,7 @@ class QuoteRow(QWidget):
 
         self.price_label.setText(fmt_price(quote.price))
         self.price_label.setStyleSheet(
-            _color_style(configured_text_color(config.stock_price_color, color))
+            _color_style(text_color(config, config.stock_price_color, color))
         )
         percent_sign = "+" if quote.change_percent is not None and quote.change_percent > 0 else ""
         self.percent_label.setText(
@@ -548,7 +648,7 @@ class QuoteRow(QWidget):
             else ""
         )
         self.percent_label.setStyleSheet(
-            _color_style(configured_text_color(config.stock_percent_color, color))
+            _color_style(text_color(config, config.stock_percent_color, color))
         )
 
         self.sparkline.set_color(color)
@@ -567,6 +667,7 @@ class QuoteRow(QWidget):
             show_high_low=config.show_high_low,
             show_fill=config.show_sparkline_fill,
             grayscale=config.grayscale,
+            grayscale_level=config.grayscale_level,
         )
 
         self._set_dark(quote.dark_fund, config)
@@ -578,10 +679,13 @@ class QuoteRow(QWidget):
         code = symbol.code if symbol is not None else quote.symbol
         self.theme2_name_label.setText(quote.name or quote.symbol)
         self.theme2_code_label.setText(code)
-        self.theme2_name_label.setStyleSheet(
-            _color_style(configured_text_color(config.stock_name_color, color))
-        )
-        self.theme2_code_label.setStyleSheet(_color_style(MUTED))
+        # 主题2 的行内配色口径（用户口径 2026-09-23）：**只有「股价 / 涨跌幅」用
+        # 涨跌色**，名称、代码、高低价一律中性色。所以「涨=红」时不会整行飘红。
+        # 设置页里的固定色照旧生效；选「跟随涨跌」时在主题2 落到中性灰白（``TEXT``）。
+        # 名字与代码仍同一个颜色（用户先前选择），字号分主次。
+        name_color = text_color(config, config.stock_name_color, TEXT)
+        self.theme2_name_label.setStyleSheet(_color_style(name_color))
+        self.theme2_code_label.setStyleSheet(_color_style(name_color))
 
         dark = fmt_money(quote.dark_fund)
         main = fmt_money(quote.dark_main_net_inflow)
@@ -593,7 +697,8 @@ class QuoteRow(QWidget):
         self.theme2_dark_label.setText("  ".join(parts) if parts else "暗 --")
         self.theme2_dark_label.setStyleSheet(
             _color_style(
-                configured_text_color(
+                text_color(
+                    config,
                     config.dark_trade_color,
                     direction_color(config, quote.dark_fund),
                 )
@@ -610,41 +715,40 @@ class QuoteRow(QWidget):
         high_text = "--" if high is None else f"{high:.2f}"
         low_text = "--" if low is None else f"{low:.2f}"
         self.theme2_high_low_label.setText(f"高 {high_text}  低 {low_text}")
-        self.theme2_high_low_label.setStyleSheet(_color_style(MUTED))
+        # 高低价是次要信息，主题2 一律中性灰（与走势图里的高低价标注同色），
+        # 不再跟着涨跌染色——否则一只上涨的股票整行只剩红。
+        self.theme2_high_low_label.setStyleSheet(_color_style(text_color(config, "auto", MUTED)))
 
-        self.theme2_depth.set_quote(quote.price, quote.change_percent, color, quote.error)
-        self.theme2_chart.set_color(color)
-        if quote.error:
-            self.theme2_chart.clear()
-            return
-        self.theme2_chart.push_sample(quote.price)
-        self.theme2_chart.set_series(prices)
-        self.theme2_chart.set_volume_profile(
-            trend.volumes if trend else [],
-            enabled=bool(trend and trend.volumes),
+        # 股价 / 涨跌幅各自走设置页里的颜色（固定色或跟随涨跌），与主题1 同一条路径；
+        # 它们也是整个主题2 行里**唯一**两块带涨跌色的文字，分时曲线固定走中性色。
+        self.theme2_depth.set_quote(
+            quote.price,
+            quote.change_percent,
+            color,
+            quote.error,
+            price_color=text_color(config, config.stock_price_color, color),
+            percent_color=text_color(config, config.stock_percent_color, color),
         )
-        self.theme2_chart.set_prev_close(
-            (trend.prev_close if trend and trend.prev_close else None) or quote.prev_close
+        prev_close = (trend.prev_close if trend and trend.prev_close else None) or quote.prev_close
+        self.theme2_depth.set_intraday(trend if not quote.error else None, prev_close)
+
+        # B/S 标记跟着分时曲线走；行情出错或没数据时清空，避免留下上一只的点。
+        signals = (
+            mcp_bs.bs_points(quote.symbol, prices)
+            if prices and config.show_bs_points and not quote.error
+            else []
         )
-        self.theme2_chart.set_annotations(
-            trend.open_price if trend else (prices[0] if prices else None),
-            mcp_bs.bs_points(quote.symbol, prices),
-            show_signals=config.show_bs_points,
-            show_open_line=config.show_open_line,
-            show_high_low=config.show_high_low,
-            show_fill=config.show_sparkline_fill,
-            grayscale=config.grayscale,
-        )
+        self.theme2_depth.set_signals(signals, show=config.show_bs_points)
 
     def update_depth(self, snapshot: DepthSnapshot | None) -> None:
         self._last_depth = snapshot
         self.sparkline.set_depth(snapshot)
         self.theme2_depth.set_depth(snapshot)
-        self.theme2_chart.set_depth(snapshot)
 
     def _set_dark(self, dark_fund: float | None, config: Config) -> None:
         text = fmt_money(dark_fund) if config.show_dark_trade and not config.compact else None
-        dark_color = configured_text_color(
+        dark_color = text_color(
+            config,
             config.dark_trade_color,
             direction_color(config, dark_fund),
         )

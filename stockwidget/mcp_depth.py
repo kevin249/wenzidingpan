@@ -14,7 +14,7 @@ from mcp.client.streamable_http import streamable_http_client
 from PySide6.QtCore import QThread, Signal
 
 from .config import Config
-from .market_hours import OFF_HOURS_WAKE_SECONDS, active_updates_allowed
+from .market_hours import OFF_HOURS_WAKE_SECONDS
 from .mcp_bs import record_volatility_bs
 from .mcp_notifications import SSE_TIMEOUT, _api_key, _bounded, _tool_payload
 from .symbols import classify
@@ -103,13 +103,26 @@ def _depth_mode(
     ask_count: int,
     level_count: int,
 ) -> str:
-    upstream_available = bool(payload.get("available")) and level_count > 0
+    upstream_available = (
+        bool(payload.get("available")) and level_count > 0
+        and payload.get("verified") is not False
+        and payload.get("service_ready") is not False
+    )
+    # FULL_DEPTH 是本地千档分布显示模式，不再要求 0559 与 054E 总量相等。
+    # 新服务明确声明分布可用；交易所全簿覆盖状态仍保留在服务端。
+    distribution = bool(
+        upstream_available
+        and payload.get("distribution_ready") is True
+        and payload.get("verified") is True
+        and payload.get("service_ready") is True
+        and payload.get("method") == "active_protocol_0559"
+    )
     full = bool(
         upstream_available
         and payload.get("full_depth_verified") is True
         and payload.get("depth_limit_reached") is not True
     )
-    if full:
+    if distribution or full:
         return DEPTH_FULL
     if not upstream_available:
         return DEPTH_NONE
@@ -308,6 +321,8 @@ class McpDepthPoller(QThread):
         self._wake = threading.Event()
         self._stopping = threading.Event()
         self._lock = threading.Lock()
+        # 显式刷新请求（启动首帧 / 手动刷新）：非 Debug 下唯一允许主动拉千档的入口。
+        self._explicit = True
         self._last_status = ""
         self._last_bs_fetch_at = 0.0
         self._depth_modes: dict[str, str] = {}
@@ -352,6 +367,9 @@ class McpDepthPoller(QThread):
             self._wake.set()
 
     def refresh_now(self) -> None:
+        """显式刷新：绕过非 Debug 休眠，立刻拉一次千档。"""
+        with self._lock:
+            self._explicit = True
         self._wake.set()
 
     def stop(self) -> None:
@@ -363,18 +381,28 @@ class McpDepthPoller(QThread):
             self._last_status = status
             self.status_changed.emit(status)
 
+    @staticmethod
+    def _should_poll(config: Config, explicit: bool) -> bool:
+        """本轮是否允许主动拉千档：显式意图优先，否则只有 Debug 模式才轮询。"""
+        return bool(explicit) or bool(config.debug_mode)
+
     def run(self) -> None:  # noqa: D102
         while not self._stopping.is_set():
             with self._lock:
                 config = self._config
+                explicit = self._explicit
+                self._explicit = False
+
             if not self._enabled(config):
                 self._emit_status("已关闭")
                 self._wake.wait(3600)
                 self._wake.clear()
                 continue
 
-            if not active_updates_allowed(config.debug_mode):
-                self._emit_status("已休眠 · 非交易时段仅保留 MCP 被动提醒")
+            # 非 Debug 模式全天不主动拉千档：与行情的「只被动接收」策略保持一致。
+            # 启动首帧与手动刷新属于显式意图，仍会放行一次。
+            if not McpDepthPoller._should_poll(config, explicit):
+                self._emit_status("已休眠 · MCP 千档被动模式，等待手动刷新")
                 self._wake.wait(OFF_HOURS_WAKE_SECONDS)
                 self._wake.clear()
                 continue

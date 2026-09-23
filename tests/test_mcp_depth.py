@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 import stockwidget.mcp_depth as mcp_depth
+from stockwidget.config import Config
 from stockwidget.mcp_depth import (
     DEPTH_FIVE,
     DEPTH_FULL,
@@ -64,6 +65,43 @@ def test_parse_verified_thousand_depth():
     assert snapshot.received_at == 123.0
     assert snapshot.bid_count == 20
     assert snapshot.ask_count == 20
+
+
+def test_distribution_without_cross_protocol_audit_does_not_fallback():
+    calls = []
+
+    class FakeSession:
+        async def call_tool(self, name, arguments=None):
+            calls.append(arguments['requested_depth'])
+            return _result({
+                'available': True, 'verified': True, 'service_ready': True,
+                'distribution_ready': True, 'method': 'active_protocol_0559',
+                'full_depth_verified': False, 'complete': False,
+                'depth_limit_reached': True, 'requested_depth': 1000,
+                'quantity_audit': None, 'quantity_comparison': 'disabled',
+                'levels': _levels(20),
+            })
+
+    cached, failures = None, 2
+    for _ in range(3):
+        snapshot = asyncio.run(mcp_depth._fetch_depth_with_fallback(FakeSession(), '603986'))
+        display, cached, failures = mcp_depth._merge_depth_state(snapshot, cached, failures)
+        assert display.available is True
+        assert display.bid_count == display.ask_count == 20
+        assert failures == 0
+        assert display.using_cached_full_depth is False
+    assert calls == [1000, 1000, 1000]
+
+
+@pytest.mark.parametrize('flag', ['verified', 'service_ready'])
+def test_invalid_distribution_is_not_displayed(flag):
+    payload = {
+        'available': True, 'verified': True, 'service_ready': True,
+        'distribution_ready': True, 'method': 'active_protocol_0559',
+        'requested_depth': 1000, 'levels': _levels(20),
+    }
+    payload[flag] = False
+    assert parse_depth_payload('603986', payload).available is False
 
 
 def test_parse_explicit_ten_level_is_available_but_not_thousand():
@@ -372,3 +410,23 @@ def test_depth_state_uses_fallback_only_before_any_thousand_cache_exists():
     assert display.depth_mode == DEPTH_TEN
     assert display.using_cached_full_depth is False
     assert display.full_depth_failures == 1
+
+
+def test_non_debug_stays_passive_until_an_explicit_request():
+    """非 Debug 模式全天不主动拉千档；启动首帧与手动刷新仍要放行一次。"""
+    config = Config(debug_mode=False)
+    assert mcp_depth.McpDepthPoller._should_poll(config, explicit=False) is False
+    assert mcp_depth.McpDepthPoller._should_poll(config, explicit=True) is True
+
+
+def test_debug_mode_polls_depth_around_the_clock():
+    config = Config(debug_mode=True)
+    assert mcp_depth.McpDepthPoller._should_poll(config, explicit=False) is True
+
+
+def test_depth_poller_starts_explicit_and_manual_refresh_rearms_it():
+    poller = mcp_depth.McpDepthPoller(Config(debug_mode=False, display_theme="theme2"))
+    assert poller._explicit is True
+    poller._explicit = False
+    poller.refresh_now()
+    assert poller._explicit is True

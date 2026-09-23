@@ -16,6 +16,10 @@ AFTERNOON_END = time(15, 0)
 # 非交易时段线程只做本地时间检查，不发网络请求；30 秒内自动跟上开盘。
 OFF_HOURS_WAKE_SECONDS = 30.0
 
+# 非 Debug 模式在活跃时段只保留的低频兜底心跳。
+# 常态由 MCP 推送事件驱动刷新，心跳仅用于发现「推送通道静默失效」这一盲区。
+FALLBACK_HEARTBEAT_SECONDS = 300.0
+
 
 def _shanghai_now(now: datetime | None = None) -> datetime:
     if now is None:
@@ -43,5 +47,9 @@ def is_a_share_active_time(now: datetime | None = None) -> bool:
 
 
 def active_updates_allowed(debug_mode: bool, now: datetime | None = None) -> bool:
-    """Debug 永远允许主动刷新；普通模式只允许 A 股活跃时段。"""
+    """循环轮询的许可窗口：Debug 全天，非 Debug 只允许 A 股活跃时段。
+
+    注意这只是「定时轮询」的许可，不代表用户显式动作也要被拦。启动首次请求、
+    手动刷新、MCP 推送触发的刷新都属于显式意图，绕过本判断直接执行。
+    """
     return bool(debug_mode) or is_a_share_active_time(now)

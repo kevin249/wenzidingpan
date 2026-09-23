@@ -29,6 +29,7 @@ from ..symbols import classify
 from .depth_ladder import DepthLadder
 from .marquee import Marquee
 from .quote_row import QuoteRow
+from .screen_click import ScreenClickWatcher
 from .theme import BORDER, MUTED, TEXT, make_font
 
 HANDLE_SIZE = 20
@@ -295,8 +296,15 @@ class TickerWindow(QWidget):
         self._config = config
         self._rows: dict[str, QuoteRow] = {}
         self._depths: dict[str, DepthSnapshot] = {}
-        self._theme2_expanded_symbol: str | None = None
-        self._theme2_collapsed_frame_width = 0
+        # 主题2 的展开是**全列表级**的：点任意一行价格＝把所有行隐藏的内容一起
+        # 显示出来（用户口径 2026-09-23），而不是只展开被点的那一只。
+        self._theme2_all_expanded = False
+        # 展开期间监听全屏幕点击（win32 低级钩子）——「点任意位置收起」的入口。
+        self._screen_click_watcher = ScreenClickWatcher(self)
+        # 钩子回调要快进快出，收起动作放回事件循环里做。
+        self._screen_click_watcher.clicked.connect(
+            self._on_screen_click, Qt.QueuedConnection
+        )
         self._transient_geometry_change = False
         self._scale = 1.0
         self._manual_size = False
@@ -494,11 +502,11 @@ class TickerWindow(QWidget):
         for row in self._rows.values():
             row.apply_config(scaled)
         if config.display_theme != "theme2":
-            self._theme2_expanded_symbol = None
-            self._theme2_collapsed_frame_width = 0
+            # 离开主题2 一律收起并停掉全屏点击监听（见 _set_theme2_all_expanded）。
+            self._theme2_all_expanded = False
+            self._screen_click_watcher.stop()
             for row in self._rows.values():
                 row.set_theme2_expanded(False, notify=False)
-                row.set_theme2_depth_width_override(None)
         if (
             theme_changed
             or previous.row_style != config.row_style
@@ -620,7 +628,10 @@ class TickerWindow(QWidget):
             if row is None:
                 row = QuoteRow(quote.symbol)
                 row.apply_config(scaled)
-                row.theme2_expansion_changed.connect(self._on_theme2_expansion_changed)
+                row.theme2_expand_requested.connect(self._on_theme2_expand_requested)
+                if self._theme2_all_expanded:
+                    # 全展开期间来了新行：跟上当前状态，别留一只折叠的。
+                    row.set_theme2_expanded(True, notify=False)
                 self._install_move_filters(row)
                 self._rows[quote.symbol] = row
             row.update_quote(quote, scaled, trends.get(quote.symbol))
@@ -691,75 +702,54 @@ class TickerWindow(QWidget):
         self._grid_shape = (rows, columns)
 
     def _theme2_target_width(self) -> int:
+        """主题2的自然宽度：展开与否都不追加，避免启动尺寸随点击跳动。"""
         if not self._rows:
             return max(150, round(self.scaled_config().font_size * 13))
-        width = max(row.theme2_target_width() for row in self._rows.values()) + 4
+        width = max(row.theme2_natural_width() for row in self._rows.values()) + 4
         if self._config.show_title_buttons:
             width = max(width, self.title_bar.sizeHint().width() + 2)
         return width
 
-    def _on_theme2_expansion_changed(self, symbol: str, expanded: bool) -> None:
+    def _on_theme2_expand_requested(self, symbol: str) -> None:
+        """点任意一行的价格 → 切换**全列表**展开态（用户口径 2026-09-23）。
+
+        行内不再自行切换、也不再看鼠标移出（移开不消失）；已展开时再点一次
+        价格同样算「点任意位置」，切回收起。
+        """
         if self._config.display_theme != "theme2":
             return
-        row = self._rows.get(symbol)
-        if row is None:
+        self._set_theme2_all_expanded(not self._theme2_all_expanded)
+
+    def _set_theme2_all_expanded(self, expanded: bool) -> None:
+        """统一驱动所有行的展开态，并在展开期间挂上全屏点击监听。"""
+        expanded = bool(expanded)
+        if expanded == self._theme2_all_expanded:
             return
-
-        mirror_left = self._config.theme2_side == "left"
-        fixed_edge = self.frameGeometry().left() if mirror_left else self.frameGeometry().right()
-
+        self._theme2_all_expanded = expanded
+        for row in self._rows.values():
+            row.set_theme2_expanded(expanded, notify=False)
         if expanded:
-            # 第一次展开时记住“用户当前真实外框宽度”，并冻结每一行当前盘口宽度。
-            # 之后切换展开股票时继续复用这份基准，绝不拿默认 sizeHint 把窗口缩回去。
-            if self._theme2_collapsed_frame_width <= 0:
-                self._theme2_collapsed_frame_width = self.width()
-                for other_symbol, other_row in self._rows.items():
-                    width = (
-                        other_row.theme2_collapsed_depth_width()
-                        if other_symbol == symbol
-                        else max(
-                            other_row.theme2_depth.width(),
-                            other_row.theme2_depth.sizeHint().width(),
-                        )
-                    )
-                    # 所有行只写入绘制冻结值，不做逐行 geometry invalidation。
-                    # 点击行已在 set_theme2_expanded() 进入 Preferred 布局前锁好 sizeHint。
-                    if other_symbol != symbol:
-                        other_row.set_theme2_depth_width_override(width)
-
-            self._theme2_expanded_symbol = symbol
-            for other_symbol, other_row in self._rows.items():
-                if other_symbol != symbol:
-                    other_row.set_theme2_expanded(False, notify=False)
-
-            # 只在点击前真实宽度上追加详情区；原盘口列和其它股票一像素都不动。
-            target = self._theme2_collapsed_frame_width + row.theme2_detail_extra_width()
-        elif self._theme2_expanded_symbol == symbol:
-            self._theme2_expanded_symbol = None
-            target = self._theme2_collapsed_frame_width or self.width()
+            self._screen_click_watcher.start()
         else:
+            self._screen_click_watcher.stop()
+
+    def _on_screen_click(self, global_pos: QPoint) -> None:
+        """屏幕任意位置的点击：落在价格热区上放过（交给行内切换），否则收起。"""
+        if not self._theme2_all_expanded:
             return
+        if self._press_on_theme2_price(global_pos):
+            return
+        self._set_theme2_all_expanded(False)
 
-        screen = self.screen()
-        if screen is not None:
-            target = min(target, screen.availableGeometry().width())
-
-        self._transient_geometry_change = True
-        try:
-            self.resize(target, self.height())
-            if mirror_left:
-                self.move(fixed_edge, self.y())
-            else:
-                self.move(fixed_edge - target + 1, self.y())
-            self._keep_on_screen()
-        finally:
-            self._transient_geometry_change = False
-
-        if not expanded:
-            # 外框先恢复，再解除盘口冻结；这样其它行不会在收起过程中先瞬间拉伸。
-            for other_row in self._rows.values():
-                other_row.set_theme2_depth_width_override(None)
-            self._theme2_collapsed_frame_width = 0
+    def _press_on_theme2_price(self, global_pos: QPoint) -> bool:
+        """点击是否落在某一行画布的「价格」热区（整列价格 + 居中文字块）。"""
+        for row in self._rows.values():
+            canvas = row.theme2_depth
+            local = canvas.mapFromGlobal(global_pos)
+            if 0 <= local.x() < canvas.width() and 0 <= local.y() < canvas.height():
+                if canvas._price_click_target(QPointF(local)):
+                    return True
+        return False
 
     # ------------------------------------------------------------ 尺寸
 
@@ -839,10 +829,6 @@ class TickerWindow(QWidget):
             self.setMinimumHeight(0)
             self.setMaximumHeight(16777215)
             if not self._rows:
-                return
-            if self._theme2_collapsed_frame_width > 0:
-                # 详情展开是临时几何态：行情刷新只更新数据，不能重新估宽让窗口跳动。
-                self._keep_on_screen()
                 return
             sample = next(iter(self._rows.values()))
             rows = len(self._rows)
@@ -1161,6 +1147,14 @@ class TickerWindow(QWidget):
 
     def hideEvent(self, event) -> None:  # noqa: N802 - Qt 命名
         self.handle.hide()
+        # 窗口藏起来就不再占着「全屏点击收起」的钩子（进程退出前 Windows 也会
+        # 自行回收，这里主动卸载是为了不悬空回调）；顺带把展开态收干净，
+        # 免得再显示时行内还留着展开的画布。
+        self._set_theme2_all_expanded(False)
+
+    def closeEvent(self, event) -> None:  # noqa: N802 - Qt 命名
+        self._screen_click_watcher.stop()
+        super().closeEvent(event)
 
     def _apply_scale(self) -> None:
         """窗口拉大拉小之后，按新的比例把字号和图高重新推一遍。"""

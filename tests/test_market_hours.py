@@ -2,6 +2,8 @@ from datetime import datetime, timezone
 
 from stockwidget.config import Store, sanitize
 from stockwidget.market_hours import (
+    FALLBACK_HEARTBEAT_SECONDS,
+    OFF_HOURS_WAKE_SECONDS,
     SHANGHAI_TZ,
     active_updates_allowed,
     is_a_share_active_time,
@@ -44,3 +46,9 @@ def test_debug_mode_defaults_off_sanitizes_and_persists(tmp_path):
     saved = store.update({"debug_mode": True})
     assert saved.debug_mode is True
     assert Store(store.path).get().debug_mode is True
+
+
+def test_fallback_heartbeat_is_slow_enough_to_be_a_real_fallback():
+    """非 Debug 的兜底心跳只为发现推送静默失效，必须比纯本地时间探测稀疏得多。"""
+    assert FALLBACK_HEARTBEAT_SECONDS == 300.0
+    assert FALLBACK_HEARTBEAT_SECONDS > OFF_HOURS_WAKE_SECONDS

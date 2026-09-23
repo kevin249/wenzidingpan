@@ -9,8 +9,9 @@ from __future__ import annotations
 import math
 
 import pytest
-from PySide6.QtGui import QColor
-from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QPoint
+from PySide6.QtGui import QColor, QImage, QRegion
+from PySide6.QtWidgets import QApplication, QWidget
 
 from stockwidget.mcp_depth import DepthLevel, DepthSnapshot
 from stockwidget.ui.sparkline import (
@@ -80,6 +81,19 @@ def _line_extent(image, x: int, color: QColor):
         and abs(image.pixelColor(x, y).blue() - color.blue()) < TOLERANCE
     ]
     return (min(rows), max(rows)) if rows else None
+
+
+@pytest.mark.parametrize('side', ['B', 'S'])
+def test_base_signal_has_same_direction_and_color_as_confirmed(app, side):
+    widget = Sparkline()
+    widget.set_series([10., 11., 10.5])
+    widget.resize(WIDTH, HEIGHT)
+    images = []
+    for signal in (side, side + '1'):
+        widget.set_annotations(None, [(1, signal)], show_signals=True,
+            show_open_line=False, show_high_low=False, show_fill=False, grayscale=False)
+        images.append(widget.grab().toImage())
+    assert images[0] == images[1]
 
 
 def test_buy_lines_rise_from_bottom_and_stop_at_curve(rendered):
@@ -291,3 +305,109 @@ def test_volume_profile_does_not_create_bottom_volume_panel(app):
     assert widget.height() == HEIGHT
     assert widget._show_volume_profile is True
     assert len(widget._volumes) == len(widget._series)
+
+
+# ---------------------------------------------------------------- 灰度显示
+
+# 深底铺在控件下面：走势图自己不带背景，用 Qt 调色板底色会冲淡半透明元素。
+BACKDROP = QColor(24, 27, 34)
+# 底色自身的通道差就有 10（24/27/34），所以「是否还有彩色」的阈值必须高于它。
+CHROMA_TOLERANCE = 14
+
+
+def _sparkline_widget(level: int, *, grayscale: bool = True) -> Sparkline:
+    """把走势图上所有**带颜色**的元素一次点亮：曲线 / 量价分布 / 千档买卖 / B·S / 开盘线。
+
+    只要有一个站点漏了灰度转换，图里就会留下彩色像素。
+    """
+    from stockwidget.intraday import calculate_bs_points
+
+    prices = [10 + 0.9 * math.sin(i / 14) + 0.25 * math.sin(i / 3.3) for i in range(240)]
+    signals = calculate_bs_points(prices)
+    assert signals, "构造的曲线应当能产生 B/S 点"
+
+    levels = tuple(
+        [DepthLevel("bid", 9.78 + index * 0.03, 100 + index * 80) for index in range(6)]
+        + [DepthLevel("ask", 10.02 + index * 0.03, 120 + index * 70) for index in range(6)]
+    )
+
+    widget = Sparkline()
+    widget.set_series(prices)
+    widget.set_volume_profile([100 + (index % 17) * 30 for index in range(len(prices))], enabled=True)
+    widget.set_prev_close(10.0)
+    widget.set_color(CURVE_COLOR)  # 故意给曲线一个绿色：灰度模式必须吃掉它
+    widget.set_annotations(
+        10.0,
+        signals,
+        show_signals=True,
+        show_open_line=True,
+        show_high_low=True,
+        show_fill=True,
+        grayscale=grayscale,
+        grayscale_level=level,
+    )
+    widget.set_depth(
+        DepthSnapshot(
+            symbol="600000",
+            levels=levels,
+            received_at=1.0,
+            full_depth=True,
+            available=True,
+            bid_count=6,
+            ask_count=6,
+        )
+    )
+    widget.resize(WIDTH, HEIGHT)
+    return widget
+
+
+def _render_on_backdrop(widget: Sparkline) -> QImage:
+    """先铺深底再以 DrawChildren 渲染（默认 flags 会盖一层 Qt 调色板浅灰）。"""
+    image = QImage(widget.size(), QImage.Format_ARGB32)
+    image.fill(BACKDROP)
+    widget.render(image, QPoint(0, 0), QRegion(), QWidget.DrawChildren)
+    return image
+
+
+def _pixel_counts(image: QImage) -> tuple[int, float]:
+    """返回 (彩色像素数, 全图平均亮度)。"""
+    colored = 0
+    total = 0.0
+    for y in range(image.height()):
+        for x in range(image.width()):
+            pixel = image.pixelColor(x, y)
+            rgb = (pixel.red(), pixel.green(), pixel.blue())
+            if max(rgb) - min(rgb) > CHROMA_TOLERANCE:
+                colored += 1
+            total += sum(rgb) / 3.0
+    return colored, total / max(1, image.width() * image.height())
+
+
+def _pixels_near(image: QImage, level: int, tolerance: int = 6) -> int:
+    return sum(
+        1
+        for y in range(image.height())
+        for x in range(image.width())
+        if all(abs(channel - level) <= tolerance for channel in image.pixelColor(x, y).getRgb()[:3])
+    )
+
+
+def test_grayscale_collapses_every_colored_element_into_one_configurable_gray(app):
+    """灰度显示时不再按原色分档：整张图只剩配置的那一个灰阶。"""
+    brightness = {}
+    for level in (90, 230):
+        image = _render_on_backdrop(_sparkline_widget(level))
+        colored, mean = _pixel_counts(image)
+        assert colored == 0, f"灰阶 {level} 下仍有彩色像素"
+        # 曲线是满不透明画的，所以图里应当能找到配置的那个灰阶本身。
+        assert _pixels_near(image, level) > 20, f"没画出灰阶 {level}"
+        brightness[level] = mean
+
+    # 灰阶值真的参与绘制：调暗了整张图也该更暗。
+    assert brightness[90] < brightness[230]
+
+
+def test_colored_elements_still_show_up_while_grayscale_is_off(app):
+    """反证：同样的元素在非灰度下确实带彩色，上面的断言才不是空转。"""
+    colored, _mean = _pixel_counts(_render_on_backdrop(_sparkline_widget(150, grayscale=False)))
+    assert colored > 0

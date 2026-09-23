@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 
 from PySide6.QtCore import QThread, Signal
 
@@ -12,7 +13,11 @@ from . import providers
 from .config import Config
 from .darktrade import DarkTradeClient
 from .intraday import IntradayClient, Trend
-from .market_hours import OFF_HOURS_WAKE_SECONDS, active_updates_allowed
+from .market_hours import (
+    FALLBACK_HEARTBEAT_SECONDS,
+    OFF_HOURS_WAKE_SECONDS,
+    active_updates_allowed,
+)
 from .providers.base import Quote
 from .symbols import classify
 
@@ -47,6 +52,8 @@ class Poller(QThread):
         self._wake = threading.Event()
         self._stopping = threading.Event()
         self._lock = threading.Lock()
+        # 显式刷新请求（启动 / 手动 / MCP 推送 / 取数配置变更）：绕过时段限制拉一次。
+        self._explicit = True
         self._quote_cache: list[Quote] = []
         self._quote_cache_key: tuple[str, tuple[str, ...], bool] | None = None
         self._quote_fetched_at = 0.0
@@ -57,14 +64,39 @@ class Poller(QThread):
 
     # ------------------------------------------------------------ 控制
 
+    @staticmethod
+    def _fetch_identity(config: Config) -> tuple[object, ...]:
+        """影响取数的设置：变化时必须立刻按新配置重拉，否则界面会停留在旧数据。"""
+        return (
+            config.provider,
+            tuple(config.symbols),
+            config.refresh_seconds,
+            config.show_sparkline,
+            config.intraday_chart,
+            config.display_theme,
+            config.show_dark_trade,
+            config.debug_mode,
+        )
+
     def apply_config(self, config: Config) -> None:
         with self._lock:
+            previous = self._config
             self._config = config
-        self.refresh_now()
+        if self._fetch_identity(previous) != self._fetch_identity(config):
+            self.refresh_now()
+            return
+        # 纯展示类变更（置顶、灰度与灰度值、字号…）只需让循环重算间隔，不额外发起请求。
+        self._wake.set()
 
     def refresh_now(self) -> None:
-        # 手动刷新既要立刻拉一次普通行情，也要绕过 1 秒走势图缓存。
+        """显式刷新：绕过 Debug / 休市限制，立刻拉一次行情与分时。
+
+        调用方包括启动首帧、手动刷新、MCP 推送与取数相关配置变更；这四类都属于
+        显式意图，不受「非 Debug 只被动接收」的约束。走势图缓存一并清掉。
+        """
         self._intraday.reset_cache()
+        with self._lock:
+            self._explicit = True
         self._wake.set()
 
     def stop(self) -> None:
@@ -79,26 +111,46 @@ class Poller(QThread):
 
     @staticmethod
     def _loop_interval(config: Config) -> float:
-        """主题2的展开K线也要求秒级；普通报价仍按 refresh_seconds 自己节流。"""
+        """Debug 全速轮询；非 Debug 只在活跃时段保留低频兜底心跳。
+
+        主题2的展开K线在 Debug 下也要求秒级；普通报价仍按 refresh_seconds 自己节流。
+        """
+        if not config.debug_mode:
+            # 非 Debug 常态由 MCP 推送驱动，心跳只为兜住「推送通道静默失效」。
+            return FALLBACK_HEARTBEAT_SECONDS
         if Poller._chart_enabled(config):
             return CHART_REFRESH_SECONDS
         return float(config.refresh_seconds)
+
+    @staticmethod
+    def _should_poll(
+        config: Config, explicit: bool, now: datetime | None = None
+    ) -> bool:
+        """本轮是否允许发起主动请求。
+
+        显式意图（启动首帧 / 手动刷新 / MCP 推送 / 取数配置变更）优先放行；
+        其余情况只有 Debug 全时段或非 Debug 的活跃时段才轮询。
+        """
+        return bool(explicit) or active_updates_allowed(config.debug_mode, now)
 
     def run(self) -> None:  # noqa: D102 - QThread 入口
         force_quotes = True
         while not self._stopping.is_set():
             with self._lock:
                 config = self._config
+                explicit = self._explicit
+                self._explicit = False
 
-            # 非 Debug 模式下，非交易时段不做任何主动行情 / K线请求。
-            # 线程只低频醒来检查是否进入交易窗口；MCP 通知由独立订阅线程继续接收。
-            if not active_updates_allowed(config.debug_mode):
+            # 非 Debug 且不在活跃时段：不发任何主动请求，只做本地时间检查。
+            # 期间到达的手动刷新 / MCP 推送会置位 _explicit，下一轮立即放行一次。
+            if not Poller._should_poll(config, explicit):
                 self._wake.wait(OFF_HOURS_WAKE_SECONDS)
                 self._wake.clear()
-                force_quotes = False
+                # 出窗口后的第一帧要拿全量数据，不沿用上一轮的缓存判定。
+                force_quotes = True
                 continue
 
-            self.snapshot_ready.emit(self._tick(config, force_quotes=force_quotes))
+            self.snapshot_ready.emit(self._tick(config, force_quotes=force_quotes or explicit))
             woke = self._wake.wait(self._loop_interval(config))
             self._wake.clear()
             force_quotes = woke

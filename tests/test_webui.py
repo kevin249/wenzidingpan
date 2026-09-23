@@ -48,10 +48,10 @@ def test_settings_page_renders(server):
     assert "显示主题" in body
     assert "主题 2 · 千档竖列" in body
     assert "主题 2 停靠侧" in body
-    assert "靠左 · 镜像向右展开" in body
-    assert "主题 2 挂单宽度" in body
+    assert "靠左 · 镜像" in body
+    assert "主题 2 千档柱长度" in body
     assert 'id="theme2_depth_width" name="theme2_depth_width" type="number"' in body
-    assert "主题 2 弹出框字号" in body
+    assert "主题 2 代码与图注字号" in body
     assert 'id="theme2_popup_font_size" name="theme2_popup_font_size" type="number"' in body
     assert "行内样式" in body
     assert "左中右" in body
@@ -128,6 +128,31 @@ def test_write_config_accepts_opacity_below_20_percent(server):
     # 页面回填的百分比也要跟着走到 10%，而不是停在旧下限。
     body = client.get(f"/?token={server.token}").get_data(as_text=True)
     assert 'value="0.1"' in body
+
+
+def test_grayscale_level_slider_uses_config_bounds_and_persists(server):
+    """灰度值滑块：上下限只能来自 config 常量，改完立刻下发（越界由后端夹取）。"""
+    from stockwidget.config import GRAYSCALE_LEVEL_MAX, GRAYSCALE_LEVEL_MIN
+
+    body = _client(server).get(f"/?token={server.token}").get_data(as_text=True)
+    assert (
+        'id="grayscale_level" name="grayscale_level" type="range" '
+        f'min="{GRAYSCALE_LEVEL_MIN}"' in body
+    )
+    assert f'max="{GRAYSCALE_LEVEL_MAX}"' in body
+    assert "灰度值" in body
+
+    client = _client(server)
+    config = client.post(
+        f"/api/config?token={server.token}",
+        json={"grayscale": True, "grayscale_level": 999},
+    ).get_json()["config"]
+    assert config["grayscale"] is True
+    assert config["grayscale_level"] == GRAYSCALE_LEVEL_MAX
+    assert server.applied[-1].grayscale_level == GRAYSCALE_LEVEL_MAX
+
+    body = client.get(f"/?token={server.token}").get_data(as_text=True)
+    assert f'value="{GRAYSCALE_LEVEL_MAX}"' in body
 
 
 def test_read_config_returns_providers(server):

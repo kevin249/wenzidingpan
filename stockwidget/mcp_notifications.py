@@ -19,7 +19,6 @@ from mcp.shared.exceptions import MCPDeprecationWarning
 from PySide6.QtCore import QThread, Signal
 
 from .config import Config
-from .market_hours import active_updates_allowed
 from .mcp_bs import record_notification
 
 MCP_API_KEY_ENV = "GUPIAO_MCP_API_KEY"
@@ -200,9 +199,10 @@ class McpNotificationListener(QThread):
             self.status_changed.emit(status)
 
     def _passive_only(self) -> bool:
+        """非 Debug 模式全程被动订阅：只等服务端推送，不再定时主动读资源兜底。"""
         with self._lock:
             config = self._config
-        return not active_updates_allowed(config.debug_mode)
+        return not config.debug_mode
 
     def run(self) -> None:  # noqa: D102
         while not self._stopping.is_set():
@@ -337,9 +337,9 @@ class McpNotificationListener(QThread):
                 continue
             passive_check = getattr(self, "_passive_only", None)
             if callable(passive_check) and passive_check():
-                # 非交易时段保持 SSE/resource subscription 长连接，只响应服务端推送；
-                # 不再每 60 秒主动 read_resource，降低收盘后的 MCP 和服务端开销。
-                self._emit_status("已连接 · 非交易时段被动订阅")
+                # 非 Debug 模式保持 SSE/resource subscription 长连接，只响应服务端推送；
+                # 不再每 60 秒主动 read_resource，常态下的开销只剩心跳帧。
+                self._emit_status("已连接 · 被动订阅（非 Debug）")
                 continue
             await self._deliver_resource(session, uri, cancel_event)
 
@@ -348,7 +348,7 @@ class McpNotificationListener(QThread):
             self._emit_status(f"已连接 · 警告：MCP 消息缺失 {missing} 条")
             return
         if self._passive_only():
-            self._emit_status("已连接 · 非交易时段被动订阅")
+            self._emit_status("已连接 · 被动订阅（非 Debug）")
             return
         self._emit_status("已连接 · 实时订阅")
 

@@ -13,7 +13,9 @@ from PySide6.QtCore import QPointF, QRectF, QSize, Qt
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QWidget
 
+from ..config import DEFAULT_GRAYSCALE_LEVEL
 from ..mcp_depth import DEPTH_FIVE, DEPTH_FULL, DEPTH_TEN, DepthSnapshot
+from .theme import display_color
 
 SAMPLE_LEN = 40  # 回退模式下保留的采样点数
 FILL_ALPHA = 38  # 面积填充的透明度，压得比曲线淡很多
@@ -23,6 +25,8 @@ SELL_COLOR = QColor(59, 130, 246)
 DEPTH_BID_COLOR = QColor(240, 79, 90)
 DEPTH_ASK_COLOR = QColor(34, 197, 94)
 TRADED_VOLUME_COLOR = QColor(148, 163, 184)
+OPEN_LINE_COLOR = QColor(245, 158, 11)
+ANNOTATION_COLOR = QColor(185, 190, 202)  # 「成交量 / 十档」这类小字标注
 DEPTH_STALE_SECONDS = 120
 
 
@@ -42,6 +46,7 @@ class Sparkline(QWidget):
         self._show_high_low = True
         self._show_fill = False
         self._grayscale = False
+        self._grayscale_level = DEFAULT_GRAYSCALE_LEVEL
         self._color = QColor(154, 163, 184)
         self._preferred_height = 0
         self._annotation_font = QFont()
@@ -126,6 +131,7 @@ class Sparkline(QWidget):
         show_high_low: bool,
         show_fill: bool,
         grayscale: bool,
+        grayscale_level: int = DEFAULT_GRAYSCALE_LEVEL,
     ) -> None:
         state = (
             open_price,
@@ -135,9 +141,11 @@ class Sparkline(QWidget):
             show_high_low,
             show_fill,
             grayscale,
+            grayscale_level,
         )
         old = (self._open_price, self._signals, self._show_signals, self._show_open_line,
-               self._show_high_low, self._show_fill, self._grayscale)
+               self._show_high_low, self._show_fill, self._grayscale,
+               self._grayscale_level)
         if state != old:
             self._open_price = open_price
             self._signals = list(signals)
@@ -146,6 +154,7 @@ class Sparkline(QWidget):
             self._show_high_low = show_high_low
             self._show_fill = show_fill
             self._grayscale = grayscale
+            self._grayscale_level = grayscale_level
             self.update()
 
     def set_annotation_options(
@@ -156,6 +165,7 @@ class Sparkline(QWidget):
         show_high_low: bool,
         show_fill: bool,
         grayscale: bool,
+        grayscale_level: int = DEFAULT_GRAYSCALE_LEVEL,
     ) -> None:
         """只更新显示开关，供 WebUI 配置即时生效，不必等待下一次行情。"""
         self.set_annotations(
@@ -166,6 +176,7 @@ class Sparkline(QWidget):
             show_high_low=show_high_low,
             show_fill=show_fill,
             grayscale=grayscale,
+            grayscale_level=grayscale_level,
         )
 
     def clear(self) -> None:
@@ -183,6 +194,15 @@ class Sparkline(QWidget):
         return self._series or list(self._samples)
 
     # ------------------------------------------------------------ 绘制
+
+    def _paint_color(self, normal: QColor, alpha: int | None = None) -> QColor:
+        """本控件所有绘制颜色都从这里取：灰度模式统一成一个灰阶，层次只靠 alpha。"""
+        return display_color(
+            normal,
+            grayscale=self._grayscale,
+            level=self._grayscale_level,
+            alpha=alpha,
+        )
 
     def _side_profile_width(self, width: int) -> float:
         """成交量与挂单使用完全相同的左右侧栏宽度。"""
@@ -213,8 +233,7 @@ class Sparkline(QWidget):
             return
 
         maximum = max(buckets.values()) or 1.0
-        color = QColor(135, 135, 135) if self._grayscale else QColor(TRADED_VOLUME_COLOR)
-        color.setAlpha(82)
+        color = self._paint_color(TRADED_VOLUME_COLOR, 82)
 
         painter.save()
         painter.setPen(Qt.NoPen)
@@ -224,7 +243,7 @@ class Sparkline(QWidget):
             painter.fillRect(QRectF(0.0, row - 0.7, bar_width, 1.4), color)
 
         painter.setFont(self._annotation_font)
-        painter.setPen(QColor(145, 145, 145) if self._grayscale else QColor(185, 190, 202))
+        painter.setPen(self._paint_color(ANNOTATION_COLOR))
         painter.drawText(
             QRectF(2, 1, max(0.0, profile_width - 4), max(12, height / 4)),
             Qt.AlignLeft | Qt.AlignTop,
@@ -264,11 +283,10 @@ class Sparkline(QWidget):
         painter.save()
         for (row, side), volume in buckets.items():
             bar_width = max(1.0, max_width * volume / maximum)
-            if self._grayscale:
-                color = QColor(155, 155, 155) if side == "bid" else QColor(105, 105, 105)
-            else:
-                color = QColor(DEPTH_BID_COLOR if side == "bid" else DEPTH_ASK_COLOR)
-            color.setAlpha(88)
+            # 灰度模式下买卖盘不再是红 / 绿两色，而是同一个灰：方向靠左右位置区分。
+            color = self._paint_color(
+                DEPTH_BID_COLOR if side == "bid" else DEPTH_ASK_COLOR, 88
+            )
             painter.fillRect(QRectF(right - bar_width, row - 0.7, bar_width, 1.4), color)
 
         label = {
@@ -282,7 +300,7 @@ class Sparkline(QWidget):
             label += "·延迟"
         label += f" {snapshot.bid_count}/{snapshot.ask_count}"
         painter.setFont(self._annotation_font)
-        painter.setPen(QColor(145, 145, 145) if self._grayscale else QColor(185, 190, 202))
+        painter.setPen(self._paint_color(ANNOTATION_COLOR))
         painter.drawText(
             QRectF(max(0.0, width - max_width - 2), 1, max_width, max(12, height / 4)),
             Qt.AlignRight | Qt.AlignTop,
@@ -324,18 +342,20 @@ class Sparkline(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
 
+        # 曲线色（＝设置里的股价涨跌色）在这里过一次灰度：外部就算塞了彩色进来，
+        # 灰度模式下画出来也只有一个灰。
+        curve_color = self._paint_color(self._color)
+
         # B/S 波动转折：B 红线从底部向上画到曲线，S 蓝线从顶部向下画到曲线，
         # 两者都停在转折点上，不穿过曲线。
         if self._show_signals:
             for index, kind in self._signals:
                 if 0 <= index < len(points):
-                    color = QColor(145, 145, 145) if self._grayscale else (
-                        BUY_COLOR if kind == "B" else SELL_COLOR
-                    )
+                    color = self._paint_color(BUY_COLOR if kind.startswith("B") else SELL_COLOR)
                     painter.setPen(QPen(color, 1.2))
                     x = x_of(index)
                     y = y_of(points[index])
-                    start = height - 1 if kind == "B" else 1
+                    start = height - 1 if kind.startswith("B") else 1
                     painter.drawLine(QPointF(x, start), QPointF(x, y))
 
         curve = QPainterPath()
@@ -349,9 +369,7 @@ class Sparkline(QWidget):
             area.lineTo(QPointF(x_of(len(points) - 1), height))
             area.lineTo(QPointF(x_of(0), height))
             area.closeSubpath()
-            fill = QColor(self._color)
-            fill.setAlpha(FILL_ALPHA)
-            painter.fillPath(area, fill)
+            painter.fillPath(area, self._paint_color(self._color, FILL_ALPHA))
 
         # 主题2展开图：左侧历史成交量分布，右侧实时挂单分布，二者等宽；K线居中。
         if self._show_volume_profile:
@@ -360,9 +378,7 @@ class Sparkline(QWidget):
 
         # 昨收基准线
         if self._prev_close is not None:
-            baseline = QColor(self._color)
-            baseline.setAlpha(BASELINE_ALPHA)
-            pen = QPen(baseline, 1, Qt.DashLine)
+            pen = QPen(self._paint_color(self._color, BASELINE_ALPHA), 1, Qt.DashLine)
             pen.setDashPattern([4, 3])
             painter.setPen(pen)
             y = y_of(self._prev_close)
@@ -370,13 +386,13 @@ class Sparkline(QWidget):
 
         # 开盘价使用区别于昨收的点虚线。
         if self._show_open_line and self._open_price is not None:
-            opening = QColor(145, 145, 145) if self._grayscale else QColor(245, 158, 11)
-            opening.setAlpha(BASELINE_ALPHA)
-            painter.setPen(QPen(opening, 1, Qt.DotLine))
+            painter.setPen(
+                QPen(self._paint_color(OPEN_LINE_COLOR, BASELINE_ALPHA), 1, Qt.DotLine)
+            )
             y = y_of(self._open_price)
             painter.drawLine(QPointF(chart_left, y), QPointF(chart_right, y))
 
-        pen = QPen(self._color, 1.4)
+        pen = QPen(curve_color, 1.4)
         pen.setJoinStyle(Qt.RoundJoin)
         pen.setCapStyle(Qt.RoundCap)
         painter.setPen(pen)
@@ -384,7 +400,7 @@ class Sparkline(QWidget):
 
         if self._show_high_low:
             painter.setFont(self._annotation_font)
-            painter.setPen(QColor(150, 150, 150) if self._grayscale else self._color)
+            painter.setPen(curve_color)
             label_x = round(chart_left + 2)
             painter.drawText(label_x, painter.fontMetrics().ascent() + 1, f"{price_high:.2f}")
             painter.drawText(label_x, height - 2, f"{price_low:.2f}")

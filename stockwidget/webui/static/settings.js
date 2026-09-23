@@ -48,9 +48,11 @@ const NUMBERS = [
   'refresh_seconds',
   'opacity',
   'background_alpha',
+  'grayscale_level',
 ];
 const TEXTS = [
   'provider',
+  'kline_source',
   'display_theme',
   'theme2_side',
   'layout',
@@ -236,6 +238,7 @@ function fill(config) {
   }
   el('opacity-value').textContent = `${Math.round(config.opacity * 100)}%`;
   el('background_alpha-value').textContent = `${Math.round(config.background_alpha * 100)}%`;
+  el('grayscale_level-value').textContent = config.grayscale_level;
   refreshHints();
   renderWatchlist();
 }
@@ -257,6 +260,8 @@ function refreshHints() {
   el('theme2_side').disabled = !theme2;
   el('theme2_depth_width').disabled = !theme2;
   el('theme2_popup_font_size').disabled = !theme2;
+  // 灰度值只在开启「灰度显示」时才参与绘制，没开就没什么可调的。
+  el('grayscale_level').disabled = !el('grayscale').checked;
   el('layout').disabled = theme2;
   for (const id of ['visible_rows', 'row_style', 'chart_height']) {
     el(id).disabled = single || theme2;
@@ -269,8 +274,8 @@ function refreshHints() {
 
   el('display-theme-hint').textContent = theme2
     ? mirrorLeft
-      ? '主题 2 靠左镜像：最左是价格轴，挂单从轴向右；股价/涨跌幅在最右，股价中线用虚线指向买卖交界。点击股价后固定左边缘向右展开。主题 1/2 的显示参数和窗口尺寸分别保存。'
-      : '主题 2 靠右：股价/涨跌幅在最左，股价中线用虚线指向买卖交界；挂单在右侧并以最右价格轴为 0 向左延伸。点击股价后固定右边缘向左展开。主题 1/2 的显示参数和窗口尺寸分别保存。'
+      ? '主题 2 靠左：股价列贴最左，当前价虚线横贯整行；千档从股价轴向右长，最右是成交量轴。名字 / 代码 / 高低价只在点击展开后显示，收起时价格上方只留暗盘。顶栏字号与颜色跟主题 1 用同一套设置（股票名称 / 现价 / 涨跌幅 / 暗盘 / 高低价），股票代码与图注用「主题 2 代码与图注字号」。盘口柱长只由下面的宽度决定——点击展开 K 线时柱长一个像素都不变，且两侧的柱都不越过行的水平中点。展开后 K 线横轴固定为一个完整交易日（9:30→15:00，午休压缩），每半小时一条竖虚线，首末两条正好压在两根竖轴上。'
+      : '主题 2 靠右：股价列贴最右，当前价虚线横贯整行；千档从股价轴向左长，最左是成交量轴。名字 / 代码 / 高低价只在点击展开后显示，收起时价格上方只留暗盘。顶栏字号与颜色跟主题 1 用同一套设置（股票名称 / 现价 / 涨跌幅 / 暗盘 / 高低价），股票代码与图注用「主题 2 代码与图注字号」。盘口柱长只由下面的宽度决定——点击展开 K 线时柱长一个像素都不变，且两侧的柱都不越过行的水平中点。展开后 K 线横轴固定为一个完整交易日（9:30→15:00，午休压缩），每半小时一条竖虚线，首末两条正好压在两根竖轴上。'
     : '主题 1：保持原有经典网格/单行滚动显示。主题 1/2 的显示参数和窗口尺寸分别保存，切换互不覆盖。';
 
   el('row_style-hint').textContent = theme2
@@ -338,7 +343,7 @@ async function switchTheme() {
 /* ------------------------------------------------------------ 事件 */
 
 // 开关和下拉改完即时生效；字号短延迟自动保存，避免改完直接退出时丢失。
-for (const id of [...CHECKBOXES, 'provider', 'theme2_side', 'layout', 'row_style', 'color_scheme', 'background_color']) {
+for (const id of [...CHECKBOXES, 'provider', 'kline_source', 'theme2_side', 'layout', 'row_style', 'color_scheme', 'background_color']) {
   el(id).addEventListener('change', () => apply('已应用'));
 }
 el('display_theme').addEventListener('change', switchTheme);
@@ -355,6 +360,11 @@ for (const [id, valueId] of [['opacity', 'opacity-value'], ['background_alpha', 
   });
   el(id).addEventListener('change', () => apply('已应用'));
 }
+// 灰度值是 0–255 的灰阶，直接显示原值，不走上面的百分比格式。
+el('grayscale_level').addEventListener('input', () => {
+  el('grayscale_level-value').textContent = el('grayscale_level').value;
+});
+el('grayscale_level').addEventListener('change', () => apply('已应用'));
 for (const id of FONT_SIZES) {
   el(id).addEventListener('input', () => {
     clearTimeout(fontApplyTimer);

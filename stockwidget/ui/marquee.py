@@ -10,7 +10,7 @@ from PySide6.QtWidgets import QWidget
 
 from ..config import Config
 from ..providers.base import Quote
-from .theme import MUTED, configured_text_color, direction_color, fmt_money, fmt_price, make_font
+from .theme import MUTED, direction_color, fmt_money, fmt_price, make_font, text_color
 
 SPEED_PX_PER_SEC = 40
 GAP_PX = 28
@@ -68,7 +68,7 @@ class Marquee(QWidget):
                 segments.append(
                     Segment(
                         quote.name or quote.symbol,
-                        configured_text_color(config.stock_name_color, color),
+                        text_color(config, config.stock_name_color, color),
                         config.stock_name_font_size,
                         config.stock_name_bold,
                     )
@@ -82,7 +82,7 @@ class Marquee(QWidget):
                     segments.append(
                         Segment(
                             fmt_price(quote.price),
-                            configured_text_color(config.stock_price_color, color),
+                            text_color(config, config.stock_price_color, color),
                             config.stock_price_font_size,
                             config.stock_price_bold,
                         )
@@ -96,13 +96,14 @@ class Marquee(QWidget):
                     segments.append(
                         Segment(
                             percent,
-                            configured_text_color(config.stock_percent_color, color),
+                            text_color(config, config.stock_percent_color, color),
                             config.stock_percent_font_size,
                             config.stock_percent_bold,
                         )
                     )
                 if config.show_dark_trade and (text := fmt_money(quote.dark_fund)):
-                    dark_color = configured_text_color(
+                    dark_color = text_color(
+                        config,
                         config.dark_trade_color,
                         direction_color(config, quote.dark_fund),
                     )

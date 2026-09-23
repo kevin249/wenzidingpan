@@ -10,13 +10,14 @@ import pytest
 
 try:
     from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, QSize, Qt
-    from PySide6.QtGui import QImage
+    from PySide6.QtGui import QImage, QMouseEvent
     from PySide6.QtWidgets import QApplication
 except (ImportError, OSError) as error:
     pytest.skip(f"Qt 运行库不可用：{error}", allow_module_level=True)
 
 from stockwidget.config import Config
 from stockwidget.intraday import Trend
+from stockwidget.ui.depth_ladder import DEPTH_SHARE_MIN, OUTER_PAD
 from stockwidget.ui.marquee import Marquee
 from stockwidget.ui.quote_row import QuoteRow
 from stockwidget.ui.sparkline import Sparkline
@@ -26,6 +27,35 @@ from stockwidget.ui.window import ResizeGrip, TickerWindow
 @pytest.fixture(scope="module")
 def app():
     return QApplication.instance() or QApplication([])
+
+
+class _StubClickWatcher:
+    """ScreenClickWatcher 的测试替身：不装系统钩子、不吃真鼠标输入。
+
+    走窗口层展开的用例一律先换上它——真 watcher 在 win32 上会装
+    WH_MOUSE_LL，测试机器上用户的真实点击会顺着钩子把展开态收掉，用例就悬了。
+    """
+
+    def __init__(self):
+        self.started = 0
+        self.stopped = 0
+
+    def start(self):
+        self.started += 1
+
+    def stop(self):
+        self.stopped += 1
+
+
+def _install_stub_watcher(window) -> _StubClickWatcher:
+    stub = _StubClickWatcher()
+    window._screen_click_watcher = stub
+    return stub
+
+
+def _click_away(window) -> None:
+    """模拟「点屏幕任意位置」：给一个必然不在任何价格热区上的全局坐标。"""
+    window._on_screen_click(QPoint(-9_999, -9_999))
 
 
 def test_quote_row_stacks_price_and_percent_in_two_rows(app):
@@ -50,7 +80,7 @@ def test_quote_row_stacks_price_and_percent_in_two_rows(app):
     assert row.price_label.styleSheet() != black
 
 
-def test_theme2_is_vertical_and_click_expands_left_detail(app):
+def test_theme2_click_expands_chart_inside_the_row_without_touching_the_frame(app):
     from stockwidget.providers.base import Quote
 
     config = Config(display_theme="theme2", show_sparkline=False)
@@ -78,25 +108,37 @@ def test_theme2_is_vertical_and_click_expands_left_detail(app):
 
     assert window._grid_size(3) == (3, 1)
     row = window._rows["600519"]
+    assert row.theme2_header.isVisible() is True
     assert row.theme2_depth.isVisible() is True
-    assert row.theme2_detail.isVisible() is False
     assert row.name_label.isVisible() is False
+    assert row.theme2_depth.expanded is False
 
-    before_width = window.width()
-    before_right = window.frameGeometry().right()
+    watcher = _install_stub_watcher(window)
+    before = window.geometry()
     row.theme2_depth.price_clicked.emit()
     app.processEvents()
 
-    assert row.theme2_detail.isVisible() is True
-    assert "600519" in row.theme2_code_label.text()
-    assert "高 1310.00" in row.theme2_high_low_label.text()
-    assert window.width() > before_width
-    assert window.frameGeometry().right() == pytest.approx(before_right, abs=2)
+    # 点一只＝全列表展开（用户口径 2026-09-23）：外框的位置与尺寸一个像素都不动。
+    assert row.theme2_depth.expanded is True
+    assert all(r.theme2_depth.expanded for r in window._rows.values())
+    assert window.geometry() == before
+    assert row.theme2_depth._layout().has_chart_band is True
+    assert "600519" in row.theme2_code_label.full_text()
+    assert "高 1310.00" in row.theme2_high_low_label.full_text()
+    assert watcher.started == 1
 
-    row.leaveEvent(None)
+    # 鼠标移开不消失：发一个真实的 Leave 事件也不能收起。
+    app.sendEvent(row, QEvent(QEvent.Leave))
     app.processEvents()
-    assert row.theme2_detail.isVisible() is False
-    assert window.width() <= before_width + 2
+    assert row.theme2_depth.expanded is True
+
+    # 点屏幕任意位置（远离任何价格热区）→ 全部收起。
+    _click_away(window)
+    app.processEvents()
+    assert row.theme2_depth.expanded is False
+    assert all(not r.theme2_depth.expanded for r in window._rows.values())
+    assert window.geometry() == before
+    assert watcher.stopped == 1
     window.close()
 
 
@@ -214,6 +256,58 @@ def test_quote_row_uses_independent_font_colors_and_weights(app):
     assert row.percent_label.font().bold() is True
     assert row.dark_label.font().bold() is True
     assert row.dark_value.font().bold() is True
+    row.close()
+
+
+def test_quote_row_collapses_every_text_color_into_one_gray(app):
+    """灰度显示时连用户挑的固定色也一起变灰：整行文字只剩一个灰阶。
+
+    否则设置在「股票名称颜色 / 股价颜色」里的彩色会漏出灰度模式，组件就不是「一个灰」了。
+    """
+    from stockwidget.providers.base import Quote
+
+    config = Config(
+        grayscale=True,
+        grayscale_level=200,
+        stock_name_color="#112233",
+        stock_price_color="#223344",
+        stock_percent_color="#334455",
+        dark_trade_color="#445566",
+    )
+    quote = Quote.from_prices("600519", "贵州茅台", 1304.66, 1272.83)
+    quote.dark_fund = 198_000_000
+    row = QuoteRow("600519")
+    row.apply_config(config)
+    row.update_quote(quote, config)
+
+    gray = "color: rgba(200,200,200,255);"
+    assert row.name_label.styleSheet() == gray
+    assert row.price_label.styleSheet() == gray
+    assert row.percent_label.styleSheet() == gray
+    assert row.dark_label.styleSheet() == gray
+    assert row.dark_value.styleSheet() == gray
+    # 主题2 顶栏走同一套判据，不许各留一份彩色。
+    assert row.theme2_name_label.styleSheet() == gray
+    assert row.theme2_code_label.styleSheet() == gray
+    assert row.theme2_dark_label.styleSheet() == gray
+    assert row.theme2_high_low_label.styleSheet() == gray
+    # 走势图也拿到了灰阶（它只画灰，颜色由 _grayscale_level 决定）。
+    assert row.sparkline._grayscale is True
+    assert row.sparkline._grayscale_level == 200
+    row.close()
+
+
+def test_quote_row_keeps_configured_colors_while_grayscale_is_off(app):
+    from stockwidget.providers.base import Quote
+
+    config = Config(stock_name_color="#112233", stock_price_color="#223344")
+    quote = Quote.from_prices("600519", "贵州茅台", 1304.66, 1272.83)
+    row = QuoteRow("600519")
+    row.apply_config(config)
+    row.update_quote(quote, config)
+
+    assert row.name_label.styleSheet() == "color: rgba(17,34,51,255);"
+    assert row.price_label.styleSheet() == "color: rgba(34,51,68,255);"
     row.close()
 
 
@@ -632,12 +726,22 @@ class _MouseEvent:
         pass
 
 
-class _WindowDragEvent(_MouseEvent):
+class _WindowDragEvent(QMouseEvent):
+    """真实的 :class:`QMouseEvent`，只是把 ``type()`` 换成调用方指定的那种。
+
+    PySide6 6.11 的绑定做了参数类型校验：鸭子类型的事件对象传进
+    ``QObject.eventFilter`` 会在 ``super().eventFilter(...)`` 处直接抛
+    ``TypeError``（"called with wrong argument types"），测不出任何真实行为。
+    """
+
     def __init__(self, event_type, position, button=Qt.NoButton, buttons=Qt.NoButton):
-        super().__init__(position, button=button, buttons=buttons)
+        local = QPointF(position)
+        super().__init__(
+            QEvent.MouseButtonPress, local, local, button, buttons, Qt.NoModifier
+        )
         self._event_type = event_type
 
-    def type(self):
+    def type(self):  # noqa: N802 - Qt 命名
         return self._event_type
 
 
@@ -1460,7 +1564,7 @@ def test_resize_grip_is_overlay_and_tracks_bottom_right(app):
 
 
 
-def test_theme2_left_mirror_keeps_left_edge_and_expands_right(app):
+def test_theme2_left_mirror_is_internal_and_keeps_the_frame_in_place(app):
     from stockwidget.providers.base import Quote
 
     config = Config(display_theme="theme2", theme2_side="left", show_sparkline=False)
@@ -1484,27 +1588,36 @@ def test_theme2_left_mirror_keeps_left_edge_and_expands_right(app):
 
     row = window._rows["600519"]
     layout = row.layout()
-    assert layout.getItemPosition(layout.indexOf(row.theme2_depth))[:2] == (0, 0)
-    assert layout.getItemPosition(layout.indexOf(row.theme2_detail))[:2] == (0, 1)
+    assert layout.getItemPosition(layout.indexOf(row.theme2_header)) == (0, 0, 1, 3)
+    assert layout.getItemPosition(layout.indexOf(row.theme2_depth)) == (1, 0, 1, 3)
 
-    before_width = window.width()
-    before_left = window.frameGeometry().left()
+    before = window.geometry()
+    watcher = _install_stub_watcher(window)
     row.theme2_depth.price_clicked.emit()
     app.processEvents()
 
-    assert row.theme2_detail.isVisible() is True
-    assert window.width() > before_width
-    assert window.frameGeometry().left() == pytest.approx(before_left, abs=2)
+    # 靠左停靠只体现在画布内部：价格列贴左、成交量轴被推到右外沿，外框不动。
+    canvas = row.theme2_depth._layout()
+    assert canvas.mirror is True
+    assert canvas.price_left < row.theme2_depth.width() / 2
+    assert canvas.volume_axis > canvas.price_right
+    assert row.theme2_depth.expanded is True
+    assert window.geometry() == before
 
-    row.leaveEvent(None)
+    # 收起只认「点屏幕任意位置」，鼠标移开不再触发。
+    app.sendEvent(row, QEvent(QEvent.Leave))
     app.processEvents()
-    assert row.theme2_detail.isVisible() is False
-    assert window.frameGeometry().left() == pytest.approx(before_left, abs=2)
+    assert row.theme2_depth.expanded is True
+
+    _click_away(window)
+    app.processEvents()
+    assert row.theme2_depth.expanded is False
+    assert window.geometry() == before
     window.close()
 
 
 
-def test_theme2_expanded_chart_uses_mcp_bs_points(app, monkeypatch):
+def test_theme2_canvas_receives_mcp_bs_points(app, monkeypatch):
     from stockwidget import mcp_bs
     from stockwidget.providers.base import Quote
 
@@ -1527,8 +1640,34 @@ def test_theme2_expanded_chart_uses_mcp_bs_points(app, monkeypatch):
     )
     row.update_quote(quote, config, trend)
 
+    # 主题2 的 K 线画在行内，B/S 仍要按当天 MCP 信号映射到分时索引上。
     assert requested == [("600519", trend.prices)]
-    assert row.theme2_chart._signals == [(1, "B"), (2, "S")]
+    assert row.theme2_depth._signals == [(1, "B"), (2, "S")]
+    assert row.theme2_depth._show_signals is True
+
+    row.set_theme2_expanded(True, notify=False)
+    assert row.theme2_depth._layout().has_chart_band is True
+    row.close()
+
+
+def test_theme2_bs_markers_are_cleared_when_the_quote_fails(app, monkeypatch):
+    from stockwidget import mcp_bs
+    from stockwidget.providers.base import Quote
+
+    monkeypatch.setattr(mcp_bs, "bs_points", lambda symbol, prices, now=None: [(0, "B")])
+
+    config = Config(display_theme="theme2", show_bs_points=True)
+    row = QuoteRow("600519")
+    row.apply_config(config)
+    row.update_quote(
+        Quote.from_prices("600519", "贵州茅台", 1304.66, 1272.83),
+        config,
+        Trend(prices=[1300.0, 1304.66], prev_close=1272.83),
+    )
+    assert row.theme2_depth._signals == [(0, "B")]
+
+    row.update_quote(Quote.failed("600519", "行情不可用"), config)
+    assert row.theme2_depth._signals == []
     row.close()
 
 
@@ -1564,16 +1703,25 @@ def test_theme2_right_bottom_resize_preserves_manual_width_height_and_adapts_row
     app.processEvents()
     assert window.size() == dragged
 
-    viewport = window.scroll.viewport()
     row_heights = [row.height() for row in window._rows.values()]
     assert max(row_heights) - min(row_heights) <= 2
-    assert all(row.theme2_depth.height() >= row.height() - 12 for row in window._rows.values())
+    # 信息条固定在上，画布吃满剩下整行高度。
+    for row in window._rows.values():
+        margins = row.layout().contentsMargins()
+        expected = (
+            row.height()
+            - row.theme2_header.height()
+            - margins.top()
+            - margins.bottom()
+            - row.layout().verticalSpacing()
+        )
+        assert abs(row.theme2_depth.height() - expected) <= 1
     assert window.grip.x() == window.width() - window.grip.width() - 2
     assert window.grip.y() == window.height() - window.grip.height() - 2
     window.close()
 
 
-def test_theme2_width_drag_expands_order_book_area_without_forcing_config_change(app):
+def test_theme2_width_drag_gives_extra_room_to_the_chart_not_the_book(app):
     from stockwidget.providers.base import Quote
 
     config = Config(display_theme="theme2", theme2_depth_width=84, show_title_buttons=False)
@@ -1583,7 +1731,7 @@ def test_theme2_width_drag_expands_order_book_area_without_forcing_config_change
     app.processEvents()
 
     row = window._rows["600519"]
-    before = row.theme2_depth._horizontal_geometry()
+    before = row.theme2_depth._layout()
     start_height = window.height()
     requested = QSize(window.width() + 180, start_height)
     bounded = window._bounded_drag_size(requested)
@@ -1591,12 +1739,18 @@ def test_theme2_width_drag_expands_order_book_area_without_forcing_config_change
     window._on_grip_dragged(requested)
     window._apply_scale()
     app.processEvents()
-    after = row.theme2_depth._horizontal_geometry()
+    after = row.theme2_depth._layout()
 
     assert window.width() == bounded.width()
-    before_span = before[1] - before[2]
-    after_span = after[1] - after[2]
-    assert after_span > before_span
+    # 多出来的宽度归图表；盘口带只取「配置宽度 84」与「跨度 25%」里更长的一个，
+    # 不会跟着窗口一起拉伸。
+    canvas = row.theme2_depth
+    assert after.kline_right - after.kline_left > before.kline_right - before.kline_left
+    near, far = sorted((after.axis_x, after.depth_edge))
+    span = abs(after.axis_x - 4.0)
+    assert far - near == pytest.approx(max(84.0, span * DEPTH_SHARE_MIN), abs=1.0)
+    # 盘口柱留在自己那一半里，不许被甩到对面。
+    assert near >= canvas.width() / 2 - 1 or far <= canvas.width() / 2 + 1
     assert config.theme2_depth_width == 84
     assert window._config.theme2_depth_width == 84
     window.close()
@@ -1651,7 +1805,7 @@ def test_theme2_resize_does_not_scale_fonts(app):
 
 
 
-def test_theme2_detail_info_is_four_compact_lines_at_top_left(app):
+def test_theme2_header_sits_above_the_canvas_in_two_tight_rows(app):
     from stockwidget.providers.base import Quote
 
     row = QuoteRow("600519")
@@ -1671,23 +1825,323 @@ def test_theme2_detail_info_is_four_compact_lines_at_top_left(app):
     row.show()
     app.processEvents()
 
-    layout = row._theme2_info_layout
-    margins = layout.contentsMargins()
-    assert (margins.left(), margins.top(), margins.right(), margins.bottom()) == (0, 0, 0, 0)
-    assert layout.spacing() == 0
-    assert layout.count() == 5  # 四行文字 + 底部 stretch
+    header = row._theme2_header_layout
+    margins = header.contentsMargins()
+    # 左右各留 OUTER_PAD：画布里的竖直价格轴就压在离外沿 OUTER_PAD 的位置，
+    # 于是轴线那一侧的信息栏文字与轴线严丝合缝（见
+    # ``test_theme2_header_content_aligns_with_the_price_axis``）。
+    assert (margins.left(), margins.top(), margins.right(), margins.bottom()) == (
+        OUTER_PAD,
+        0,
+        OUTER_PAD,
+        0,
+    )
+    # 两行之间只留一个随字号缩放的细缝，不许摊成大段行距。
+    assert header.spacing() == round(config.font_size * 0.15)
+    assert header.spacing() < row.theme2_name_label.fontMetrics().height()
+    assert header.count() == 2
 
-    labels = [
-        row.theme2_name_label,
-        row.theme2_code_label,
-        row.theme2_dark_label,
-        row.theme2_high_low_label,
-    ]
-    # 四行连续贴左上，不允许额外高度被平均摊成大段行距。
-    assert labels[0].y() <= 2
-    for current, following in zip(labels, labels[1:]):
-        gap = following.y() - (current.y() + current.height())
-        assert gap <= 1
+    # 第一行「名字 + 代码 …… 暗盘」，第二行「高低」，两行都压在价格上方。
+    first = row._theme2_first_layout
+    assert first.count() == 4
+    assert first.itemAt(0).widget() is row.theme2_name_label
+    assert first.itemAt(1).widget() is row.theme2_code_label
+    assert first.itemAt(3).widget() is row.theme2_dark_label
+    assert row._theme2_second_layout.itemAt(1).widget() is row.theme2_high_low_label
+
+    # y() 是相对各自父部件的：先统一映射到行的坐标系再比较。
+    def top_in_row(widget) -> int:
+        return widget.mapTo(row, QPoint(0, 0)).y()
+
+    # 第一行三个字段各读各的字号，纵向居中后允许 1px 内的基线差。
+    same_line = top_in_row(row.theme2_name_label)
+    assert abs(top_in_row(row.theme2_code_label) - same_line) <= 2
+    assert abs(top_in_row(row.theme2_dark_label) - same_line) <= 2
+    assert top_in_row(row.theme2_high_low_label) > same_line
+    assert top_in_row(row.theme2_header) < top_in_row(row.theme2_depth)
+    row.close()
+
+
+def test_theme2_header_content_aligns_with_the_price_axis(app):
+    """信息栏在轴线那一侧的文字，边缘要与竖直价格轴对齐。
+
+    用户口径（2026-09-23）：「上方股票名称……与轴线对齐」。价格轴现在贴行的外沿
+    （价格列那条空白已经并给图表），所以靠左停靠时是**名称左端**落在轴上，靠右
+    停靠时是**暗盘那一组的右端**落在轴上——两边共用同一份 OUTER_PAD 边距。
+    """
+    from stockwidget.providers.base import Quote
+
+    for side in ("left", "right"):
+        row = QuoteRow("600519")
+        config = Config(display_theme="theme2", theme2_side=side)
+        row.apply_config(config)
+        row.resize(420, 150)
+        row.update_quote(
+            Quote.from_prices("600519", "贵州茅台", 1304.66, 1272.83),
+            config,
+            Trend(
+                prices=[1275.0, 1290.0, 1304.66],
+                high_price=1310.0,
+                low_price=1268.0,
+            ),
+        )
+        row.set_theme2_expanded(True, notify=False)
+        row.show()
+        app.processEvents()
+
+        canvas = row.theme2_depth
+        # 统一换算到「行」坐标系再比：直接 mapTo(canvas) 会拿到布局尚未激活时的
+        # 陈旧位置（实测差 6px），而参与比较的两个数都取 row 坐标就没有这个坑。
+        axis_in_row = canvas.mapTo(row, QPoint(0, 0)).x() + canvas._layout().axis_x
+        if canvas._layout().mirror:
+            edge = row.theme2_name_label.mapTo(row, QPoint(0, 0)).x()
+        else:
+            label = row.theme2_dark_label
+            edge = label.mapTo(row, QPoint(0, 0)).x() + label.width()
+        assert abs(edge - axis_in_row) <= 1, f"{side}: 信息栏边缘 {edge} 应落在价格轴 {axis_in_row} 上"
+        row.close()
+
+
+def test_theme2_collapsed_header_hides_name_code_and_high_low(app):
+    """未点击时整条留空：名字 / 代码 / 高低价 / 暗盘统统点开后才显示。"""
+    from stockwidget.providers.base import Quote
+
+    row = QuoteRow("600519")
+    config = Config(display_theme="theme2")
+    row.apply_config(config)
+    row.resize(420, 150)
+    row.update_quote(
+        Quote.from_prices("600519", "贵州茅台", 1304.66, 1272.83),
+        config,
+        Trend(prices=[1275.0, 1290.0, 1304.66], high_price=1310.0, low_price=1268.0),
+    )
+    row.show()
+    app.processEvents()
+
+    assert row.theme2_name_label.isVisible() is False
+    assert row.theme2_code_label.isVisible() is False
+    assert row.theme2_high_low_label.isVisible() is False
+    # 用户口径（2026-09-23）：「不点暗盘也不要显示」——暗盘也一起收起来。
+    assert row.theme2_dark_label.isVisible() is False
+    # 只是不画，文本仍留着，点开时不必等下一次行情刷新。
+    assert row.theme2_name_label.full_text() == "贵州茅台"
+    assert "600519" in row.theme2_code_label.full_text()
+    assert "高 1310.00" in row.theme2_high_low_label.full_text()
+
+    row.set_theme2_expanded(True, notify=False)
+    app.processEvents()
+    assert row.theme2_name_label.isVisible() is True
+    assert row.theme2_code_label.isVisible() is True
+    assert row.theme2_high_low_label.isVisible() is True
+    assert row.theme2_dark_label.isVisible() is True
+
+    row.set_theme2_expanded(False, notify=False)
+    app.processEvents()
+    assert row.theme2_name_label.isVisible() is False
+    assert row.theme2_code_label.isVisible() is False
+    assert row.theme2_high_low_label.isVisible() is False
+    assert row.theme2_dark_label.isVisible() is False
+    row.close()
+
+
+def test_theme2_header_respects_the_settings_show_switches(app):
+    """设置页里的显示开关在主题2 同样生效：关掉就不画。"""
+    row = QuoteRow("600519")
+    row.apply_config(
+        Config(
+            display_theme="theme2",
+            show_stock_name=True,
+            show_high_low=True,
+            show_dark_trade=True,
+        )
+    )
+    row.set_theme2_expanded(True, notify=False)
+    row.show()
+    app.processEvents()
+    assert row.theme2_name_label.isVisible() is True
+    assert row.theme2_code_label.isVisible() is True
+    assert row.theme2_high_low_label.isVisible() is True
+    assert row.theme2_dark_label.isVisible() is True
+
+    row.apply_config(
+        Config(
+            display_theme="theme2",
+            show_stock_name=False,
+            show_high_low=False,
+            show_dark_trade=False,
+        )
+    )
+    app.processEvents()
+    assert row.theme2_name_label.isVisible() is False
+    assert row.theme2_code_label.isVisible() is False
+    assert row.theme2_high_low_label.isVisible() is False
+    assert row.theme2_dark_label.isVisible() is False
+    # 收起态的「留白」规则不变：关掉开关只是不再画文字，行高照占。
+    assert row.theme2_header.height() > 0
+    row.close()
+
+
+def test_theme2_high_low_is_neutral_in_both_directions(app):
+    """主题2 的高低价格恒为中性次要灰，涨 / 跌两个方向画出来必须一模一样。
+
+    用户口径（2026-09-23）：整行只有「股价 / 涨跌幅」跟涨跌色。改动前这里跟的是
+    主题1 的走势图曲线色，于是一只上涨的股票连高低价都是红的。
+    """
+    from stockwidget.providers.base import Quote
+    from stockwidget.ui.theme import MUTED
+
+    expected = (
+        f"color: rgba({MUTED.red()},{MUTED.green()},{MUTED.blue()},{MUTED.alpha()});"
+    )
+    for name, price, prev in (
+        ("跌", 1304.66, 1400.00),
+        ("涨", 1400.00, 1304.66),
+    ):
+        config = Config(display_theme="theme2")
+        row = QuoteRow("600519")
+        row.apply_config(config)
+        quote = Quote.from_prices("600519", "贵州茅台", price, prev)
+        row.update_quote(
+            quote,
+            config,
+            Trend(prices=[prev, price], high_price=max(price, prev), low_price=min(price, prev)),
+        )
+
+        assert row.theme2_high_low_label.styleSheet() == expected, name
+        row.close()
+
+
+def test_theme2_code_follows_the_name_color(app):
+    """代码与名字同色（用户选择），字号仍分主次。"""
+    from stockwidget.providers.base import Quote
+
+    config = Config(display_theme="theme2")
+    row = QuoteRow("600519")
+    row.apply_config(config)
+    row.update_quote(
+        Quote.from_prices("600519", "贵州茅台", 1304.66, 1272.83),
+        config,
+        Trend(prices=[1275.0, 1290.0, 1304.66], high_price=1310.0, low_price=1268.0),
+    )
+
+    assert row.theme2_code_label.styleSheet() == row.theme2_name_label.styleSheet()
+    assert row.theme2_code_label.styleSheet() != "color: rgba(139,147,167,255);"
+    row.close()
+
+
+def test_theme2_show_stock_price_switch_reaches_the_canvas(app):
+    row = QuoteRow("600519")
+    row.apply_config(Config(display_theme="theme2", show_stock_price=False))
+    assert row.theme2_depth._config.show_stock_price is False
+    row.apply_config(Config(display_theme="theme2", show_stock_price=True))
+    assert row.theme2_depth._config.show_stock_price is True
+    row.close()
+
+
+def test_theme2_collapsed_header_stays_hidden_across_quote_updates(app):
+    """收起态收到行情刷新，不能把藏掉的四个标签又顶出来。"""
+    from stockwidget.providers.base import Quote
+
+    row = QuoteRow("600519")
+    config = Config(display_theme="theme2")
+    row.apply_config(config)
+    row.resize(420, 150)
+    for price in (1304.66, 1310.00):
+        row.update_quote(
+            Quote.from_prices("600519", "贵州茅台", price, 1272.83),
+            config,
+            Trend(prices=[1275.0, 1290.0, price], high_price=1310.0, low_price=1268.0),
+        )
+    row.show()
+    app.processEvents()
+
+    assert row.theme2_name_label.isVisible() is False
+    assert row.theme2_code_label.isVisible() is False
+    assert row.theme2_high_low_label.isVisible() is False
+    assert row.theme2_dark_label.isVisible() is False
+    row.close()
+
+
+def test_theme2_header_height_does_not_change_on_expand(app):
+    """展开只是多画几个字：信息条高度、画布高度、外框、兄弟行全都不动。
+
+    注意暗盘标签的**横坐标**在展开时本来就会变（用户口径 2026-09-23：不点开就
+    不显示，于是它是从「不画」变成「画在名字/代码之后」），所以这里守的是它出现
+    前后仍在信息条第一行，而不是它的绝对位置。
+    """
+    from stockwidget.providers.base import Quote
+
+    for side in ("right", "left"):
+        config = Config(display_theme="theme2", theme2_side=side, show_title_buttons=False)
+        window = TickerWindow(config)
+        quotes = [
+            Quote.from_prices("600519", "贵州茅台", 1304.66, 1272.83),
+            Quote.from_prices("603986", "兆易创新", 404.97, 432.37),
+        ]
+        window._sync_rows(
+            quotes,
+            {
+                "600519": Trend(
+                    prices=[1275.0, 1290.0, 1304.66],
+                    high_price=1310.0,
+                    low_price=1268.0,
+                )
+            },
+        )
+        window.show()
+        for _ in range(4):
+            app.processEvents()
+
+        row = window._rows["600519"]
+        sibling = window._rows["603986"]
+        frame_before = window.geometry()
+        header_before = row.theme2_header.height()
+        canvas_before = row.theme2_depth.geometry()
+        dark_before = row.theme2_dark_label.mapTo(row, QPoint(0, 0))
+        sibling_before = sibling.theme2_depth._layout()
+        assert row.theme2_dark_label.isVisible() is False
+
+        _install_stub_watcher(window)
+        row.theme2_depth.price_clicked.emit()
+        for _ in range(4):
+            app.processEvents()
+
+        assert row.theme2_header.height() == header_before
+        assert row.theme2_depth.geometry() == canvas_before
+        assert row.theme2_dark_label.isVisible() is True
+        assert abs(row.theme2_dark_label.mapTo(row, QPoint(0, 0)).y() - dark_before.y()) <= 2
+        assert window.geometry() == frame_before
+        assert sibling.theme2_depth._layout() == sibling_before
+
+        row.set_theme2_expanded(False, notify=False)
+        for _ in range(4):
+            app.processEvents()
+        assert row.theme2_header.height() == header_before
+        assert row.theme2_depth.geometry() == canvas_before
+        assert row.theme2_dark_label.isVisible() is False
+        window.close()
+
+
+def test_theme2_header_elides_instead_of_widening_the_row(app):
+    from stockwidget.providers.base import Quote
+
+    row = QuoteRow("600519")
+    config = Config(display_theme="theme2")
+    row.apply_config(config)
+    row.resize(168, 150)
+    row.update_quote(
+        Quote.from_prices("600519", "一只名字特别长的股票", 1304.66, 1272.83),
+        config,
+        Trend(prices=[1275.0, 1290.0, 1304.66], high_price=1310.0, low_price=1268.0),
+    )
+    app.processEvents()
+
+    # QLabel 默认的最小宽度就是整段文字宽：一层层算下来会比外框还宽，而水平滚动
+    # 条是关掉的，右侧内容会被直接裁掉。截断标签必须把最小宽度压到几个字符。
+    assert row.minimumSizeHint().width() <= 200
+    name = row.theme2_name_label
+    assert name.minimumSizeHint().width() < name.sizeHint().width()
+    assert name.full_text() == "一只名字特别长的股票"
     row.close()
 
 
@@ -1714,7 +2168,7 @@ def test_theme2_depth_is_not_intercepted_by_window_drag_filter(app):
 
 
 
-def test_theme2_expanded_chart_receives_minute_volume_and_latest_depth(app):
+def test_theme2_canvas_receives_minute_volume_and_latest_depth(app):
     from stockwidget.mcp_depth import DEPTH_FULL, DepthLevel, DepthSnapshot
     from stockwidget.providers.base import Quote
 
@@ -1747,15 +2201,23 @@ def test_theme2_expanded_chart_receives_minute_volume_and_latest_depth(app):
     )
     row.update_depth(snapshot)
 
-    assert row.theme2_chart._volumes == trend.volumes
-    assert row.theme2_chart._show_volume_profile is True
-    assert row.theme2_chart._configured_profile_width == config.theme2_depth_width
-    assert row.theme2_chart._depth is snapshot
+    canvas = row.theme2_depth
+    assert list(canvas._trend.prices) == trend.prices
+    assert list(canvas._trend.volumes) == trend.volumes
+    assert canvas._prev_close == 9.9
+    assert canvas._depth is snapshot
+
+    row.set_theme2_expanded(True, notify=False)
+    layout = canvas._layout()
+    assert layout.has_chart_band is True
+    # 成交量贴在盘口的另一侧：靠右停靠时盘口在右、成交量轴压左外沿，K 线居中。
+    assert layout.volume_axis < layout.kline_left
+    assert layout.kline_right <= layout.depth_edge
     row.close()
 
 
 
-def test_theme2_expansion_keeps_sibling_depth_width_and_never_shrinks_frame(app):
+def test_theme2_expansion_never_resizes_the_frame_or_stirs_sibling_rows(app):
     from stockwidget.providers.base import Quote
 
     config = Config(display_theme="theme2", show_title_buttons=False)
@@ -1769,59 +2231,55 @@ def test_theme2_expansion_keeps_sibling_depth_width_and_never_shrinks_frame(app)
     window.show()
     app.processEvents()
 
-    # 模拟用户已经把主窗口手工拖宽：这是之前最容易被 sizeHint 缩回去的场景。
+    # 先手工拖宽：这是以前最容易被 sizeHint 缩回去的场景。
     requested = QSize(window.width() + 180, window.height())
     window._on_grip_drag_started(window.size())
     window._on_grip_dragged(requested)
     window._on_grip_drag_finished()
     app.processEvents()
 
-    before_frame_width = window.width()
+    before_geometry = window.geometry()
     first = window._rows["600519"]
     sibling = window._rows["603986"]
-    first_depth_width = first.theme2_depth.width()
-    sibling_depth_width = sibling.theme2_depth.width()
-    sibling_geometry = sibling.theme2_depth._horizontal_geometry()
+    sibling_shape = sibling.theme2_depth._layout()
+    first_shape = first.theme2_depth._layout()
+    canvas_width = sibling.theme2_depth.width()
 
-    def relative_depth_geometry(widget):
-        _mirror, axis_x, depth_inner_x, price_left, price_right = widget._horizontal_geometry()
-        return (
-            round(axis_x - depth_inner_x),
-            round(depth_inner_x - price_right),
-            round(price_right - price_left),
-        )
-
-    sibling_shape = relative_depth_geometry(sibling.theme2_depth)
-
+    watcher = _install_stub_watcher(window)
     first.theme2_depth.price_clicked.emit()
     app.processEvents()
 
-    assert window.width() > before_frame_width
-    assert first.theme2_depth.width() == first_depth_width
-    # 其它行可以占满新外框，但实际盘口绘制形状/宽度必须保持不变。
-    assert sibling.theme2_depth.width_override == sibling_depth_width
-    assert relative_depth_geometry(sibling.theme2_depth) == sibling_shape
-    assert first.theme2_detail.isVisible() is True
+    # 这条断言就是用户报的那个 bug：点一只股票，别的股票所在行不能跟着变。
+    assert window.geometry() == before_geometry
+    assert sibling.theme2_depth.width() == canvas_width
+    assert sibling.theme2_depth._layout() == sibling_shape
+    # 被点的那一行也不能跳：横向分区（含盘口柱长）点击前后必须逐字段相等。
+    assert first.theme2_depth._layout() == first_shape
+    # 点一只＝全列表展开：兄弟行跟被点行一起进入展开态（口径 2026-09-23）。
+    assert first.theme2_depth.expanded is True
+    assert sibling.theme2_depth.expanded is True
+    assert first.theme2_depth.width() == canvas_width
+    assert first.theme2_depth._layout().has_chart_band is True
 
-    expanded_width = window.width()
-    expanded_chart_width = first.theme2_chart.width()
-    assert expanded_chart_width > 0
-
-    # 模拟下一次行情刷新：外框、下方盘口形状、弹出 K 线宽度都不能再跳。
+    # 再刷新一次行情：外框与盘口形状都不能跳，展开态也不丢。
     window._sync_rows(quotes)
     app.processEvents()
-    assert window.width() == expanded_width
-    assert sibling.theme2_depth.width_override == sibling_depth_width
-    assert relative_depth_geometry(sibling.theme2_depth) == sibling_shape
-    assert first.theme2_chart.width() == expanded_chart_width
+    assert window.geometry() == before_geometry
+    assert sibling.theme2_depth._layout() == sibling_shape
+    assert first.theme2_depth._layout() == first_shape
+    assert first.theme2_depth.expanded is True
+    assert sibling.theme2_depth.expanded is True
 
-    first.leaveEvent(None)
+    # 点屏幕任意位置 → 全部收起，外框不动。
+    _click_away(window)
     app.processEvents()
-    assert window.width() == before_frame_width
+    assert first.theme2_depth.expanded is False
+    assert sibling.theme2_depth.expanded is False
+    assert window.geometry() == before_geometry
     window.close()
 
 
-def test_theme2_expansion_uses_current_real_width_not_default_size_hint(app):
+def test_theme2_expansion_keeps_a_wide_manual_frame_exactly_as_it_is(app):
     from stockwidget.providers.base import Quote
 
     config = Config(display_theme="theme2", show_title_buttons=False)
@@ -1830,50 +2288,127 @@ def test_theme2_expansion_uses_current_real_width_not_default_size_hint(app):
     window.show()
     app.processEvents()
 
-    # 宽到明显超过自然宽度，展开只能继续变宽，绝不能反向缩小。
+    # 宽到明显超过自然宽度：展开只重排画布内部，绝不能反过来缩小。
     window.resize(window.width() + 260, window.height())
     window._manual_size = True
     app.processEvents()
-    before = window.width()
+    before = window.geometry()
     row = window._rows["600519"]
     natural = row.theme2_depth.sizeHint().width()
     assert row.theme2_depth.width() > natural
 
+    _install_stub_watcher(window)
     row.theme2_depth.price_clicked.emit()
     app.processEvents()
 
-    assert window.width() > before
+    assert window.geometry() == before
     assert row.theme2_depth.width() > natural
+    assert row.theme2_depth._layout().has_chart_band is True
     window.close()
 
 
 
-def test_theme2_popup_font_size_controls_all_popup_text(app):
+def test_theme2_header_fields_each_follow_their_own_font_settings(app):
+    """主题2 顶栏不另起一套字号：名字/暗盘/高低各读设置页里对应的字段。
+
+    ``theme2_popup_font_size`` 只留给「股票代码」和图上角标这类没有独立设置项的文字。
+    """
     row = QuoteRow("600519")
-    config = Config(display_theme="theme2", theme2_popup_font_size=18)
+    config = Config(
+        display_theme="theme2",
+        theme2_popup_font_size=18,
+        stock_name_font_size=24,
+        dark_trade_font_size=10,
+        chart_label_font_size=8,
+        font_size=13,
+    )
     row.apply_config(config)
 
-    assert row.theme2_name_label.font().pixelSize() == 18
+    assert row.theme2_name_label.font().pixelSize() == 24
+    assert row.theme2_dark_label.font().pixelSize() == 10
+    assert row.theme2_high_low_label.font().pixelSize() == 8
     assert row.theme2_code_label.font().pixelSize() == 18
-    assert row.theme2_dark_label.font().pixelSize() == 18
-    assert row.theme2_high_low_label.font().pixelSize() == 18
-    assert row.theme2_chart._annotation_font.pixelSize() == 18
+    # 图表区的小字（「量」标注、分时/日K 角标、加载提示）吃主题2 自己的字号。
+    assert row.theme2_depth._popup_font().pixelSize() == 18
     row.close()
 
 
-def test_theme2_price_click_defers_expansion_until_event_loop(app):
+def test_theme2_header_bold_follows_settings_instead_of_being_hardcoded(app):
+    """加粗不再是写死的 True：取消勾选就得真的不加粗。"""
+    row = QuoteRow("600519")
+    row.apply_config(
+        Config(
+            display_theme="theme2",
+            stock_name_bold=False,
+            dark_trade_bold=False,
+        )
+    )
+    assert row.theme2_name_label.font().bold() is False
+    assert row.theme2_dark_label.font().bold() is False
+
+    row.apply_config(
+        Config(
+            display_theme="theme2",
+            stock_name_bold=True,
+            dark_trade_bold=True,
+        )
+    )
+    assert row.theme2_name_label.font().bold() is True
+    assert row.theme2_dark_label.font().bold() is True
+    row.close()
+
+
+def test_theme2_price_click_only_signals_the_window(app):
+    """行内不再自行展开：点价格只是发信号，展开态由窗口统一驱动。"""
     row = QuoteRow("600519")
     row.apply_config(Config(display_theme="theme2"))
 
-    row.theme2_depth.price_clicked.emit()
-    assert row._theme2_expanded is False
+    requested = []
+    row.theme2_expand_requested.connect(requested.append)
 
-    app.processEvents()
-    assert row._theme2_expanded is True
+    row.theme2_depth.price_clicked.emit()
+    # 没有窗口接管时，行自己保持折叠。
+    assert row._theme2_expanded is False
+    assert requested == ["600519"]
+
     row.close()
 
 
-def test_theme2_switching_popup_rows_reuses_original_frozen_depth_width(app):
+def test_theme2_screen_click_on_a_price_area_does_not_collapse(app):
+    from stockwidget.providers.base import Quote
+
+    config = Config(display_theme="theme2", show_title_buttons=False)
+    window = TickerWindow(config)
+    window._sync_rows([
+        Quote.from_prices("600519", "贵州茅台", 1304.66, 1272.83),
+        Quote.from_prices("603986", "兆易创新", 404.97, 432.37),
+    ])
+    window.show()
+    app.processEvents()
+
+    watcher = _install_stub_watcher(window)
+    window._rows["600519"].theme2_depth.price_clicked.emit()
+    app.processEvents()
+    assert window._theme2_all_expanded is True
+
+    # 点在价格热区上的点击不算「点别处」：交给行内逻辑去切换，这里不收起。
+    canvas = window._rows["600519"].theme2_depth
+    rect = canvas._price_hit_rect()
+    on_price = canvas.mapToGlobal(QPoint(round(rect.left()) + 1, canvas.height() // 2))
+    window._on_screen_click(on_price)
+    app.processEvents()
+    assert window._theme2_all_expanded is True
+    assert all(r.theme2_depth.expanded for r in window._rows.values())
+
+    # 而已展开时再点一次价格（release 走行内信号）＝ 切回收起。
+    canvas.price_clicked.emit()
+    app.processEvents()
+    assert window._theme2_all_expanded is False
+    assert all(not r.theme2_depth.expanded for r in window._rows.values())
+    window.close()
+
+
+def test_theme2_switching_expanded_rows_keeps_every_row_sized(app):
     from stockwidget.providers.base import Quote
 
     config = Config(display_theme="theme2", show_title_buttons=False)
@@ -1887,19 +2422,29 @@ def test_theme2_switching_popup_rows_reuses_original_frozen_depth_width(app):
 
     first = window._rows["600519"]
     second = window._rows["603986"]
-    original_second = second.theme2_depth.width()
+    before_geometry = window.geometry()
+    first_width = first.theme2_depth.width()
+    second_width = second.theme2_depth.width()
+    second_shape = second.theme2_depth._layout()
 
+    _install_stub_watcher(window)
     first.theme2_depth.price_clicked.emit()
     app.processEvents()
-    frozen = second.theme2_depth.width_override
-    assert frozen == original_second
+    # 点一只＝全列表展开：两行的画布宽度全程不变。
+    assert first.theme2_depth.expanded is True
+    assert second.theme2_depth.expanded is True
+    assert second.theme2_depth.width() == second_width
+    assert second.theme2_depth._layout() == second_shape
 
+    # 已展开时再点（另一只的）价格 ＝ 点任意位置，全部收起。
     second.theme2_depth.price_clicked.emit()
     app.processEvents()
 
-    assert second._theme2_expanded is True
-    assert second.theme2_depth.width_override == frozen
-    assert second.theme2_depth.sizeHint().width() == frozen
+    assert first.theme2_depth.expanded is False
+    assert second.theme2_depth.expanded is False
+    assert first.theme2_depth.width() == first_width
+    assert second.theme2_depth.width() == second_width
+    assert window.geometry() == before_geometry
     window.close()
 
 
@@ -1914,8 +2459,13 @@ def test_switching_theme2_back_to_classic_restores_stacked_and_hidden_titlebar(a
     app.processEvents()
 
     row = window._rows["600519"]
+    assert row.theme2_header.isVisible() is True
     assert row.theme2_depth.isVisible() is True
-    assert row.minimumHeight() > 0
+    layout = row.layout()
+    assert layout.getItemPosition(layout.indexOf(row.theme2_header)) == (0, 0, 1, 3)
+    assert layout.getItemPosition(layout.indexOf(row.theme2_depth)) == (1, 0, 1, 3)
+    # 主题2 的画布必须能被压扁（行数多/屏幕不够高时一路让位），不留最小行高。
+    assert row.minimumHeight() == 0
 
     window.apply_config(
         Config(
@@ -1931,6 +2481,10 @@ def test_switching_theme2_back_to_classic_restores_stacked_and_hidden_titlebar(a
     assert window.title_bar.isHidden() is True
     assert row.minimumHeight() == 0
     assert row.theme2_depth.isVisible() is False
+    assert row.theme2_header.isVisible() is False
+    # 主题2 的两个部件要彻底摘出网格，否则跨列格子项会和经典主题的格子重叠。
+    assert layout.indexOf(row.theme2_depth) == -1
+    assert layout.indexOf(row.theme2_header) == -1
     assert layout.getItemPosition(layout.indexOf(row.name_label))[:2] == (0, 0)
     assert layout.getItemPosition(layout.indexOf(row.price_label))[:2] == (0, 1)
     assert layout.getItemPosition(layout.indexOf(row.sparkline)) == (1, 0, 1, 2)
