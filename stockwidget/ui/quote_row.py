@@ -138,6 +138,16 @@ class QuoteRow(QWidget):
     # ------------------------------------------------------------ 外观
 
     def apply_config(self, config: Config) -> None:
+        previous = self._config
+        if (
+            previous.display_theme != config.display_theme
+            or previous.row_style != config.row_style
+            or previous.show_sparkline != config.show_sparkline
+            or previous.chart_height != config.chart_height
+        ):
+            # Theme 2 会重排同一套 QGridLayout；切回经典或改上中下/左中右时
+            # 强制重建，不能复用旧 layout_state。
+            self._layout_state = None
         self._config = config
         compact = config.compact
         # 紧凑模式只省掉暗盘和页脚，走势图照画——只是压扁一点。
@@ -339,6 +349,10 @@ class QuoteRow(QWidget):
         self.percent_label.setVisible(config.show_stock_price)
         self.sparkline.setVisible(config.show_sparkline)
         self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
+        # Theme 2 为纵向盘口设过最小行高；经典主题必须彻底解除，否则上中下布局
+        # 会被残留的 Theme 2 行高约束干扰。
+        self.setMinimumHeight(0)
+        self.setMaximumHeight(MAX_WIDGET_SIZE)
         side_font = max(config.stock_name_font_size, config.stock_price_font_size)
         narrow = self.width() < max(120, round(side_font * 12))
         self.name_label.setFont(
