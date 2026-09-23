@@ -82,6 +82,7 @@ let names = {};
 let savedTimer = null;
 let searchTimer = null;
 let fontApplyTimer = null;
+let activeTheme = 'theme1';
 
 /* ------------------------------------------------------------ 自选列表 */
 
@@ -222,6 +223,7 @@ function collect() {
 }
 
 function fill(config) {
+  activeTheme = config.display_theme;
   symbols = [...config.symbols];
   for (const id of TEXTS) el(id).value = config[id];
   for (const id of NUMBERS) el(id).value = config[id];
@@ -267,9 +269,9 @@ function refreshHints() {
 
   el('display-theme-hint').textContent = theme2
     ? mirrorLeft
-      ? '主题 2 靠左镜像：最左是价格轴，挂单从轴向右；股价/涨跌幅在最右，股价中线用虚线指向买卖交界。点击股价后固定左边缘向右展开。'
-      : '主题 2 靠右：股价/涨跌幅在最左，股价中线用虚线指向买卖交界；挂单在右侧并以最右价格轴为 0 向左延伸。点击股价后固定右边缘向左展开。'
-    : '主题 1：保持原有经典网格/单行滚动显示。';
+      ? '主题 2 靠左镜像：最左是价格轴，挂单从轴向右；股价/涨跌幅在最右，股价中线用虚线指向买卖交界。点击股价后固定左边缘向右展开。主题 1/2 的显示参数和窗口尺寸分别保存。'
+      : '主题 2 靠右：股价/涨跌幅在最左，股价中线用虚线指向买卖交界；挂单在右侧并以最右价格轴为 0 向左延伸。点击股价后固定右边缘向左展开。主题 1/2 的显示参数和窗口尺寸分别保存。'
+    : '主题 1：保持原有经典网格/单行滚动显示。主题 1/2 的显示参数和窗口尺寸分别保存，切换互不覆盖。';
 
   el('row_style-hint').textContent = theme2
     ? '主题 2 不使用行内样式。'
@@ -284,28 +286,58 @@ function note(text) {
   savedTimer = setTimeout(() => (el('saved').textContent = ''), 2500);
 }
 
+async function postConfig(patch) {
+  const response = await fetch(api('/api/config'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return (await response.json()).config;
+}
+
 async function apply(label = '已保存') {
   try {
-    const response = await fetch(api('/api/config'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(collect()),
-    });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
     // 服务端会做最终校验，用返回值回填，页面始终反映真实生效的配置。
-    fill((await response.json()).config);
+    fill(await postConfig(collect()));
     note(label);
   } catch (error) {
     note(`保存失败：${error.message}`);
   }
 }
 
+async function switchTheme() {
+  const nextTheme = el('display_theme').value;
+  if (nextTheme === activeTheme) {
+    refreshHints();
+    return;
+  }
+
+  clearTimeout(fontApplyTimer);
+  fontApplyTimer = null;
+  try {
+    // 下拉框已经变成目标主题了，但其它控件此刻仍是旧主题的值。
+    // 先强制按 activeTheme 保存这一屏，再只提交 display_theme 让后端载入目标 profile。
+    const currentPatch = collect();
+    currentPatch.display_theme = activeTheme;
+    await postConfig(currentPatch);
+
+    fill(await postConfig({ display_theme: nextTheme }));
+    note('主题已切换');
+  } catch (error) {
+    el('display_theme').value = activeTheme;
+    refreshHints();
+    note(`切换失败：${error.message}`);
+  }
+}
+
 /* ------------------------------------------------------------ 事件 */
 
 // 开关和下拉改完即时生效；字号短延迟自动保存，避免改完直接退出时丢失。
-for (const id of [...CHECKBOXES, 'provider', 'display_theme', 'theme2_side', 'layout', 'row_style', 'color_scheme', 'background_color']) {
+for (const id of [...CHECKBOXES, 'provider', 'theme2_side', 'layout', 'row_style', 'color_scheme', 'background_color']) {
   el(id).addEventListener('change', () => apply('已应用'));
 }
+el('display_theme').addEventListener('change', switchTheme);
 for (const id of FONT_COLORS) {
   el(id).addEventListener('change', () => apply('已应用'));
   el(`${id}_auto`).addEventListener('change', () => {
