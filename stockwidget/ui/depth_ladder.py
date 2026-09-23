@@ -7,7 +7,13 @@ from PySide6.QtGui import QColor, QFontMetricsF, QPainter, QPen
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from ..config import Config
-from ..mcp_depth import DEPTH_FIVE, DEPTH_FULL, DEPTH_TEN, DepthSnapshot
+from ..mcp_depth import (
+    DEPTH_ERROR_FAILURES,
+    DEPTH_FIVE,
+    DEPTH_FULL,
+    DEPTH_TEN,
+    DepthSnapshot,
+)
 from .theme import MUTED, make_font
 
 BID_COLOR = QColor(240, 79, 90)
@@ -80,13 +86,29 @@ class DepthLadder(QWidget):
     def set_depth(self, snapshot: DepthSnapshot | None) -> None:
         if snapshot != self._depth:
             self._depth = snapshot
-            mode = {
-                DEPTH_FULL: "千档",
-                DEPTH_TEN: "十档（千档5秒重试中）",
-                DEPTH_FIVE: "五档（千档5秒重试中）",
-            }.get(snapshot.depth_mode if snapshot else "", "盘口不可用")
+            if snapshot and snapshot.using_cached_full_depth:
+                fallback = {
+                    DEPTH_TEN: "十档",
+                    DEPTH_FIVE: "五档",
+                }.get(snapshot.latest_depth_mode, "不可用")
+                mode = (
+                    f"千档缓存 · 连续{snapshot.full_depth_failures}次未获取到千档"
+                    f" · 当前回退{fallback} · 5秒重试中"
+                )
+            else:
+                mode = {
+                    DEPTH_FULL: "千档",
+                    DEPTH_TEN: "十档（千档5秒重试中）",
+                    DEPTH_FIVE: "五档（千档5秒重试中）",
+                }.get(snapshot.depth_mode if snapshot else "", "盘口不可用")
             self.setToolTip(f"盘口：{mode}")
             self.update()
+
+    def _depth_error_active(self) -> bool:
+        return bool(
+            self._depth
+            and self._depth.full_depth_failures >= DEPTH_ERROR_FAILURES
+        )
 
     def set_quote(
         self,
@@ -285,6 +307,27 @@ class DepthLadder(QWidget):
         painter.drawEllipse(
             QRectF(axis_x - 1.8, center_y - 1.8, 3.6, 3.6)
         )
+
+        if self._depth_error_active():
+            error_font = make_font(
+                self._config,
+                bold=True,
+                pixel_size=max(8, self._config.stock_percent_font_size),
+            )
+            error_metrics = QFontMetricsF(error_font)
+            error_width = error_metrics.horizontalAdvance("ERROR") + 6.0
+            line_left = min(guide_start, guide_end)
+            line_right = max(guide_start, guide_end)
+            error_center = (line_left + line_right) / 2.0
+            error_rect = QRectF(
+                error_center - error_width / 2.0,
+                center_y - error_metrics.height() / 2.0,
+                error_width,
+                error_metrics.height(),
+            )
+            painter.setPen(QColor(BID_COLOR))
+            painter.setFont(error_font)
+            painter.drawText(error_rect, Qt.AlignCenter, "ERROR")
 
         # 点击热区扩成整个价格列。用户不需要精确点中文字，只要点到股价这一列
         # 就能展开；同时不侵入右侧盘口区域，避免误触。
