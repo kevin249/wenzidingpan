@@ -254,3 +254,45 @@ def test_watchlist_endpoint_survives_provider_failure(server, monkeypatch):
     monkeypatch.setattr(server_module.providers, "resolve", lambda _id: _Boom())
     payload = _client(server).get(f"/api/watchlist?token={server.token}").get_json()
     assert payload == {"names": {}}
+
+
+def test_webui_theme_switch_restores_each_theme_profile(server):
+    client = _client(server)
+
+    theme1 = client.post(
+        f"/api/config?token={server.token}",
+        json={"font_size": 9, "background_alpha": 0.25, "row_style": "stacked"},
+    ).get_json()["config"]
+    assert theme1["display_theme"] == "theme1"
+    assert theme1["font_size"] == 9
+
+    theme2 = client.post(
+        f"/api/config?token={server.token}",
+        json={"display_theme": "theme2"},
+    ).get_json()["config"]
+    assert theme2["font_size"] == 13
+
+    client.post(
+        f"/api/config?token={server.token}",
+        json={
+            "font_size": 20,
+            "background_alpha": 0.7,
+            "theme2_depth_width": 204,
+        },
+    )
+
+    restored1 = client.post(
+        f"/api/config?token={server.token}",
+        json={"display_theme": "theme1"},
+    ).get_json()["config"]
+    assert restored1["font_size"] == 9
+    assert restored1["background_alpha"] == 0.25
+    assert restored1["row_style"] == "stacked"
+
+    restored2 = client.post(
+        f"/api/config?token={server.token}",
+        json={"display_theme": "theme2"},
+    ).get_json()["config"]
+    assert restored2["font_size"] == 20
+    assert restored2["background_alpha"] == 0.7
+    assert restored2["theme2_depth_width"] == 204
