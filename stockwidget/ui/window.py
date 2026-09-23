@@ -892,7 +892,11 @@ class TickerWindow(QWidget):
     def restore_bounds(self, bounds: Bounds | None, available: list) -> None:
         """恢复上次位置前先确认它仍落在某块屏幕上（外接显示器可能已拔掉）。"""
         if bounds is None:
+            self._scale = 1.0
+            self._manual_size = False
+            self._restore_scale_from_height = False
             self.resize(300, 260)
+            self._apply_scale()
             return
         self._scale = _clamp(bounds.scale, 0.6, 3.0)
         self._manual_size = bounds.manual_size
