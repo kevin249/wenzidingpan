@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import httpx2
@@ -25,6 +25,7 @@ DEPTH_RETRY_SECONDS = 5.0
 DEPTH_INTER_SYMBOL_GAP_SECONDS = 0.75
 BS_POLL_SECONDS = 60.0
 MIN_THOUSAND_LEVELS = 11
+DEPTH_ERROR_FAILURES = 3
 
 DEPTH_FULL = "FULL_DEPTH"
 DEPTH_TEN = "TEN_LEVEL"
@@ -52,6 +53,9 @@ class DepthSnapshot:
     reason: str = ""
     depth_mode: str = DEPTH_NONE
     requested_depth: int = 0
+    full_depth_failures: int = 0
+    using_cached_full_depth: bool = False
+    latest_depth_mode: str = DEPTH_NONE
 
 
 def _number(value: Any) -> float | None:
@@ -238,6 +242,40 @@ async def _fetch_depth_with_fallback(
         return DepthSnapshot(symbol=symbol, reason=f"5:{type(exc).__name__}")
 
 
+def _merge_depth_state(
+    snapshot: DepthSnapshot,
+    cached_full_depth: DepthSnapshot | None,
+    consecutive_failures: int,
+) -> tuple[DepthSnapshot, DepthSnapshot | None, int]:
+    """稳定 UI 深度：失败时保留最近一次千档，只累计失败状态。"""
+    if snapshot.full_depth:
+        fresh = replace(
+            snapshot,
+            full_depth_failures=0,
+            using_cached_full_depth=False,
+            latest_depth_mode=DEPTH_FULL,
+        )
+        return fresh, snapshot, 0
+
+    failures = max(0, int(consecutive_failures)) + 1
+    if cached_full_depth is not None and cached_full_depth.full_depth:
+        display = replace(
+            cached_full_depth,
+            full_depth_failures=failures,
+            using_cached_full_depth=True,
+            latest_depth_mode=snapshot.depth_mode,
+        )
+        return display, cached_full_depth, failures
+
+    display = replace(
+        snapshot,
+        full_depth_failures=failures,
+        using_cached_full_depth=False,
+        latest_depth_mode=snapshot.depth_mode,
+    )
+    return display, None, failures
+
+
 def _poll_seconds(all_full_depth: bool) -> float:
     return DEPTH_POLL_SECONDS if all_full_depth else DEPTH_RETRY_SECONDS
 
@@ -274,6 +312,8 @@ class McpDepthPoller(QThread):
         self._last_bs_fetch_at = 0.0
         self._depth_modes: dict[str, str] = {}
         self._next_depth_due: dict[str, float] = {}
+        self._last_full_depth: dict[str, DepthSnapshot] = {}
+        self._full_depth_failures: dict[str, int] = {}
 
     @staticmethod
     def _enabled(config: Config) -> bool:
@@ -307,6 +347,8 @@ class McpDepthPoller(QThread):
             with self._lock:
                 self._depth_modes.clear()
                 self._next_depth_due.clear()
+                self._last_full_depth.clear()
+                self._full_depth_failures.clear()
             self._wake.set()
 
     def refresh_now(self) -> None:
@@ -431,12 +473,23 @@ class McpDepthPoller(QThread):
                             snapshot = await _fetch_depth_with_fallback(session, symbol.code)
                             last_depth_finished_at = time.monotonic()
                             self._depth_modes[symbol.code] = snapshot.depth_mode
+
+                            display_snapshot, cached_full, failures = _merge_depth_state(
+                                snapshot,
+                                self._last_full_depth.get(symbol.code),
+                                self._full_depth_failures.get(symbol.code, 0),
+                            )
+                            if cached_full is not None:
+                                self._last_full_depth[symbol.code] = cached_full
+                            self._full_depth_failures[symbol.code] = failures
+
                             # 每只股票独立计时：降级后至少 5 秒再尝试它自己的千档。
                             self._next_depth_due[symbol.code] = (
                                 last_depth_finished_at + _poll_seconds(snapshot.full_depth)
                             )
-                            # 十档/五档/不可用都要发给 UI，不能让旧千档永久卡住。
-                            self.depth_ready.emit(snapshot)
+                            # 千档短暂失败时继续显示本地缓存，避免 UI 突然切到十档/五档。
+                            # 连续失败次数随快照下发，UI 达到阈值后在价格虚线上显示 ERROR。
+                            self.depth_ready.emit(display_snapshot)
 
         # 未抓过的股票也视为未恢复；它们会在下一轮立刻到期。
         return bool(valid_codes) and all(
