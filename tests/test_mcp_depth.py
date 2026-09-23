@@ -286,3 +286,87 @@ def test_serial_scheduler_does_not_double_wait_after_long_batch():
     poller._next_depth_due = {"600000": 161.0, "000001": 164.0}
 
     assert poller._next_wake_seconds(poller._config, now=160.0) == pytest.approx(1.0)
+
+
+def test_depth_state_keeps_cached_thousand_until_full_depth_recovers():
+    full = parse_depth_payload(
+        "600000",
+        {
+            "available": True,
+            "requested_depth": 1000,
+            "full_depth_verified": True,
+            "depth_limit_reached": False,
+            "levels": _levels(20),
+        },
+        received_at=100.0,
+    )
+    ten = parse_depth_payload(
+        "600000",
+        {
+            "available": True,
+            "requested_depth": 10,
+            "book_kind": "ten_level",
+            "levels": _levels(10),
+        },
+        received_at=105.0,
+    )
+
+    display, cache, failures = mcp_depth._merge_depth_state(full, None, 0)
+    assert display.depth_mode == DEPTH_FULL
+    assert display.using_cached_full_depth is False
+    assert failures == 0
+    assert cache == full
+
+    for expected_failures in (1, 2, 3):
+        display, cache, failures = mcp_depth._merge_depth_state(
+            ten, cache, failures
+        )
+        assert display.depth_mode == DEPTH_FULL
+        assert display.levels == full.levels
+        assert display.received_at == full.received_at
+        assert display.using_cached_full_depth is True
+        assert display.latest_depth_mode == DEPTH_TEN
+        assert display.full_depth_failures == expected_failures
+        assert failures == expected_failures
+
+    recovered = parse_depth_payload(
+        "600000",
+        {
+            "available": True,
+            "requested_depth": 1000,
+            "full_depth_verified": True,
+            "depth_limit_reached": False,
+            "levels": _levels(22),
+        },
+        received_at=120.0,
+    )
+    display, cache, failures = mcp_depth._merge_depth_state(
+        recovered, cache, failures
+    )
+    assert display == cache
+    assert display.received_at == 120.0
+    assert display.full_depth_failures == 0
+    assert display.using_cached_full_depth is False
+    assert display.latest_depth_mode == DEPTH_FULL
+    assert failures == 0
+
+
+def test_depth_state_uses_fallback_only_before_any_thousand_cache_exists():
+    ten = parse_depth_payload(
+        "600000",
+        {
+            "available": True,
+            "requested_depth": 10,
+            "book_kind": "ten_level",
+            "levels": _levels(10),
+        },
+        received_at=105.0,
+    )
+
+    display, cache, failures = mcp_depth._merge_depth_state(ten, None, 0)
+
+    assert cache is None
+    assert failures == 1
+    assert display.depth_mode == DEPTH_TEN
+    assert display.using_cached_full_depth is False
+    assert display.full_depth_failures == 1
