@@ -468,3 +468,47 @@ def test_update_inactive_theme_profile_does_not_change_current_theme(tmp_path):
     assert theme2.font_size == 22
     assert theme2.bounds is not None
     assert (theme2.bounds.x, theme2.bounds.height) == (12, 678)
+
+
+def test_current_classic_settings_apply_immediately_with_theme_profiles(tmp_path):
+    store = Store(tmp_path / "config.json")
+    # 先制造新版双 profile 文件，再验证经典主题普通更新不会被 profile 反向覆盖。
+    store.update({"display_theme": "theme2", "font_size": 18})
+    store.update({"display_theme": "theme1"})
+
+    classic = store.update(
+        {
+            "row_style": "stacked",
+            "show_title_buttons": False,
+            "font_size": 11,
+        }
+    )
+    assert classic.display_theme == "theme1"
+    assert classic.row_style == "stacked"
+    assert classic.show_title_buttons is False
+    assert classic.font_size == 11
+
+    reread = Store(store.path).get()
+    assert reread.display_theme == "theme1"
+    assert reread.row_style == "stacked"
+    assert reread.show_title_buttons is False
+    assert reread.font_size == 11
+
+
+def test_sanitize_does_not_let_stale_profile_override_explicit_flat_fields():
+    config = sanitize(
+        {
+            "display_theme": "theme1",
+            "row_style": "stacked",
+            "show_title_buttons": False,
+            "theme_profiles": {
+                "theme1": {
+                    "row_style": "sides",
+                    "show_title_buttons": True,
+                },
+                "theme2": {},
+            },
+        }
+    )
+    assert config.row_style == "stacked"
+    assert config.show_title_buttons is False
