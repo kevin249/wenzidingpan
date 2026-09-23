@@ -1146,18 +1146,22 @@ class TickerWindow(QWidget):
     def _on_handle_moved(self, position: QPoint) -> None:
         self.move(position.x() - 2, position.y() - 2)
 
-    def _emit_bounds(self) -> None:
+    def current_bounds(self, *, stop_pending: bool = False) -> dict:
+        """返回当前真实窗口几何；切主题时可先截住旧主题尚未落盘的防抖保存。"""
+        if stop_pending:
+            self._save_timer.stop()
         geometry = self.geometry()
-        self.bounds_changed.emit(
-            {
-                "x": geometry.x(),
-                "y": geometry.y(),
-                "width": geometry.width(),
-                "height": geometry.height(),
-                "scale": round(self._scale, 3),
-                "manual_size": self._manual_size,
-            }
-        )
+        return {
+            "x": geometry.x(),
+            "y": geometry.y(),
+            "width": geometry.width(),
+            "height": geometry.height(),
+            "scale": round(self._scale, 3),
+            "manual_size": self._manual_size,
+        }
+
+    def _emit_bounds(self) -> None:
+        self.bounds_changed.emit(self.current_bounds())
 
     def flush_bounds(self) -> None:
         """退出前立即保存最后一次位置与比例，不等待防抖定时器。"""
