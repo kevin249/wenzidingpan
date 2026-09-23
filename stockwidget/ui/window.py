@@ -436,6 +436,22 @@ class TickerWindow(QWidget):
 
     def apply_config(self, config: Config) -> None:
         previous = self._config
+        theme_changed = previous.display_theme != config.display_theme
+        if theme_changed:
+            # 几何 profile 虽然由 app 最后 restore，但布局重算发生在它之前。
+            # 先切换到目标主题自己的缩放/手动尺寸状态，避免拿旧主题 scale 算一遍字体。
+            if config.bounds is None:
+                self._scale = 1.0
+                self._manual_size = False
+            else:
+                self._scale = _clamp(config.bounds.scale, 0.6, 3.0)
+                self._manual_size = config.bounds.manual_size
+            self._restore_scale_from_height = False
+            # 标题栏显隐的补偿记账只能属于原主题；跨主题复用会把新主题高度加减错。
+            self._hidden_title_height = 0
+            self._hidden_title_hint = 0
+            self._hidden_title_frame = 0
+
         self._config = config
         chart_height_changed = previous.chart_height != config.chart_height
 
