@@ -339,3 +339,132 @@ def test_chart_annotation_and_label_switches_are_sanitized():
     assert sanitize({"show_bs_points": "false"}).show_bs_points is True
     assert sanitize({}).show_sparkline_fill is False
     assert sanitize({"show_sparkline_fill": True}).show_sparkline_fill is True
+
+
+def test_theme_profiles_keep_display_settings_and_bounds_independent(tmp_path):
+    path = tmp_path / "config.json"
+    store = Store(path)
+
+    theme1 = store.update(
+        {
+            "font_size": 10,
+            "stock_price_font_size": 19,
+            "background_alpha": 0.31,
+            "row_style": "stacked",
+            "bounds": {
+                "x": 101,
+                "y": 102,
+                "width": 701,
+                "height": 211,
+                "scale": 1.25,
+                "manual_size": True,
+            },
+        }
+    )
+    assert theme1.display_theme == "theme1"
+    assert theme1.font_size == 10
+
+    # 第一次切到主题2时使用主题2自己的默认 profile，不继承主题1的外观/尺寸。
+    theme2 = store.update({"display_theme": "theme2"})
+    assert theme2.display_theme == "theme2"
+    assert theme2.font_size == 13
+    assert theme2.stock_price_font_size == 15
+    assert theme2.background_alpha == 0.82
+    assert theme2.bounds is None
+
+    theme2 = store.update(
+        {
+            "font_size": 18,
+            "stock_price_font_size": 27,
+            "background_alpha": 0.66,
+            "theme2_side": "left",
+            "theme2_depth_width": 188,
+            "bounds": {
+                "x": 301,
+                "y": 302,
+                "width": 388,
+                "height": 777,
+                "scale": 1.0,
+                "manual_size": True,
+            },
+        }
+    )
+    assert theme2.font_size == 18
+    assert theme2.theme2_depth_width == 188
+
+    restored1 = store.update({"display_theme": "theme1"})
+    assert restored1.font_size == 10
+    assert restored1.stock_price_font_size == 19
+    assert restored1.background_alpha == 0.31
+    assert restored1.row_style == "stacked"
+    assert restored1.bounds is not None
+    assert (restored1.bounds.x, restored1.bounds.width, restored1.bounds.scale) == (
+        101,
+        701,
+        1.25,
+    )
+
+    restored2 = store.update({"display_theme": "theme2"})
+    assert restored2.font_size == 18
+    assert restored2.stock_price_font_size == 27
+    assert restored2.background_alpha == 0.66
+    assert restored2.theme2_side == "left"
+    assert restored2.theme2_depth_width == 188
+    assert restored2.bounds is not None
+    assert (restored2.bounds.x, restored2.bounds.height) == (301, 777)
+
+    persisted = json.loads(path.read_text(encoding="utf-8"))
+    assert persisted["theme_profiles"]["theme1"]["font_size"] == 10
+    assert persisted["theme_profiles"]["theme2"]["font_size"] == 18
+    assert persisted["theme_profiles"]["theme1"]["bounds"]["width"] == 701
+    assert persisted["theme_profiles"]["theme2"]["bounds"]["height"] == 777
+
+
+def test_theme_switch_keeps_global_runtime_settings_shared(tmp_path):
+    store = Store(tmp_path / "config.json")
+    store.update(
+        {
+            "provider": "tencent",
+            "symbols": ["600000", "000001"],
+            "refresh_seconds": 9,
+            "debug_mode": True,
+            "mcp_notifications_enabled": True,
+            "font_size": 9,
+        }
+    )
+
+    theme2 = store.update({"display_theme": "theme2"})
+    assert theme2.provider == "tencent"
+    assert theme2.symbols == ["600000", "000001"]
+    assert theme2.refresh_seconds == 9
+    assert theme2.debug_mode is True
+    assert theme2.mcp_notifications_enabled is True
+    assert theme2.font_size == 13
+
+
+def test_update_inactive_theme_profile_does_not_change_current_theme(tmp_path):
+    store = Store(tmp_path / "config.json")
+    current = store.update({"font_size": 11})
+    assert current.display_theme == "theme1"
+
+    still_theme1 = store.update_theme_profile(
+        "theme2",
+        {
+            "font_size": 22,
+            "bounds": {
+                "x": 12,
+                "y": 34,
+                "width": 456,
+                "height": 678,
+                "scale": 1.0,
+                "manual_size": True,
+            },
+        },
+    )
+    assert still_theme1.display_theme == "theme1"
+    assert still_theme1.font_size == 11
+
+    theme2 = store.update({"display_theme": "theme2"})
+    assert theme2.font_size == 22
+    assert theme2.bounds is not None
+    assert (theme2.bounds.x, theme2.bounds.height) == (12, 678)
