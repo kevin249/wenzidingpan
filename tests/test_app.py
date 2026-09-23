@@ -18,7 +18,7 @@ except (ImportError, OSError) as error:
     pytest.skip(f"Qt 运行库不可用：{error}", allow_module_level=True)
 
 from stockwidget import app as app_module
-from stockwidget.config import Config
+from stockwidget.config import Config, Store
 from stockwidget.mcp_notifications import McpNotification
 
 NOTIFICATION = McpNotification(
@@ -283,3 +283,97 @@ def test_notification_does_not_create_unread_while_terminal_is_foreground(monkey
 
     assert stub._unread == 0
     assert tray.unread == 0
+
+
+def test_theme_switch_saves_old_geometry_and_restores_target_profile(tmp_path):
+    store = Store(tmp_path / "config.json")
+    old_config = store.update(
+        {
+            "font_size": 10,
+            "bounds": {
+                "x": 10,
+                "y": 20,
+                "width": 500,
+                "height": 200,
+                "scale": 1.2,
+                "manual_size": True,
+            },
+        }
+    )
+    target_config = store.update(
+        {
+            "display_theme": "theme2",
+            "font_size": 18,
+            "bounds": {
+                "x": 300,
+                "y": 320,
+                "width": 420,
+                "height": 760,
+                "scale": 1.0,
+                "manual_size": True,
+            },
+        }
+    )
+
+    class FakeThemeWindow(_FakeWindow):
+        def __init__(self):
+            super().__init__()
+            self.applied = []
+            self.restored = []
+            self.captured = 0
+
+        def current_bounds(self, *, stop_pending=False):
+            assert stop_pending is True
+            self.captured += 1
+            return {
+                "x": 111,
+                "y": 222,
+                "width": 777,
+                "height": 333,
+                "scale": 1.35,
+                "manual_size": True,
+            }
+
+        def apply_config(self, config):
+            self.applied.append(config)
+
+        def restore_bounds(self, bounds, available):
+            self.restored.append((bounds, available))
+
+    window = FakeThemeWindow()
+    screen = SimpleNamespace(availableGeometry=lambda: "screen-geometry")
+    stub = SimpleNamespace(
+        config=old_config,
+        store=store,
+        window=window,
+        qt=SimpleNamespace(screens=lambda: [screen]),
+        tray=None,
+        _unread=0,
+        poller=SimpleNamespace(apply_config=lambda c: None),
+        notification_listener=SimpleNamespace(apply_config=lambda c: None),
+    )
+    stub._clear_unread = lambda: None
+
+    app_module.WidgetApp._apply_config(stub, target_config)
+
+    assert window.captured == 1
+    assert window.applied[-1].display_theme == "theme2"
+    restored_bounds, available = window.restored[-1]
+    assert restored_bounds is not None
+    assert (restored_bounds.x, restored_bounds.y, restored_bounds.width, restored_bounds.height) == (
+        300,
+        320,
+        420,
+        760,
+    )
+    assert available == ["screen-geometry"]
+
+    persisted = store.get()
+    assert persisted.display_theme == "theme2"
+    old_bounds = persisted.theme_profiles["theme1"]["bounds"]
+    assert (old_bounds["x"], old_bounds["y"], old_bounds["width"], old_bounds["height"]) == (
+        111,
+        222,
+        777,
+        333,
+    )
