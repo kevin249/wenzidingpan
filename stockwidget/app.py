@@ -233,10 +233,26 @@ class WidgetApp:
         self._terminal_was_foreground = foreground
 
     def _apply_config(self, config: Config) -> None:
+        previous = getattr(self, "config", None)
+        theme_changed = bool(
+            previous is not None and previous.display_theme != config.display_theme
+        )
+        if theme_changed:
+            # WebUI 已先把 Store 切到目标主题；这里在真正重排窗口前抓住旧主题
+            # 尚未经过 400ms 防抖落盘的最终几何，并定向写回旧 profile。
+            old_bounds = self.window.current_bounds(stop_pending=True)
+            self.store.update_theme_profile(previous.display_theme, {"bounds": old_bounds})
+            config = self.store.get()
+
         self.config = config
         if not (config.mcp_notifications_enabled and config.mcp_bell_tray_icon):
             self._clear_unread()
         self.window.apply_config(config)
+        if theme_changed:
+            self.window.restore_bounds(
+                config.bounds,
+                [screen.availableGeometry() for screen in self.qt.screens()],
+            )
         self.poller.apply_config(config)
         depth_poller = getattr(self, "depth_poller", None)
         if depth_poller is not None:
