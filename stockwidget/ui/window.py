@@ -474,8 +474,11 @@ class TickerWindow(QWidget):
         # 占的高度和与之对应的 sizeHint——藏起来时要减的是这一条。
         title_before = (self.title_bar.height(), self.title_bar.sizeHint().height())
         # 标题栏里除了这四个按钮没有别的东西，关掉就整条收起，省下那一行高度；
-        # 窗口内容区本来就能拖动，少了标题栏也不影响挪窗口。
-        self.title_bar.setVisible(config.show_title_buttons)
+        # 用显式 show/hide，避免主题切换后父布局恢复可见性时把旧状态带回来。
+        if config.show_title_buttons:
+            self.title_bar.show()
+        else:
+            self.title_bar.hide()
         self.empty_label.setText(
             "自选列表为空\n点击 ⚙ 在浏览器里添加代码"
             if config.show_title_buttons
@@ -496,6 +499,15 @@ class TickerWindow(QWidget):
             for row in self._rows.values():
                 row.set_theme2_expanded(False, notify=False)
                 row.set_theme2_depth_width_override(None)
+        if (
+            theme_changed
+            or previous.row_style != config.row_style
+            or previous.visible_rows != config.visible_rows
+            or previous.layout != config.layout
+        ):
+            # Theme 2 固定一列，会改掉网格 shape；切回经典主题或改上中下时
+            # 不允许 _lay_out_grid 因“shape 没变”提前返回。
+            self._grid_shape = (-1, -1)
         if self._rows:
             # 字号会改变每个行情格的 minimumSizeHint，随配置一起刷新内容宽度。
             self._lay_out_grid(list(self._rows))
