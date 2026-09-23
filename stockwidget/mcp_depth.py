@@ -255,7 +255,7 @@ def _merge_depth_state(
             using_cached_full_depth=False,
             latest_depth_mode=DEPTH_FULL,
         )
-        return fresh, snapshot, 0
+        return fresh, fresh, 0
 
     failures = max(0, int(consecutive_failures)) + 1
     if cached_full_depth is not None and cached_full_depth.full_depth:
