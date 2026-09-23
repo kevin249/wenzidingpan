@@ -82,7 +82,7 @@ let names = {};
 let savedTimer = null;
 let searchTimer = null;
 let fontApplyTimer = null;
-let activeTheme = 'theme1';
+let activeTheme = el('display_theme')?.value || 'theme1';
 
 /* ------------------------------------------------------------ 自选列表 */
 
@@ -298,8 +298,12 @@ async function postConfig(patch) {
 
 async function apply(label = '已保存') {
   try {
+    // 只有 switchTheme() 可以改变主题。其它控件即使和下拉框事件撞在一起，
+    // 也强制写回当前 activeTheme，避免旧主题整页值误覆盖目标 profile。
+    const patch = collect();
+    patch.display_theme = activeTheme;
     // 服务端会做最终校验，用返回值回填，页面始终反映真实生效的配置。
-    fill(await postConfig(collect()));
+    fill(await postConfig(patch));
     note(label);
   } catch (error) {
     note(`保存失败：${error.message}`);
