@@ -1901,3 +1901,39 @@ def test_theme2_switching_popup_rows_reuses_original_frozen_depth_width(app):
     assert second.theme2_depth.width_override == frozen
     assert second.theme2_depth.sizeHint().width() == frozen
     window.close()
+
+
+def test_switching_theme2_back_to_classic_restores_stacked_and_hidden_titlebar(app):
+    from stockwidget.providers.base import Quote
+
+    window = TickerWindow(Config(display_theme="theme2", font_size=16))
+    window._sync_rows(
+        [Quote.from_prices("600519", "贵州茅台", 1304.66, 1272.83)]
+    )
+    window.show()
+    app.processEvents()
+
+    row = window._rows["600519"]
+    assert row.theme2_depth.isVisible() is True
+    assert row.minimumHeight() > 0
+
+    window.apply_config(
+        Config(
+            display_theme="theme1",
+            row_style="stacked",
+            show_title_buttons=False,
+            font_size=13,
+        )
+    )
+    app.processEvents()
+
+    layout = row.layout()
+    assert window.title_bar.isHidden() is True
+    assert row.minimumHeight() == 0
+    assert row.theme2_depth.isVisible() is False
+    assert layout.getItemPosition(layout.indexOf(row.name_label))[:2] == (0, 0)
+    assert layout.getItemPosition(layout.indexOf(row.price_label))[:2] == (0, 1)
+    assert layout.getItemPosition(layout.indexOf(row.sparkline)) == (1, 0, 1, 2)
+    assert layout.getItemPosition(layout.indexOf(row.dark_box))[:2] == (2, 0)
+    assert layout.getItemPosition(layout.indexOf(row.percent_label))[:2] == (2, 1)
+    window.close()
