@@ -315,7 +315,9 @@ def test_depth_state_keeps_cached_thousand_until_full_depth_recovers():
     assert display.depth_mode == DEPTH_FULL
     assert display.using_cached_full_depth is False
     assert failures == 0
-    assert cache == full
+    assert cache == display
+    assert cache.levels == full.levels
+    assert cache.latest_depth_mode == DEPTH_FULL
 
     for expected_failures in (1, 2, 3):
         display, cache, failures = mcp_depth._merge_depth_state(
