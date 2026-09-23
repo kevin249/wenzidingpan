@@ -386,7 +386,7 @@ def sanitize(raw: Any, *, _include_theme_profiles: bool = True) -> Config:
         for theme in DISPLAY_THEMES:
             source = raw_profiles.get(theme)
             if not isinstance(source, dict):
-                # 旧版配置没有 profile：保留当前主题已有外观；另一个主题从默认值开始。
+                # 旧版配置没有 profile：当前主题沿用旧扁平字段，另一个主题从默认值开始。
                 source = (
                     {key: raw.get(key) for key in THEME_SCOPED_FIELDS if key in raw}
                     if theme == out.display_theme
@@ -398,13 +398,9 @@ def sanitize(raw: Any, *, _include_theme_profiles: bool = True) -> Config:
             )
             profiles[theme] = _theme_profile_from_config(candidate)
 
+        # 这里只校验/保存 profile，不再偷偷反向覆盖 out 的扁平字段。
+        # 当前主题什么时候加载自己的 profile，由 Store 显式控制。
         out.theme_profiles = profiles
-        active = sanitize(
-            {**profiles[out.display_theme], "display_theme": out.display_theme},
-            _include_theme_profiles=False,
-        )
-        for key in THEME_SCOPED_FIELDS:
-            setattr(out, key, getattr(active, key))
 
     return out
 
@@ -414,7 +410,28 @@ class Store:
 
     def __init__(self, path: Path | None = None) -> None:
         self.path = Path(path) if path else config_path()
-        self._config = sanitize(self._read())
+        raw = self._read()
+        self._config = sanitize(raw)
+        # 新版文件已经有两个 profile 时，启动时显式装载当前主题。
+        # 旧版没有 profile 时，sanitize 已把旧扁平字段迁移进当前主题 profile，
+        # 扁平字段本身也保持原值，无需再覆盖一次。
+        if isinstance(raw, dict) and isinstance(raw.get("theme_profiles"), dict):
+            self._config = self._activate_theme(self._config, self._config.display_theme)
+
+    @staticmethod
+    def _activate_theme(config: Config, theme: str) -> Config:
+        """把指定主题 profile 显式展开到运行时扁平 Config。"""
+        if theme not in DISPLAY_THEMES:
+            theme = config.display_theme
+        merged = config.to_dict()
+        profiles = {
+            name: dict(config.theme_profiles.get(name) or _default_theme_profile(name))
+            for name in DISPLAY_THEMES
+        }
+        merged.update(profiles[theme])
+        merged["display_theme"] = theme
+        merged["theme_profiles"] = profiles
+        return sanitize(merged)
 
     def _read(self) -> Any:
         try:
@@ -437,24 +454,29 @@ class Store:
             print(f"[config] 配置写入失败: {exc}", file=sys.stderr)
 
     def update(self, patch: dict[str, Any]) -> Config:
-        """合并补丁并落盘；显示参数只写当前/目标主题自己的 profile。"""
+        """普通更新直接作用当前 Config；只有切主题时才显式装载另一份 profile。"""
         patch = dict(patch or {})
         current = self._config
         current_theme = current.display_theme
         requested = patch.get("display_theme")
         target_theme = requested if requested in DISPLAY_THEMES else current_theme
 
-        merged = current.to_dict()
         profiles = {
             theme: dict(current.theme_profiles.get(theme) or _default_theme_profile(theme))
             for theme in DISPLAY_THEMES
         }
-        # 无论是否切主题，都先把当前展开态回写，保证旧主题最后一次状态完整保存。
+        # 先把当前真实运行态写回当前 profile，避免 profile 落后于界面。
         profiles[current_theme] = _theme_profile_from_config(current)
+
+        merged = current.to_dict()
+        if target_theme != current_theme:
+            # 主题切换只在这里发生：先装载目标 profile，再应用这次明确提交给目标主题的字段。
+            merged.update(profiles[target_theme])
 
         scoped_patch = {
             key: value for key, value in patch.items() if key in THEME_SCOPED_FIELDS
         }
+        merged.update(scoped_patch)
         profiles[target_theme].update(scoped_patch)
 
         for key, value in patch.items():
@@ -462,25 +484,38 @@ class Store:
                 merged[key] = value
         merged["display_theme"] = target_theme
         merged["theme_profiles"] = profiles
+
         self._config = sanitize(merged)
+        # sanitize 只做校验，不再替换扁平字段；把最终合法运行态同步回当前 profile。
+        profiles = {
+            theme: dict(self._config.theme_profiles.get(theme) or _default_theme_profile(theme))
+            for theme in DISPLAY_THEMES
+        }
+        profiles[target_theme] = _theme_profile_from_config(self._config)
+        normalized = self._config.to_dict()
+        normalized["theme_profiles"] = profiles
+        self._config = sanitize(normalized)
         self._persist()
         return self.get()
 
     def update_theme_profile(self, theme: str, patch: dict[str, Any]) -> Config:
-        """更新指定（可非当前）主题的显示 profile，不改变当前主题。"""
+        """更新指定（可非当前）主题的显示 profile，不改变另一个主题。"""
         if theme not in DISPLAY_THEMES:
             return self.get()
         current = self._config
-        merged = current.to_dict()
         profiles = {
             name: dict(current.theme_profiles.get(name) or _default_theme_profile(name))
             for name in DISPLAY_THEMES
         }
+        profiles[current.display_theme] = _theme_profile_from_config(current)
+        scoped_patch = {
+            key: value for key, value in (patch or {}).items() if key in THEME_SCOPED_FIELDS
+        }
+        profiles[theme].update(scoped_patch)
+
+        merged = current.to_dict()
         if theme == current.display_theme:
-            profiles[theme] = _theme_profile_from_config(current)
-        profiles[theme].update(
-            {key: value for key, value in (patch or {}).items() if key in THEME_SCOPED_FIELDS}
-        )
+            merged.update(scoped_patch)
         merged["theme_profiles"] = profiles
         self._config = sanitize(merged)
         self._persist()
