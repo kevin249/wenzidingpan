@@ -26,6 +26,52 @@ THEME2_SIDES = ("right", "left")
 # sides = 左中右（左右各两行文字），stacked = 上中下（上下各一行文字）
 ROW_STYLES = ("sides", "stacked")
 COLOR_SCHEMES = ("cn", "us")
+
+# 只把“显示/窗口外观”按主题隔离。数据源、自选、刷新频率、Debug、
+# MCP/托盘提醒仍是全局共享配置，切主题不会复制或分叉这些运行状态。
+THEME_SCOPED_FIELDS = (
+    "color_scheme",
+    "opacity",
+    "background_color",
+    "background_alpha",
+    "click_through",
+    "always_on_top",
+    "show_title_buttons",
+    "show_sparkline",
+    "show_sparkline_fill",
+    "show_bs_points",
+    "show_open_line",
+    "show_high_low",
+    "show_stock_name",
+    "show_stock_price",
+    "grayscale",
+    "intraday_chart",
+    "show_dark_trade",
+    "compact",
+    "theme2_side",
+    "theme2_depth_width",
+    "theme2_popup_font_size",
+    "layout",
+    "row_style",
+    "visible_rows",
+    "chart_height",
+    "font_family",
+    "font_size",
+    "stock_name_font_size",
+    "stock_price_font_size",
+    "stock_percent_font_size",
+    "dark_trade_font_size",
+    "chart_label_font_size",
+    "stock_name_color",
+    "stock_price_color",
+    "stock_percent_color",
+    "dark_trade_color",
+    "stock_name_bold",
+    "stock_price_bold",
+    "stock_percent_bold",
+    "dark_trade_bold",
+    "bounds",
+)
 # 字体名允许中英文、数字、空格、引号、逗号和连字符，挡掉可能破坏样式声明的字符。
 FONT_FAMILY_RE = re.compile(r"^[\w \-,'\"一-鿿]{0,120}$")
 HEX_COLOR_RE = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
@@ -144,12 +190,25 @@ class Config:
     mcp_url: str = "http://127.0.0.1:8801/mcp"
     mcp_api_key: str = ""
     bounds: Bounds | None = None
+    # theme1/theme2 各保存一份显示参数；当前主题的 profile 会展开到上面的字段，
+    # 所以现有 UI/绘制代码仍然只需读取 config.font_size / config.bounds 等。
+    theme_profiles: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
 
-def sanitize(raw: Any) -> Config:
+def _theme_profile_from_config(config: Config) -> dict[str, Any]:
+    serialized = config.to_dict()
+    return {key: serialized.get(key) for key in THEME_SCOPED_FIELDS}
+
+
+def _default_theme_profile(theme: str) -> dict[str, Any]:
+    base = Config(display_theme=theme)
+    return _theme_profile_from_config(base)
+
+
+def sanitize(raw: Any, *, _include_theme_profiles: bool = True) -> Config:
     """把任意输入收敛成一份合法配置，非法字段回落到默认值。"""
     out = Config()
     if not isinstance(raw, dict):
@@ -320,6 +379,33 @@ def sanitize(raw: Any) -> Config:
                 manual_size=bounds.get("manual_size") is True,
             )
 
+    if _include_theme_profiles:
+        raw_profiles = raw.get("theme_profiles")
+        raw_profiles = raw_profiles if isinstance(raw_profiles, dict) else {}
+        profiles: dict[str, dict[str, Any]] = {}
+        for theme in DISPLAY_THEMES:
+            source = raw_profiles.get(theme)
+            if not isinstance(source, dict):
+                # 旧版配置没有 profile：保留当前主题已有外观；另一个主题从默认值开始。
+                source = (
+                    {key: raw.get(key) for key in THEME_SCOPED_FIELDS if key in raw}
+                    if theme == out.display_theme
+                    else {}
+                )
+            candidate = sanitize(
+                {**source, "display_theme": theme},
+                _include_theme_profiles=False,
+            )
+            profiles[theme] = _theme_profile_from_config(candidate)
+
+        out.theme_profiles = profiles
+        active = sanitize(
+            {**profiles[out.display_theme], "display_theme": out.display_theme},
+            _include_theme_profiles=False,
+        )
+        for key in THEME_SCOPED_FIELDS:
+            setattr(out, key, getattr(active, key))
+
     return out
 
 
@@ -340,11 +426,7 @@ class Store:
     def get(self) -> Config:
         return sanitize(self._config.to_dict())
 
-    def update(self, patch: dict[str, Any]) -> Config:
-        """合并补丁并落盘，返回生效后的完整配置。"""
-        merged = self._config.to_dict()
-        merged.update(patch or {})
-        self._config = sanitize(merged)
+    def _persist(self) -> None:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             self.path.write_text(
@@ -353,4 +435,53 @@ class Store:
             )
         except OSError as exc:  # 只读文件系统等情况下不该让程序崩掉
             print(f"[config] 配置写入失败: {exc}", file=sys.stderr)
+
+    def update(self, patch: dict[str, Any]) -> Config:
+        """合并补丁并落盘；显示参数只写当前/目标主题自己的 profile。"""
+        patch = dict(patch or {})
+        current = self._config
+        current_theme = current.display_theme
+        requested = patch.get("display_theme")
+        target_theme = requested if requested in DISPLAY_THEMES else current_theme
+
+        merged = current.to_dict()
+        profiles = {
+            theme: dict(current.theme_profiles.get(theme) or _default_theme_profile(theme))
+            for theme in DISPLAY_THEMES
+        }
+        # 无论是否切主题，都先把当前展开态回写，保证旧主题最后一次状态完整保存。
+        profiles[current_theme] = _theme_profile_from_config(current)
+
+        scoped_patch = {
+            key: value for key, value in patch.items() if key in THEME_SCOPED_FIELDS
+        }
+        profiles[target_theme].update(scoped_patch)
+
+        for key, value in patch.items():
+            if key not in THEME_SCOPED_FIELDS and key != "display_theme":
+                merged[key] = value
+        merged["display_theme"] = target_theme
+        merged["theme_profiles"] = profiles
+        self._config = sanitize(merged)
+        self._persist()
+        return self.get()
+
+    def update_theme_profile(self, theme: str, patch: dict[str, Any]) -> Config:
+        """更新指定（可非当前）主题的显示 profile，不改变当前主题。"""
+        if theme not in DISPLAY_THEMES:
+            return self.get()
+        current = self._config
+        merged = current.to_dict()
+        profiles = {
+            name: dict(current.theme_profiles.get(name) or _default_theme_profile(name))
+            for name in DISPLAY_THEMES
+        }
+        if theme == current.display_theme:
+            profiles[theme] = _theme_profile_from_config(current)
+        profiles[theme].update(
+            {key: value for key, value in (patch or {}).items() if key in THEME_SCOPED_FIELDS}
+        )
+        merged["theme_profiles"] = profiles
+        self._config = sanitize(merged)
+        self._persist()
         return self.get()
