@@ -286,7 +286,7 @@ class McpNotificationListener(QThread):
             await _bounded(session.discover(), cancel_event)
             return True
         except MCPError as exc:
-            if getattr(exc, "code", None) != -32601:  # METHOD_NOT_FOUND
+            if getattr(exc, "code", None) not in {-32601, -32602}:  # METHOD_NOT_FOUND / legacy INVALID_PARAMS
                 raise
         await _bounded(session.initialize(), cancel_event)
         return False
@@ -318,8 +318,10 @@ class McpNotificationListener(QThread):
             if watcher is not None and not watcher.done():
                 watcher.cancel()
                 await asyncio.gather(watcher, return_exceptions=True)
-            with suppress(Exception):
-                await _bounded(subscription_cm.__aexit__(None, None, None), cancel_event)
+            # cancel_event 此时通常已经置位；清理握手不能再绑定它，否则 _bounded 会
+            # 立即取消 __aexit__，留下服务端 listen 订阅直到超时。
+            with suppress(Exception, asyncio.CancelledError):
+                await _bounded(subscription_cm.__aexit__(None, None, None), None)
 
     async def _watch_modern_subscription(self, sub: Any, updates: asyncio.Queue[str]) -> None:
         async for event in sub:
