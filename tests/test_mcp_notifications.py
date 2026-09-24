@@ -500,7 +500,109 @@ def test_consume_propagates_deliver_errors_so_the_listener_can_reconnect():
 
 
 def test_passive_subscription_follows_the_debug_flag():
-    """非 Debug 全程被动：推送静默时不再每 60 秒兜底读资源，只等下一次推送。
-    Debug 仍保留兜底轮询，方便收盘后联调。"""
+    """该标志只描述配置模式；现代 listen 在非 Debug 下仍保留低频 sequence 自检。"""
     assert McpNotificationListener(Config(debug_mode=False))._passive_only() is True
     assert McpNotificationListener(Config(debug_mode=True))._passive_only() is False
+
+
+def test_negotiate_protocol_prefers_modern_discover():
+    class Session:
+        def __init__(self):
+            self.discovered = False
+            self.initialized = False
+
+        async def discover(self):
+            self.discovered = True
+            return SimpleNamespace()
+
+        async def initialize(self):
+            self.initialized = True
+            return SimpleNamespace()
+
+    async def scenario():
+        session = Session()
+        modern = await McpNotificationListener._negotiate_protocol(
+            SimpleNamespace(), session, asyncio.Event()
+        )
+        return modern, session
+
+    modern, session = asyncio.run(scenario())
+    assert modern is True
+    assert session.discovered is True
+    assert session.initialized is False
+
+
+def test_negotiate_protocol_falls_back_only_when_discover_is_missing():
+    class Session:
+        def __init__(self):
+            self.initialized = False
+
+        async def discover(self):
+            from mcp.shared.exceptions import MCPError
+
+            raise MCPError(code=-32601, message="Method not found")
+
+        async def initialize(self):
+            self.initialized = True
+            return SimpleNamespace()
+
+    async def scenario():
+        session = Session()
+        modern = await McpNotificationListener._negotiate_protocol(
+            SimpleNamespace(), session, asyncio.Event()
+        )
+        return modern, session
+
+    modern, session = asyncio.run(scenario())
+    assert modern is False
+    assert session.initialized is True
+
+
+def test_modern_subscription_converts_resource_updates_into_refresh_requests():
+    class Subscription:
+        def __init__(self):
+            self._events = iter([
+                mcp_notifications.ResourceUpdated(uri="gupiao://notifications/alice"),
+            ])
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            try:
+                return next(self._events)
+            except StopIteration:
+                raise StopAsyncIteration from None
+
+    async def scenario():
+        updates: asyncio.Queue[str] = asyncio.Queue(maxsize=1)
+        await McpNotificationListener._watch_modern_subscription(
+            SimpleNamespace(), Subscription(), updates
+        )
+        return updates.get_nowait()
+
+    assert asyncio.run(scenario()) == "gupiao://notifications/alice"
+
+
+def test_consume_reconnects_when_modern_listen_stream_ends():
+    async def scenario():
+        stub = _ListenerStub()
+        updates: asyncio.Queue[str] = asyncio.Queue(maxsize=1)
+        cancel_event = asyncio.Event()
+
+        async def ended_stream():
+            await asyncio.sleep(0)
+
+        subscription_task = asyncio.create_task(ended_stream())
+        await McpNotificationListener._consume(
+            stub,
+            updates,
+            _FakeSession(),
+            "uri://x",
+            cancel_event,
+            subscription_task=subscription_task,
+            mode="2026 listen",
+        )
+
+    with pytest.raises(RuntimeError, match="subscriptions/listen 已结束"):
+        asyncio.run(asyncio.wait_for(scenario(), timeout=2.0))

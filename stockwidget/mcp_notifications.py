@@ -15,7 +15,8 @@ from typing import Any
 import httpx2
 from mcp import ClientSession, types
 from mcp.client.streamable_http import streamable_http_client
-from mcp.shared.exceptions import MCPDeprecationWarning
+from mcp.client.subscriptions import ResourceUpdated, listen
+from mcp.shared.exceptions import MCPDeprecationWarning, MCPError
 from PySide6.QtCore import QThread, Signal
 
 from .config import Config
@@ -176,8 +177,8 @@ class McpNotificationListener(QThread):
                 self._last_sequence = None
                 self._seen_order.clear()
                 self._seen_ids.clear()
-        # Debug 切换也重连一次，让“被动订阅 / 盘中兜底轮询”立即切换；
-        # 但不清 baseline/seen，避免把历史事件重新当新提醒。
+        # Debug 切换仍重连一次，方便联调时立即刷新连接状态；不清 baseline/seen，
+        # 避免把历史事件重新当新提醒。现代 listen 与非 Debug 都保留低频 sequence 自检。
         if identity_changed or mode_changed:
             self._wake.set()
             self._cancel_connection()
@@ -199,7 +200,7 @@ class McpNotificationListener(QThread):
             self.status_changed.emit(status)
 
     def _passive_only(self) -> bool:
-        """非 Debug 模式全程被动订阅：只等服务端推送，不再定时主动读资源兜底。"""
+        """兼容配置语义：非 Debug 以推送为主，但仍保留低频 sequence 自检。"""
         with self._lock:
             config = self._config
         return not config.debug_mode
@@ -243,12 +244,14 @@ class McpNotificationListener(QThread):
 
     async def _run_session(self, config: Config, key: str, cancel_event: asyncio.Event) -> None:
         headers = {"Authorization": f"Bearer {key}"}
-        updates: asyncio.Queue[str] = asyncio.Queue(maxsize=1)
+        legacy_updates: asyncio.Queue[str] = asyncio.Queue(maxsize=1)
 
         async def handle_message(message: Any) -> None:
+            # 只给 2025-era resources/subscribe 回退路径使用；2026-07-28
+            # subscriptions/listen 的事件由 mcp.client.subscriptions.listen() 消费。
             if isinstance(message, types.ResourceUpdatedNotification):
-                if updates.empty():
-                    updates.put_nowait(str(message.params.uri))
+                if legacy_updates.empty():
+                    legacy_updates.put_nowait(str(message.params.uri))
 
         async with httpx2.AsyncClient(headers=headers, timeout=SSE_TIMEOUT) as client:
             async with streamable_http_client(
@@ -261,25 +264,94 @@ class McpNotificationListener(QThread):
                     write_stream,
                     message_handler=handle_message,
                 ) as session:
-                    await _bounded(session.initialize(), cancel_event)
+                    modern = await self._negotiate_protocol(session, cancel_event)
                     info = _tool_payload(
                         await _bounded(session.call_tool("get_notification_stream"), cancel_event)
                     )
                     uri = str(info.get("resource_uri") or "")
                     if not uri:
                         raise RuntimeError("MCP 未返回通知资源地址")
-                    with warnings.catch_warnings():
-                        warnings.simplefilter("ignore", MCPDeprecationWarning)
-                        await _bounded(session.subscribe_resource(uri), cancel_event)
-                    try:
-                        missing = await self._establish_baseline(session, uri, cancel_event)
-                        self._emit_delivery_status(missing)
-                        await self._consume(updates, session, uri, cancel_event)
-                    finally:
-                        with suppress(Exception):
-                            with warnings.catch_warnings():
-                                warnings.simplefilter("ignore", MCPDeprecationWarning)
-                                await _bounded(session.unsubscribe_resource(uri), cancel_event)
+                    if modern:
+                        await self._run_modern_subscription(session, uri, cancel_event)
+                    else:
+                        await self._run_legacy_subscription(
+                            session, uri, legacy_updates, cancel_event
+                        )
+
+    async def _negotiate_protocol(
+        self, session: ClientSession, cancel_event: asyncio.Event
+    ) -> bool:
+        """优先协商 2026-07-28；老网关只在明确不支持 discover 时回退 initialize。"""
+        try:
+            await _bounded(session.discover(), cancel_event)
+            return True
+        except MCPError as exc:
+            if getattr(exc, "code", None) != -32601:  # METHOD_NOT_FOUND
+                raise
+        await _bounded(session.initialize(), cancel_event)
+        return False
+
+    async def _run_modern_subscription(
+        self, session: ClientSession, uri: str, cancel_event: asyncio.Event
+    ) -> None:
+        """2026-07-28：subscriptions/listen 建流，ack 后取基线，之后推送触发重读。"""
+        subscription_cm = listen(session, resource_subscriptions=[uri])
+        sub = await _bounded(subscription_cm.__aenter__(), cancel_event)
+        watcher: asyncio.Task[Any] | None = None
+        try:
+            honored = tuple(getattr(sub.honored, "resource_subscriptions", None) or ())
+            if uri not in honored:
+                raise RuntimeError("MCP 服务端未确认通知资源订阅")
+            missing = await self._establish_baseline(session, uri, cancel_event)
+            self._emit_delivery_status(missing, "2026 listen")
+            updates: asyncio.Queue[str] = asyncio.Queue(maxsize=1)
+            watcher = asyncio.create_task(self._watch_modern_subscription(sub, updates))
+            await self._consume(
+                updates,
+                session,
+                uri,
+                cancel_event,
+                subscription_task=watcher,
+                mode="2026 listen",
+            )
+        finally:
+            if watcher is not None and not watcher.done():
+                watcher.cancel()
+                await asyncio.gather(watcher, return_exceptions=True)
+            with suppress(Exception):
+                await _bounded(subscription_cm.__aexit__(None, None, None), cancel_event)
+
+    async def _watch_modern_subscription(self, sub: Any, updates: asyncio.Queue[str]) -> None:
+        async for event in sub:
+            if isinstance(event, ResourceUpdated) and updates.empty():
+                updates.put_nowait(str(event.uri))
+
+    async def _run_legacy_subscription(
+        self,
+        session: ClientSession,
+        uri: str,
+        updates: asyncio.Queue[str],
+        cancel_event: asyncio.Event,
+    ) -> None:
+        """兼容 2025-era 网关；升级完成后正常不会走到这里。"""
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", MCPDeprecationWarning)
+            await _bounded(session.subscribe_resource(uri), cancel_event)
+        try:
+            missing = await self._establish_baseline(session, uri, cancel_event)
+            self._emit_delivery_status(missing, "legacy subscribe")
+            await self._consume(
+                updates,
+                session,
+                uri,
+                cancel_event,
+                mode="legacy subscribe",
+            )
+        finally:
+            with suppress(Exception):
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", MCPDeprecationWarning)
+                    await _bounded(session.unsubscribe_resource(uri), cancel_event)
 
     async def _establish_baseline(
         self, session: ClientSession, uri: str, cancel_event: asyncio.Event | None = None
@@ -309,7 +381,7 @@ class McpNotificationListener(QThread):
         notifications = _notifications(payload)
         missing = self._observe_sequence(payload, notifications)
         self._deliver(notifications)
-        self._emit_delivery_status(missing)
+        self._emit_delivery_status(missing, "sequence self-check")
 
     async def _consume(
         self,
@@ -317,40 +389,52 @@ class McpNotificationListener(QThread):
         session: ClientSession,
         uri: str,
         cancel_event: asyncio.Event,
+        subscription_task: asyncio.Task[Any] | None = None,
+        mode: str = "实时订阅",
     ) -> None:
         while not cancel_event.is_set():
             event_task = asyncio.create_task(updates.get())
             cancel_task = asyncio.create_task(cancel_event.wait())
-            done, pending = await asyncio.wait(
-                {event_task, cancel_task},
+            waiters: set[asyncio.Task[Any]] = {event_task, cancel_task}
+            if subscription_task is not None:
+                waiters.add(subscription_task)
+            done, _pending = await asyncio.wait(
+                waiters,
                 timeout=POLL_SECONDS,
                 return_when=asyncio.FIRST_COMPLETED,
             )
-            for task in pending:
-                task.cancel()
-            await asyncio.gather(*pending, return_exceptions=True)
+
+            # subscription_task 是整个 listen 流的生命线，超时自检时不能取消它。
+            for task in (event_task, cancel_task):
+                if task not in done:
+                    task.cancel()
+            await asyncio.gather(event_task, cancel_task, return_exceptions=True)
+
             if cancel_task in done:
                 return
+            if subscription_task is not None and subscription_task in done:
+                if subscription_task.cancelled():
+                    if cancel_event.is_set():
+                        return
+                    raise RuntimeError("MCP subscriptions/listen 被意外取消")
+                error = subscription_task.exception()
+                if error is not None:
+                    raise error
+                raise RuntimeError("MCP subscriptions/listen 已结束，准备重连")
             if event_task in done:
                 if event_task.result() == uri:
                     await self._deliver_resource(session, uri, cancel_event)
                 continue
-            passive_check = getattr(self, "_passive_only", None)
-            if callable(passive_check) and passive_check():
-                # 非 Debug 模式保持 SSE/resource subscription 长连接，只响应服务端推送；
-                # 不再每 60 秒主动 read_resource，常态下的开销只剩心跳帧。
-                self._emit_status("已连接 · 被动订阅（非 Debug）")
-                continue
+
+            # 即使推送流表面还活着，也每分钟读一次 sequence。这个读取很轻，只用于
+            # 检测“资源已经前进但 ResourceUpdated 没到”的静默失效，并补回缓冲里的事件。
             await self._deliver_resource(session, uri, cancel_event)
 
-    def _emit_delivery_status(self, missing: int) -> None:
+    def _emit_delivery_status(self, missing: int, mode: str = "实时订阅") -> None:
         if missing > 0:
-            self._emit_status(f"已连接 · 警告：MCP 消息缺失 {missing} 条")
+            self._emit_status(f"已连接 · {mode} · 警告：MCP 消息缺失 {missing} 条")
             return
-        if self._passive_only():
-            self._emit_status("已连接 · 被动订阅（非 Debug）")
-            return
-        self._emit_status("已连接 · 实时订阅")
+        self._emit_status(f"已连接 · {mode}")
 
     def _observe_sequence(
         self, payload: dict[str, Any], notifications: list[McpNotification]

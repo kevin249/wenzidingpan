@@ -7,7 +7,7 @@ dependencies = [
     "PySide6-Essentials>=6.6",
     "Flask>=2.3.0",
     "requests>=2.31.0",
-    "mcp>=2.1.1",
+    "mcp>=2.2.0,<3",
     "httpx2>=2.5.0",
     # Windows 没有系统时区库，zoneinfo 必须靠 tzdata 才能解析 Asia/Shanghai。
     "tzdata>=2024.1; sys_platform == 'win32'",

@@ -30,7 +30,8 @@ sys.path.insert(0, str(ROOT))
 import httpx2
 from mcp import ClientSession, types
 from mcp.client.streamable_http import streamable_http_client
-from mcp.shared.exceptions import MCPDeprecationWarning
+from mcp.client.subscriptions import ResourceUpdated, listen
+from mcp.shared.exceptions import MCPDeprecationWarning, MCPError
 
 from stockwidget.config import Store
 from stockwidget.mcp_notifications import (
@@ -67,14 +68,23 @@ def sse_timeout(watch: int) -> httpx2.Timeout:
     return httpx2.Timeout(30.0, read=max(300.0, watch + 60))
 
 
+async def _watch_modern(sub: Any, seen_live: list[str]) -> None:
+    async for event in sub:
+        if isinstance(event, ResourceUpdated):
+            uri = str(event.uri)
+            seen_live.append(uri)
+            print(f"  ← 收到 subscriptions/listen 资源更新：{uri}")
+
+
 async def probe(url: str, key: str, watch: int, grep: str) -> int:
     headers = {"Authorization": f"Bearer {key}"}
     seen_live: list[str] = []
 
     async def handle_message(message: Any) -> None:
+        # 仅 legacy resources/subscribe 回退路径会走这里。
         if isinstance(message, types.ResourceUpdatedNotification):
             seen_live.append(str(message.params.uri))
-            print(f"  ← 收到资源更新通知：{message.params.uri}")
+            print(f"  ← 收到 legacy 资源更新通知：{message.params.uri}")
 
     async with httpx2.AsyncClient(headers=headers, timeout=sse_timeout(watch)) as client:
         async with streamable_http_client(
@@ -83,8 +93,16 @@ async def probe(url: str, key: str, watch: int, grep: str) -> int:
             async with ClientSession(
                 read_stream, write_stream, message_handler=handle_message
             ) as session:
-                await session.initialize()
-                print("✓ 已连接并完成 initialize")
+                modern = True
+                try:
+                    await session.discover()
+                    print("✓ 已连接并完成 server/discover（2026-07-28）")
+                except MCPError as exc:
+                    if getattr(exc, "code", None) != -32601:
+                        raise
+                    modern = False
+                    await session.initialize()
+                    print("✓ 服务端不支持 server/discover，已回退 initialize（legacy）")
 
                 rule("网关提供的工具")
                 tools = await session.list_tools()
@@ -107,25 +125,39 @@ async def probe(url: str, key: str, watch: int, grep: str) -> int:
                     print("✗ 网关没给 resource_uri，订阅无从谈起")
                     return 1
 
-                # 先订阅再取基线——和 McpNotificationListener._run_session 的顺序
-                # 一致。反过来的话，两步之间新增的事件既不在基线里、也没有对应的
-                # 推送通知（那时还没订阅），末尾会被误判成「网关漏发通知」。
-                if watch > 0:
-                    with warnings.catch_warnings():
-                        warnings.simplefilter("ignore", MCPDeprecationWarning)
-                        await session.subscribe_resource(uri)
-                    print(f"\n✓ 已订阅 {uri}（先订阅再取基线，避免两步之间漏账）")
+                if watch <= 0:
+                    return await inspect_and_watch(session, uri, watch, grep, seen_live)
 
+                if modern:
+                    subscription_cm = listen(session, resource_subscriptions=[uri])
+                    sub = await subscription_cm.__aenter__()
+                    watcher = asyncio.create_task(_watch_modern(sub, seen_live))
+                    try:
+                        honored = tuple(getattr(sub.honored, "resource_subscriptions", None) or ())
+                        print(f"\n✓ subscriptions/listen 已确认，honored={honored}")
+                        if uri not in honored:
+                            print("✗ 服务端没有确认目标 resource URI")
+                            return 1
+                        # listen ack 之后再取基线；官方语义保证从 ack 起的新变化不会丢。
+                        return await inspect_and_watch(session, uri, watch, grep, seen_live)
+                    finally:
+                        watcher.cancel()
+                        await asyncio.gather(watcher, return_exceptions=True)
+                        with suppress(Exception):
+                            await subscription_cm.__aexit__(None, None, None)
+
+                # 只给尚未升级到 2026 协议的服务端保留。
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", MCPDeprecationWarning)
+                    await session.subscribe_resource(uri)
+                print(f"\n✓ 已订阅 {uri}（legacy resources/subscribe）")
                 try:
                     return await inspect_and_watch(session, uri, watch, grep, seen_live)
                 finally:
-                    # 传输层是 terminate_on_close=False，关掉客户端不会结束 MCP 会话；
-                    # 不退订的话，网关那边会一直挂着这个订阅者直到会话过期。
-                    if watch > 0:
-                        with suppress(Exception):
-                            with warnings.catch_warnings():
-                                warnings.simplefilter("ignore", MCPDeprecationWarning)
-                                await session.unsubscribe_resource(uri)
+                    with suppress(Exception):
+                        with warnings.catch_warnings():
+                            warnings.simplefilter("ignore", MCPDeprecationWarning)
+                            await session.unsubscribe_resource(uri)
 
 
 async def inspect_and_watch(
@@ -155,9 +187,8 @@ async def inspect_and_watch(
     if watch <= 0:
         return 0
 
-    # 订阅在读基线之前，所以取基线这段时间里就可能收到通知——那些通知对应的事件
-    # 已经在基线里了，属于基线而不属于测量区间。从这里划一条线，只统计线之后的，
-    # 否则「基线阶段的通知 + 盯守期无新事件」会被误报成「资源更新了内容却没变」。
+    # listen/subscribe 都在读基线之前建立，所以取基线期间的通知属于基线，不计入
+    # 测量区间；从这里开始只统计真正发生在 --watch 窗口里的更新。
     mark = len(seen_live)
     before = {i.event_id for i in items}
 
