@@ -178,6 +178,7 @@ class DepthLadder(QWidget):
 
     def apply_config(self, config: Config) -> None:
         self._config = config
+        self._update_tooltip()
         self._preferred_width = self._natural_width()
         self._preferred_height = max(88, round(config.font_size * 7.2))
         self.updateGeometry()
@@ -240,23 +241,32 @@ class DepthLadder(QWidget):
     def set_depth(self, snapshot: DepthSnapshot | None) -> None:
         if snapshot != self._depth:
             self._depth = snapshot
-            if snapshot and snapshot.using_cached_full_depth:
-                fallback = {
-                    DEPTH_TEN: "十档",
-                    DEPTH_FIVE: "五档",
-                }.get(snapshot.latest_depth_mode, "不可用")
-                mode = (
-                    f"千档缓存 · 连续{snapshot.full_depth_failures}次未获取到千档"
-                    f" · 当前回退{fallback} · 5秒重试中"
-                )
-            else:
-                mode = {
-                    DEPTH_FULL: "千档",
-                    DEPTH_TEN: "十档（千档5秒重试中）",
-                    DEPTH_FIVE: "五档（千档5秒重试中）",
-                }.get(snapshot.depth_mode if snapshot else "", "盘口不可用")
-            self.setToolTip(f"盘口：{mode}｜点击价格列展开/收起K线｜展开后点K线切换分时与日K")
+            self._update_tooltip()
             self.update()
+
+    def _update_tooltip(self) -> None:
+        snapshot = self._depth
+        if snapshot and snapshot.using_cached_full_depth:
+            fallback = {
+                DEPTH_TEN: "十档",
+                DEPTH_FIVE: "五档",
+            }.get(snapshot.latest_depth_mode, "不可用")
+            mode = (
+                f"千档缓存 · 连续{snapshot.full_depth_failures}次未获取到千档"
+                f" · 当前回退{fallback} · 5秒重试中"
+            )
+        else:
+            mode = {
+                DEPTH_FULL: "千档",
+                DEPTH_TEN: "十档（千档5秒重试中）",
+                DEPTH_FIVE: "五档（千档5秒重试中）",
+            }.get(snapshot.depth_mode if snapshot else "", "盘口不可用")
+        interaction = (
+            "始终展开｜点击图表切换分时与日K"
+            if self._config.theme2_always_expanded
+            else "点击价格列展开/收起K线｜展开后点K线切换分时与日K"
+        )
+        self.setToolTip(f"盘口：{mode}｜{interaction}")
 
     def _depth_error_active(self) -> bool:
         return bool(

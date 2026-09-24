@@ -55,6 +55,7 @@ THEME_SCOPED_FIELDS = (
     "theme2_side",
     "theme2_depth_width",
     "theme2_popup_font_size",
+    "theme2_always_expanded",
     "layout",
     "row_style",
     "visible_rows",
@@ -169,6 +170,7 @@ class Config:
     theme2_side: str = "right"  # right = 股价列靠右/盘口向左长，left = 靠左镜像
     theme2_depth_width: int = 84  # 主题2千档柱长度（折叠/展开恒定，25%~70% 夹取且不越行中点），像素
     theme2_popup_font_size: int = 11  # 主题2顶部信息条与图表小字（量标注/角标/提示）字号
+    theme2_always_expanded: bool = False  # 主题2详情与图表常驻，不随点击收起
     layout: str = "multi"  # multi = 多行列表，single = 单行滚动
     # sides = 左中右：左侧名称/暗盘两行，右侧现价/涨跌幅两行，走势图在中间；
     # stacked = 上中下：名称与现价同一行，暗盘与涨跌幅同一行，走势图永远在中间。
@@ -375,6 +377,7 @@ def sanitize(raw: Any, *, _include_theme_profiles: bool = True) -> Config:
         "intraday_chart",
         "show_dark_trade",
         "compact",
+        "theme2_always_expanded",
         "click_through",
         "stock_name_bold",
         "stock_price_bold",

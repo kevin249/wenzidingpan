@@ -502,11 +502,12 @@ class TickerWindow(QWidget):
         for row in self._rows.values():
             row.apply_config(scaled)
         if config.display_theme != "theme2":
-            # 离开主题2 一律收起并停掉全屏点击监听（见 _set_theme2_all_expanded）。
-            self._theme2_all_expanded = False
-            self._screen_click_watcher.stop()
-            for row in self._rows.values():
-                row.set_theme2_expanded(False, notify=False)
+            self._set_theme2_all_expanded(False)
+        elif config.theme2_always_expanded:
+            self._set_theme2_all_expanded(True)
+        elif previous.theme2_always_expanded:
+            # 关闭常驻后恢复点击展开，从收起状态开始。
+            self._set_theme2_all_expanded(False)
         if (
             theme_changed
             or previous.row_style != config.row_style
@@ -716,26 +717,27 @@ class TickerWindow(QWidget):
         行内不再自行切换、也不再看鼠标移出（移开不消失）；已展开时再点一次
         价格同样算「点任意位置」，切回收起。
         """
-        if self._config.display_theme != "theme2":
+        if self._config.display_theme != "theme2" or self._config.theme2_always_expanded:
             return
         self._set_theme2_all_expanded(not self._theme2_all_expanded)
 
     def _set_theme2_all_expanded(self, expanded: bool) -> None:
-        """统一驱动所有行的展开态，并在展开期间挂上全屏点击监听。"""
+        """统一驱动所有行；临时展开监听外部点击，常驻展开不监听。"""
         expanded = bool(expanded)
+        # 开启常驻时可能已经临时展开，状态相同也必须卸下旧监听。
+        if expanded and not self._config.theme2_always_expanded:
+            self._screen_click_watcher.start()
+        else:
+            self._screen_click_watcher.stop()
         if expanded == self._theme2_all_expanded:
             return
         self._theme2_all_expanded = expanded
         for row in self._rows.values():
             row.set_theme2_expanded(expanded, notify=False)
-        if expanded:
-            self._screen_click_watcher.start()
-        else:
-            self._screen_click_watcher.stop()
 
     def _on_screen_click(self, global_pos: QPoint) -> None:
         """屏幕任意位置的点击：落在价格热区上放过（交给行内切换），否则收起。"""
-        if not self._theme2_all_expanded:
+        if not self._theme2_all_expanded or self._config.theme2_always_expanded:
             return
         if self._press_on_theme2_price(global_pos):
             return
@@ -1142,6 +1144,8 @@ class TickerWindow(QWidget):
             self.setGeometry(x, y, width, height)
 
     def showEvent(self, event) -> None:  # noqa: N802 - Qt 命名
+        if self._config.display_theme == "theme2" and self._config.theme2_always_expanded:
+            self._set_theme2_all_expanded(True)
         self.handle.setVisible(self._config.click_through)
         self._move_handle()
 

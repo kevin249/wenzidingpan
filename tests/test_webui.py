@@ -82,6 +82,27 @@ def test_title_buttons_switch_renders_and_persists(server):
     assert "checked" not in checkbox
 
 
+def test_theme2_always_expanded_survives_theme_switch_and_restart(server):
+    client = _client(server)
+    url = f"/api/config?token={server.token}"
+    assert server.store.get().theme2_always_expanded is False
+    response = client.post(
+        url, json={"display_theme": "theme2", "theme2_always_expanded": True}
+    )
+    assert response.status_code == 200
+    assert server.applied[-1].theme2_always_expanded is True
+    body = client.get(f"/?token={server.token}").get_data(as_text=True)
+    assert "checked" in body.split('id="theme2_always_expanded"')[1].split("</label>")[0]
+
+    theme1 = client.post(url, json={"display_theme": "theme1"}).get_json()["config"]
+    assert theme1["theme2_always_expanded"] is False
+    restored = Store(server.store.path)
+    assert restored.update({"display_theme": "theme2"}).theme2_always_expanded is True
+    assert Store(server.store.path).get().theme2_always_expanded is True
+    restored.update({"theme2_always_expanded": False})
+    assert Store(server.store.path).get().theme2_always_expanded is False
+
+
 def test_mcp_bell_switches_render_and_persist_independently(server):
     client = _client(server)
     body = client.get(f"/?token={server.token}").get_data(as_text=True)

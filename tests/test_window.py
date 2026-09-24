@@ -58,6 +58,79 @@ def _click_away(window) -> None:
     window._on_screen_click(QPoint(-9_999, -9_999))
 
 
+@pytest.mark.parametrize("side", ["left", "right"])
+def test_theme2_always_expanded_keeps_details_visible_through_lifecycle(app, monkeypatch, side):
+    from dataclasses import replace
+    from stockwidget.providers.base import Quote
+
+    monkeypatch.setattr(QuoteRow, "_request_theme2_kline", lambda self: None)
+    config = Config(display_theme="theme2", theme2_side=side, theme2_always_expanded=True)
+    window = TickerWindow(config)
+    watcher = _install_stub_watcher(window)
+    quotes = [Quote.from_prices("600519", "贵州茅台", 1304.66, 1272.83)]
+    try:
+        window._sync_rows(quotes)
+        window.show()
+        app.processEvents()
+        row = window._rows["600519"]
+        assert row.theme2_depth.expanded
+        assert row.theme2_name_label.isVisible()
+        assert row.theme2_code_label.isVisible()
+        assert "始终展开" in row.theme2_depth.toolTip()
+        before = window.geometry()
+        row.theme2_depth.price_clicked.emit()
+        _click_away(window)
+        app.processEvents()
+        assert row.theme2_depth.expanded
+        assert window.geometry() == before
+        assert watcher.started == 0
+
+        # 行情新增的行、隐藏后重新显示、切回主题2，都自动保持展开。
+        quotes.append(Quote.from_prices("000001", "平安银行", 10.5, 10.0))
+        window._sync_rows(quotes)
+        assert all(row.theme2_depth.expanded for row in window._rows.values())
+        window.hide()
+        window.show()
+        window.apply_config(replace(config, display_theme="theme1"))
+        assert all(not row.theme2_depth.expanded for row in window._rows.values())
+        window.apply_config(config)
+        assert all(row.theme2_depth.expanded for row in window._rows.values())
+        assert watcher.started == 0
+    finally:
+        window.close()
+
+
+def test_theme2_enabling_always_expanded_releases_existing_click_watcher(app, monkeypatch):
+    from dataclasses import replace
+    from stockwidget.providers.base import Quote
+
+    monkeypatch.setattr(QuoteRow, "_request_theme2_kline", lambda self: None)
+    config = Config(display_theme="theme2")
+    window = TickerWindow(config)
+    watcher = _install_stub_watcher(window)
+    try:
+        window._sync_rows([Quote.from_prices("600519", "贵州茅台", 1304.66, 1272.83)])
+        row = window._rows["600519"]
+        row.theme2_depth.price_clicked.emit()
+        assert watcher.started == 1
+        stopped = watcher.stopped
+        window.apply_config(replace(config, theme2_always_expanded=True))
+        assert row.theme2_depth.expanded
+        assert watcher.stopped > stopped
+        # 卸载监听前排队的点击也不能让常驻状态收起。
+        _click_away(window)
+        assert row.theme2_depth.expanded
+
+        window.apply_config(config)
+        assert not row.theme2_depth.expanded
+        row.theme2_depth.price_clicked.emit()
+        assert row.theme2_depth.expanded
+        _click_away(window)
+        assert not row.theme2_depth.expanded
+    finally:
+        window.close()
+
+
 def test_quote_row_stacks_price_and_percent_in_two_rows(app):
     from stockwidget.providers.base import Quote
 

@@ -103,6 +103,14 @@
         <p class="hint" id="layout-hint"></p>
         <p class="hint" id="display-theme-hint"></p>
 
+        <div class="checks">
+          <label><input id="theme2_always_expanded" name="theme2_always_expanded" type="checkbox"
+                        aria-describedby="theme2-always-expanded-hint"
+                        {% if config.theme2_always_expanded %}checked{% endif %} />
+            主题 2 始终展开</label>
+        </div>
+        <p class="hint" id="theme2-always-expanded-hint">开启后，所有股票的详情和图表始终显示，无需点击；点击价格或窗口外部也不会收起。关闭后恢复点击展开。此选项会记住，重启后仍生效。</p>
+
         <div class="grid">
           <div class="field">
             <label for="row_style">行内样式</label>
