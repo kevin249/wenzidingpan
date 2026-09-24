@@ -177,8 +177,8 @@ class McpNotificationListener(QThread):
                 self._last_sequence = None
                 self._seen_order.clear()
                 self._seen_ids.clear()
-        # Debug 切换也重连一次，让“被动订阅 / 盘中兜底轮询”立即切换；
-        # 但不清 baseline/seen，避免把历史事件重新当新提醒。
+        # Debug 切换仍重连一次，方便联调时立即刷新连接状态；不清 baseline/seen，
+        # 避免把历史事件重新当新提醒。现代 listen 与非 Debug 都保留低频 sequence 自检。
         if identity_changed or mode_changed:
             self._wake.set()
             self._cancel_connection()
@@ -200,7 +200,7 @@ class McpNotificationListener(QThread):
             self.status_changed.emit(status)
 
     def _passive_only(self) -> bool:
-        """非 Debug 模式全程被动订阅：只等服务端推送，不再定时主动读资源兜底。"""
+        """兼容配置语义：非 Debug 以推送为主，但仍保留低频 sequence 自检。"""
         with self._lock:
             config = self._config
         return not config.debug_mode
@@ -424,7 +424,6 @@ class McpNotificationListener(QThread):
             if event_task in done:
                 if event_task.result() == uri:
                     await self._deliver_resource(session, uri, cancel_event)
-                    self._emit_delivery_status(0, mode)
                 continue
 
             # 即使推送流表面还活着，也每分钟读一次 sequence。这个读取很轻，只用于
