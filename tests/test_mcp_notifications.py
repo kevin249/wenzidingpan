@@ -606,3 +606,70 @@ def test_consume_reconnects_when_modern_listen_stream_ends():
 
     with pytest.raises(RuntimeError, match="subscriptions/listen 已结束"):
         asyncio.run(asyncio.wait_for(scenario(), timeout=2.0))
+
+
+def test_negotiate_protocol_falls_back_when_legacy_server_returns_invalid_params():
+    class Session:
+        def __init__(self):
+            self.initialized = False
+
+        async def discover(self):
+            from mcp.shared.exceptions import MCPError
+
+            raise MCPError(code=-32602, message="Invalid params")
+
+        async def initialize(self):
+            self.initialized = True
+            return SimpleNamespace()
+
+    async def scenario():
+        session = Session()
+        modern = await McpNotificationListener._negotiate_protocol(
+            SimpleNamespace(), session, asyncio.Event()
+        )
+        return modern, session
+
+    modern, session = asyncio.run(scenario())
+    assert modern is False
+    assert session.initialized is True
+
+
+def test_modern_subscription_cleanup_ignores_already_set_cancel_event(monkeypatch):
+    exited = []
+
+    class Subscription:
+        honored = SimpleNamespace(resource_subscriptions=("gupiao://notifications/alice",))
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            await asyncio.sleep(3600)
+
+    class ContextManager:
+        async def __aenter__(self):
+            return Subscription()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            exited.append(True)
+
+    async def fake_establish(self, session, uri, cancel_event=None):
+        return 0
+
+    async def fake_consume(self, updates, session, uri, cancel_event, **kwargs):
+        cancel_event.set()
+        return None
+
+    monkeypatch.setattr(mcp_notifications, "listen", lambda *args, **kwargs: ContextManager())
+    monkeypatch.setattr(McpNotificationListener, "_establish_baseline", fake_establish)
+    monkeypatch.setattr(McpNotificationListener, "_consume", fake_consume)
+
+    async def scenario():
+        listener = McpNotificationListener(Config())
+        cancel_event = asyncio.Event()
+        await listener._run_modern_subscription(
+            SimpleNamespace(), "gupiao://notifications/alice", cancel_event
+        )
+
+    asyncio.run(scenario())
+    assert exited == [True]
