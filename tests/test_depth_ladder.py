@@ -1168,3 +1168,32 @@ def test_theme2_depth_error_activates_on_third_consecutive_thousand_miss(app):
     )
     assert widget._depth_error_active() is False
     assert widget.toolTip().startswith("盘口：千档")
+
+
+def test_theme2_daily_bs_labels_are_drawn_on_date_aligned_candles(app):
+    widget = _widget()
+    kline = _kline()
+    widget.set_kline(kline)
+    widget.set_chart_mode(MODE_DAILY)
+    widget.set_expanded(True)
+    baseline = _render(widget)
+
+    widget.set_daily_signals([(len(kline.bars) - 1, "B1"),
+                              (len(kline.bars) - 2, "S")])
+    marked = _render(widget)
+    layout = widget._layout()
+    changed = sum(
+        baseline.pixelColor(x, y) != marked.pixelColor(x, y)
+        for x in range(max(0, int(layout.plot_left)), min(widget.width(), int(layout.plot_right)))
+        for y in range(widget.height())
+    )
+    assert changed > 0, "日 K 切换后 B/S 标记应改变蜡烛附近的绘制像素"
+
+    widget.set_signals([], show=False)
+    hidden = _render(widget)
+    assert all(
+        baseline.pixelColor(x, y) == hidden.pixelColor(x, y)
+        for x in range(max(0, int(layout.plot_left)), min(widget.width(), int(layout.plot_right)))
+        for y in range(widget.height())
+    ), "关闭显示 B/S 时，日 K 也必须隐藏信号"
+    widget.close()
