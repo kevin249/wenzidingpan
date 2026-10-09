@@ -374,6 +374,7 @@ class QuoteRow(QWidget):
         if kline is None or not kline.bars:
             message = (getattr(kline, "error", "") or "") or "日K 暂无数据"
         self.theme2_depth.set_kline(kline, message)
+        self.refresh_bs_signals()
 
     def set_theme2_expanded(self, expanded: bool, *, notify: bool = True) -> None:
         """展开/收起只改画布内部的分区，外框宽高一个像素都不动。
@@ -739,6 +740,41 @@ class QuoteRow(QWidget):
             else []
         )
         self.theme2_depth.set_signals(signals, show=config.show_bs_points)
+        bars = self.theme2_depth.kline.bars if self.theme2_depth.kline else []
+        self.theme2_depth.set_daily_signals(
+            mcp_bs.daily_bs_points(quote.symbol, bars)
+            if bars and config.show_bs_points and not quote.error else []
+        )
+
+    def refresh_bs_signals(self) -> None:
+        """MCP B/S 缓存更新后只重绘标记，不额外请求行情或重排窗口。"""
+        quote = self._last_quote
+        if quote is None:
+            return
+        config = self._config
+        trend = self._last_trend
+        enabled = bool(config.show_bs_points and not quote.error)
+        prices = trend.prices if trend else []
+        self.theme2_depth.set_signals(
+            mcp_bs.bs_points(quote.symbol, prices) if enabled and prices else [],
+            show=config.show_bs_points,
+        )
+        bars = self.theme2_depth.kline.bars if self.theme2_depth.kline else []
+        self.theme2_depth.set_daily_signals(
+            mcp_bs.daily_bs_points(quote.symbol, bars) if enabled and bars else []
+        )
+        if enabled and config.show_sparkline:
+            spark_prices = trend.prices if trend else self.sparkline.points
+            self.sparkline.set_annotations(
+                trend.open_price if trend else (spark_prices[0] if spark_prices else None),
+                calculate_bs_points(spark_prices),
+                show_signals=config.show_bs_points,
+                show_open_line=config.show_open_line,
+                show_high_low=config.show_high_low,
+                show_fill=config.show_sparkline_fill,
+                grayscale=config.grayscale,
+                grayscale_level=config.grayscale_level,
+            )
 
     def update_depth(self, snapshot: DepthSnapshot | None) -> None:
         self._last_depth = snapshot
