@@ -163,6 +163,7 @@ class DepthLadder(QWidget):
         self._kline: Kline | None = None
         self._kline_message = ""
         self._signals: list[tuple[int, str]] = []
+        self._daily_signals: list[tuple[int, str]] = []
         self._show_signals = True
         self._preferred_width = 168
         self._preferred_height = 104
@@ -333,16 +334,20 @@ class DepthLadder(QWidget):
         self.update()
 
     def set_signals(self, signals=None, *, show: bool = True) -> None:
-        """分时曲线上的 B/S 转折标记（索引对应 :meth:`set_intraday` 的价格序列）。
-
-        日K 模式不画——日报的横轴是日期，和分钟索引对不上。
-        """
+        """分时曲线上的 B/S 转折标记，索引对应分时价格序列。"""
         new = list(signals or [])
         if new == self._signals and bool(show) == self._show_signals:
             return
         self._signals = new
         self._show_signals = bool(show)
         self.update()
+
+    def set_daily_signals(self, signals=None) -> None:
+        """日K B/S 标记：索引对应日K bars，而非盘中分钟序列。"""
+        new = list(signals or [])
+        if new != self._daily_signals:
+            self._daily_signals = new
+            self.update()
 
     # ------------------------------------------------------------ 字号
 
@@ -918,6 +923,27 @@ class DepthLadder(QWidget):
             top = min(y_of(bar.open), y_of(bar.close))
             height = max(1.0, abs(y_of(bar.open) - y_of(bar.close)))
             painter.fillRect(QRectF(x - body_width / 2.0, top, body_width, height), color)
+
+        # B/S 属于对应交易日，不能拿分钟横坐标直接绘在日期横轴上。
+        # 同一天的 B/S 贴近该日蜡烛的低点/高点，便于区分方向。
+        if self._show_signals and self._daily_signals:
+            painter.save()
+            font = self._popup_font()
+            font.setPixelSize(max(9, min(12, font.pixelSize() if font.pixelSize() > 0 else 10)))
+            painter.setFont(font)
+            for index, kind in self._daily_signals:
+                if not 0 <= index < count or not kind or kind[0] not in {"B", "S"}:
+                    continue
+                buying = kind.startswith("B")
+                color = self._paint_color(BS_BUY_COLOR if buying else BS_SELL_COLOR)
+                x = layout.plot_left + (index + 0.5) * step
+                anchor = y_of(bars[index].low if buying else bars[index].high)
+                label_y = min(float(self.height()) - INNER_PAD - 13.0,
+                              max(INNER_PAD + 1.0, anchor + (5.0 if buying else -18.0)))
+                painter.setPen(QPen(color, 1.3))
+                painter.drawLine(QPointF(x, anchor), QPointF(x, label_y + (1.0 if buying else 12.0)))
+                painter.drawText(QRectF(x - 13.0, label_y, 26.0, 13.0), Qt.AlignCenter, kind)
+            painter.restore()
 
     def _draw_chart_badge(self, painter: QPainter, layout: _Layout) -> None:
         """分时/日K 角标；贴在图表区靠近盘口的一侧，避开外侧的「量」标注。"""
