@@ -387,6 +387,14 @@ class McpDepthPoller(QThread):
         """本轮是否允许主动拉千档：显式意图优先，否则只有 Debug 模式才轮询。"""
         return bool(explicit) or bool(config.debug_mode)
 
+    @staticmethod
+    def _should_fetch_bs(
+        config: Config, explicit: bool, elapsed: float, now=None,
+    ) -> bool:
+        """B/S 同步不依赖千档开关：盘中每 60s，显式操作随时刷新。"""
+        allowed = bool(explicit or config.debug_mode or is_a_share_active_time(now))
+        return bool(allowed and (explicit or elapsed >= BS_POLL_SECONDS))
+
     def run(self) -> None:  # noqa: D102
         while not self._stopping.is_set():
             with self._lock:
@@ -405,9 +413,9 @@ class McpDepthPoller(QThread):
             fetch_depth = McpDepthPoller._should_poll(config, explicit)
             started = time.monotonic()
             bs_allowed = bool(explicit or config.debug_mode or is_a_share_active_time())
-            fetch_bs = bool(bs_allowed and (
-                explicit or started - self._last_bs_fetch_at >= BS_POLL_SECONDS
-            ))
+            fetch_bs = self._should_fetch_bs(
+                config, explicit, started - self._last_bs_fetch_at
+            )
             if not fetch_depth and not fetch_bs:
                 self._emit_status("已休眠 · 千档被动 / B/S 等待同步窗口")
                 self._wake.wait(OFF_HOURS_WAKE_SECONDS if not bs_allowed else
