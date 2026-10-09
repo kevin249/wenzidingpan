@@ -91,6 +91,7 @@ class WidgetApp:
         self.poller.snapshot_ready.connect(self._on_snapshot, Qt.QueuedConnection)
         self.depth_poller = McpDepthPoller(config)
         self.depth_poller.depth_ready.connect(self._on_depth_snapshot, Qt.QueuedConnection)
+        self.depth_poller.bs_ready.connect(self._on_bs_updated, Qt.QueuedConnection)
         self.depth_poller.status_changed.connect(self._on_depth_status, Qt.QueuedConnection)
         self.notification_listener = McpNotificationListener(config)
         self.notification_listener.notification_ready.connect(
@@ -280,6 +281,10 @@ class WidgetApp:
 
     def _on_depth_snapshot(self, snapshot: DepthSnapshot) -> None:
         self.window.update_depth(snapshot)
+
+    def _on_bs_updated(self, symbol: str) -> None:
+        """由 MCP 线程通知图形线程刷新 B/S，不等行情轮询。"""
+        self.window.refresh_bs_signals(symbol)
 
     def _on_depth_status(self, status: str) -> None:
         if status != "已关闭":
