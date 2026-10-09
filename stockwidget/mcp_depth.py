@@ -14,7 +14,7 @@ from mcp.client.streamable_http import streamable_http_client
 from PySide6.QtCore import QThread, Signal
 
 from .config import Config
-from .market_hours import OFF_HOURS_WAKE_SECONDS
+from .market_hours import OFF_HOURS_WAKE_SECONDS, is_a_share_active_time
 from .mcp_bs import record_volatility_bs
 from .mcp_notifications import SSE_TIMEOUT, _api_key, _bounded, _tool_payload
 from .symbols import classify
@@ -313,6 +313,7 @@ class McpDepthPoller(QThread):
     """深度采集：正常千档低频，降级后 5 秒主动恢复。"""
 
     depth_ready = Signal(object)
+    bs_ready = Signal(str)
     status_changed = Signal(str)
 
     def __init__(self, config: Config, parent=None) -> None:
@@ -399,32 +400,47 @@ class McpDepthPoller(QThread):
                 self._wake.clear()
                 continue
 
-            # 非 Debug 模式全天不主动拉千档：与行情的「只被动接收」策略保持一致。
-            # 启动首帧与手动刷新属于显式意图，仍会放行一次。
-            if not McpDepthPoller._should_poll(config, explicit):
-                self._emit_status("已休眠 · MCP 千档被动模式，等待手动刷新")
-                self._wake.wait(OFF_HOURS_WAKE_SECONDS)
+            # 千档继续遵循非 Debug 被动模式；只读的 B/S markers 独立以
+            # 60 秒低频同步（仅交易时段，启动/手动刷新不受限制）。
+            fetch_depth = McpDepthPoller._should_poll(config, explicit)
+            started = time.monotonic()
+            bs_allowed = bool(explicit or config.debug_mode or is_a_share_active_time())
+            fetch_bs = bool(bs_allowed and (
+                explicit or started - self._last_bs_fetch_at >= BS_POLL_SECONDS
+            ))
+            if not fetch_depth and not fetch_bs:
+                self._emit_status("已休眠 · 千档被动 / B/S 等待同步窗口")
+                self._wake.wait(OFF_HOURS_WAKE_SECONDS if not bs_allowed else
+                                max(0.5, BS_POLL_SECONDS - (started - self._last_bs_fetch_at)))
                 self._wake.clear()
                 continue
 
-            started = time.monotonic()
             all_full_depth = False
-            fetch_bs = started - self._last_bs_fetch_at >= BS_POLL_SECONDS
             try:
-                all_full_depth = asyncio.run(self._fetch_cycle(config, fetch_bs=fetch_bs))
+                all_full_depth = asyncio.run(self._fetch_cycle(
+                    config, fetch_bs=fetch_bs, fetch_depth=fetch_depth,
+                    force_depth=explicit,
+                ))
                 if fetch_bs:
                     self._last_bs_fetch_at = time.monotonic()
                 if not self._stopping.is_set():
-                    self._emit_status(_status_text(all_full_depth))
+                    self._emit_status(
+                        _status_text(all_full_depth) if fetch_depth
+                        else "已连接 · B/S 同步（千档被动）"
+                    )
             except (KeyboardInterrupt, SystemExit):
                 raise
             except BaseException as exc:  # noqa: BLE001
                 if not self._stopping.is_set():
                     self._emit_status(
-                        f"读取失败 · 千档5s重试：{type(exc).__name__}: {str(exc)[:100]}"
+                        f"MCP 读取失败：{type(exc).__name__}: {str(exc)[:100]}"
                     )
 
-            remaining = self._next_wake_seconds(config)
+            remaining = (
+                self._next_wake_seconds(config) if config.debug_mode
+                else OFF_HOURS_WAKE_SECONDS if not is_a_share_active_time()
+                else max(0.5, BS_POLL_SECONDS - (time.monotonic() - self._last_bs_fetch_at))
+            )
             if not self._stopping.is_set():
                 self._wake.wait(remaining)
                 self._wake.clear()
@@ -454,7 +470,10 @@ class McpDepthPoller(QThread):
         # 最短保留一点睡眠，防止异常/边界条件形成空转；最长不超过正常 60s。
         return min(DEPTH_POLL_SECONDS, max(0.1, min(depth_wait, bs_wait)))
 
-    async def _fetch_cycle(self, config: Config, *, fetch_bs: bool) -> bool:
+    async def _fetch_cycle(
+        self, config: Config, *, fetch_bs: bool,
+        fetch_depth: bool = True, force_depth: bool = False,
+    ) -> bool:
         key = _api_key(config)
         if not key:
             return False
@@ -482,16 +501,20 @@ class McpDepthPoller(QThread):
                             continue
 
                         due = self._next_depth_due.get(symbol.code, 0.0)
-                        depth_due = now >= due
+                        depth_due = fetch_depth and (force_depth or now >= due)
                         if not depth_due and not fetch_bs:
                             continue
 
                         if fetch_bs:
                             try:
                                 await _fetch_volatility_bs(session, symbol.code)
-                            except Exception:
-                                # B/S 与盘口恢复独立；B/S 失败不阻断深度降级。
-                                pass
+                                # 独立通知 UI：不能等待下一次行情快照才出现标记。
+                                self.bs_ready.emit(symbol.code)
+                            except Exception as exc:
+                                # B/S 与盘口恢复独立，失败可诊断但不影响千档。
+                                self.status_changed.emit(
+                                    f"B/S {symbol.code} 读取失败：{type(exc).__name__}: {str(exc)[:80]}"
+                                )
 
                         if depth_due:
                             # 绝不并发，也不背靠背挤服务器：上一只完整结束后留空档。
