@@ -210,7 +210,9 @@ def record_volatility_bs(payload: Any) -> None:
         return
     code = _normalize_code(payload.get("code") or payload.get("symbol"))
     trade_date = str(payload.get("trade_date") or "").strip()
-    if not code or not trade_date:
+    # unavailable 是网关尚未生成/暂时无法读取的结果，不能覆盖已有的
+    # 有效快照，更不能阻止通知缓存的 B/S 回退。
+    if not code or not trade_date or payload.get("available") is not True:
         return
     markers = [
         dict(item)
@@ -375,6 +377,53 @@ def bs_points(symbol: str, prices: list[float], now: datetime | None = None) -> 
         _append_point(result, seen, prices, signal_at, _display_signal(payload, side), payload.get("price"))
     result.sort(key=lambda item: item[0])
     return result
+
+
+
+def daily_bs_points(symbol: str, bars: list[Any]) -> list[tuple[int, str]]:
+    """把已接收的 MCP B/S 标记按交易日期对齐到日 K 蜡烛。
+
+    当前 MCP 深度同步只读取当天的 markers，不臆造尚未请求的历史日期信号。
+    返回的索引对应 bars 而不是分时分钟索引。
+    """
+    code = _normalize_code(symbol)
+    if not code or not bars:
+        return []
+    dates = {
+        str(getattr(bar, "time", "") or "")[:10]: index
+        for index, bar in enumerate(bars)
+    }
+    with _LOCK:
+        active = dict(_VOLATILITY_BS.get(code) or {})
+        events = list(_EVENTS)
+
+    points: set[tuple[int, str]] = set()
+    if active:
+        trade_date = str(active.get("trade_date") or "")
+        for marker in active.get("markers") or []:
+            if not isinstance(marker, dict):
+                continue
+            bar_index = dates.get(str(marker.get("trade_date") or trade_date)[:10])
+            if bar_index is None:
+                continue
+            side = _side(marker, str(marker.get("label") or ""), "")
+            if side in {"B", "S"}:
+                points.add((bar_index, _display_signal(marker, side)))
+        return sorted(points)
+
+    for row in events:
+        if row.get("event_type") != BS_EVENT_TYPE or row.get("stock_code") != code:
+            continue
+        signal_at = _parse_datetime(_signal_time(row))
+        if signal_at is None:
+            continue
+        bar_index = dates.get(signal_at.date().isoformat())
+        side = str(row.get("side") or "").upper()
+        if bar_index is None or side not in {"B", "S"}:
+            continue
+        payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+        points.add((bar_index, _display_signal(payload, side)))
+    return sorted(points)
 
 
 def reset_for_tests() -> None:
