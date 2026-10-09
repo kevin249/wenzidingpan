@@ -198,3 +198,71 @@ def test_active_snapshot_is_authoritative_over_partial_notification_cache():
         prices,
         now=datetime(2026, 9, 14, 11, 0, tzinfo=TZ),
     ) == [(15, "B")]
+
+
+def test_unavailable_bs_snapshot_does_not_hide_notification_or_valid_cache():
+    now = datetime(2026, 9, 14, 14, tzinfo=TZ)
+    notification = SimpleNamespace(
+        event_id="fallback-bs", event_type="trading.holding_t_signal",
+        title="600000 B1", body="", priority="normal",
+        created_at="2026-09-14T10:00:00+08:00", link="",
+        payload={"code": "600000", "direction": "buy_first",
+                 "bar_at": "2026-09-14T10:00:00+08:00",
+                 "l2_confirmed": False, "price": 100.0},
+    )
+    mcp_bs.record_notification(notification)
+    unavailable = {"code": "600000", "trade_date": "2026-09-14",
+                   "available": False, "markers": []}
+    mcp_bs.record_volatility_bs(unavailable)
+    assert mcp_bs.bs_points("600000", [100.0] * 242, now) == [(30, "B1")]
+
+    mcp_bs.record_volatility_bs({
+        "code": "600000", "trade_date": "2026-09-14", "available": True,
+        "markers": [{"time": "10:01", "type": "sell_first",
+                     "l2_confirmed": True, "price": 100.0}],
+    })
+    mcp_bs.record_volatility_bs(unavailable)
+    assert mcp_bs.bs_points("600000", [100.0] * 242, now) == [(31, "S")]
+
+    # available=True 且 markers=[] 是合法的完整空快照，仍能清除旧信号。
+    mcp_bs.record_volatility_bs({
+        "code": "600000", "trade_date": "2026-09-14",
+        "available": True, "markers": [],
+    })
+    assert mcp_bs.bs_points("600000", [100.0] * 242, now) == []
+
+
+def test_daily_bs_markers_map_to_trading_date_not_minute_index():
+    bars = [
+        SimpleNamespace(time="2026-09-11", high=101.0, low=99.0),
+        SimpleNamespace(time="2026-09-14", high=102.0, low=98.0),
+    ]
+    mcp_bs.record_volatility_bs({
+        "code": "600000", "trade_date": "2026-09-14", "available": True,
+        "markers": [
+            {"time": "09:45", "type": "buy_first", "l2_confirmed": False},
+            {"time": "10:01", "type": "buy_first", "l2_confirmed": True},
+            {"time": "13:10", "type": "sell_first", "l2_confirmed": True},
+        ],
+    })
+    assert mcp_bs.daily_bs_points("600000", bars) == [
+        (1, "B"), (1, "B1"), (1, "S"),
+    ]
+    assert mcp_bs.daily_bs_points("000001", bars) == []
+
+
+def test_daily_bs_falls_back_to_notification_when_cache_is_unavailable():
+    bars = [SimpleNamespace(time="2026-09-14")]
+    notification = SimpleNamespace(
+        event_id="daily-notification", event_type="trading.holding_t_signal",
+        title="600000 S", body="", priority="normal",
+        created_at="2026-09-14T13:10:00+08:00", link="",
+        payload={"code": "600000", "direction": "sell_first",
+                 "bar_at": "2026-09-14T13:10:00+08:00"},
+    )
+    mcp_bs.record_notification(notification)
+    mcp_bs.record_volatility_bs({
+        "code": "600000", "trade_date": "2026-09-14",
+        "available": False, "markers": [],
+    })
+    assert mcp_bs.daily_bs_points("600000", bars) == [(0, "S")]
