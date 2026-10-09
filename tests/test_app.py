@@ -398,3 +398,16 @@ def test_theme_switch_saves_old_geometry_and_restores_target_profile(tmp_path):
         777,
         333,
     )
+
+
+def test_mcp_bs_update_targets_chart_without_refreshing_quotes():
+    class Window:
+        def __init__(self):
+            self.updated = []
+        def refresh_bs_signals(self, symbol):
+            self.updated.append(symbol)
+
+    window = Window()
+    stub = SimpleNamespace(window=window)
+    app_module.WidgetApp._on_bs_updated(stub, "603986")
+    assert window.updated == ["603986"]
