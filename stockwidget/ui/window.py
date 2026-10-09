@@ -620,6 +620,16 @@ class TickerWindow(QWidget):
         """把窗口上的未读数清掉；用户从托盘那边确认时走这里。"""
         self.title_bar.clear_bell()
 
+    def refresh_bs_signals(self, symbol: str) -> None:
+        """B/S 工具数据更新时，仅刷新匹配股票的绘图标记。"""
+        target = classify(symbol)
+        if target is None:
+            return
+        for raw, row in self._rows.items():
+            parsed = classify(raw)
+            if parsed is not None and parsed.code == target.code:
+                row.refresh_bs_signals()
+
     def _sync_rows(self, quotes, trends: dict | None = None) -> None:
         trends = trends or {}
         scaled = self.scaled_config()
