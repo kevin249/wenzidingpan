@@ -430,3 +430,21 @@ def test_depth_poller_starts_explicit_and_manual_refresh_rearms_it():
     poller._explicit = False
     poller.refresh_now()
     assert poller._explicit is True
+
+
+def test_bs_synchronization_is_independent_of_passive_depth():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    poller = mcp_depth.McpDepthPoller(Config(debug_mode=False))
+    config = poller._config
+    tz = ZoneInfo("Asia/Shanghai")
+    market = datetime(2026, 10, 9, 10, 0, tzinfo=tz)
+    closed = datetime(2026, 10, 11, 10, 0, tzinfo=tz)
+
+    assert poller._should_poll(config, explicit=False) is False
+    assert poller._should_fetch_bs(config, False, 59.0, market) is False
+    assert poller._should_fetch_bs(config, False, 60.0, market) is True
+    assert poller._should_fetch_bs(config, False, 600.0, closed) is False
+    assert poller._should_fetch_bs(config, True, 0.0, closed) is True
+    assert poller._should_fetch_bs(Config(debug_mode=True), False, 60.0, closed) is True
