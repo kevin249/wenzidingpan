@@ -291,7 +291,11 @@ class WidgetApp:
             print(f"[MCP千档] {status}", flush=True)
 
     def _on_mcp_status(self, status: str) -> None:
-        if status != "已关闭":
+        timestamp, separator, message = status.partition("] ")
+        if status.startswith("[") and separator:
+            if message != "已关闭":
+                print(f"{timestamp}] [MCP提醒] {message}", flush=True)
+        elif status != "已关闭":
             print(f"[MCP提醒] {status}", flush=True)
 
     def _on_mcp_notification(self, notification: McpNotification) -> None:

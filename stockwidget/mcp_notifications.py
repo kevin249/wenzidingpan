@@ -21,6 +21,7 @@ from PySide6.QtCore import QThread, Signal
 
 from .config import Config
 from .mcp_bs import record_notification
+from .mcp_logger import format_mcp_status, log_mcp_status
 
 MCP_API_KEY_ENV = "GUPIAO_MCP_API_KEY"
 RECONNECT_SECONDS = 3
@@ -194,10 +195,12 @@ class McpNotificationListener(QThread):
         if loop is not None and cancel_event is not None:
             loop.call_soon_threadsafe(cancel_event.set)
 
-    def _emit_status(self, status: str) -> None:
+    def _emit_status(self, status: str, *, level: str = "INFO") -> None:
+        # 每次自检/失败都留日志；界面仍按原始状态去重，时间戳不参与比较。
+        log_mcp_status(level, status)
         if status != self._last_status:
             self._last_status = status
-            self.status_changed.emit(status)
+            self.status_changed.emit(format_mcp_status(status))
 
     def _passive_only(self) -> bool:
         """兼容配置语义：非 Debug 以推送为主，但仍保留低频 sequence 自检。"""
@@ -221,8 +224,10 @@ class McpNotificationListener(QThread):
             except BaseException as exc:  # noqa: BLE001
                 if self._stopping.is_set():
                     break
-                self._emit_status(f"连接失败：{_describe_error(exc)}")
+                level = "WARN" if isinstance(exc, (TimeoutError, httpx2.TimeoutException)) else "ERROR"
+                self._emit_status(f"连接失败：{_describe_error(exc)}", level=level)
             if not self._stopping.is_set():
+                log_mcp_status("WARN", f"准备重连 · {RECONNECT_SECONDS} 秒后")
                 self._wake.wait(RECONNECT_SECONDS)
                 self._wake.clear()
 
@@ -434,7 +439,7 @@ class McpNotificationListener(QThread):
 
     def _emit_delivery_status(self, missing: int, mode: str = "实时订阅") -> None:
         if missing > 0:
-            self._emit_status(f"已连接 · {mode} · 警告：MCP 消息缺失 {missing} 条")
+            self._emit_status(f"已连接 · {mode} · 警告：MCP 消息缺失 {missing} 条", level="WARN")
             return
         self._emit_status(f"已连接 · {mode}")
 
