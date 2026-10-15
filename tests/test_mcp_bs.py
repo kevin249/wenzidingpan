@@ -266,3 +266,57 @@ def test_daily_bs_falls_back_to_notification_when_cache_is_unavailable():
         "available": False, "markers": [],
     })
     assert mcp_bs.daily_bs_points("600000", bars) == [(0, "S")]
+
+
+def test_event_cells_show_signal_price_and_diagnostics_without_repeating_identity():
+    mcp_bs.record_notification(SimpleNamespace(
+        event_id="detail", event_type=mcp_bs.BS_EVENT_TYPE,
+        title="兆易创新 603986 出现 S1 基础信号",
+        body="时间：2026-09-14 10:00\n信号：S1 基础信号\n价格：277.123\n"
+             "评分/建议仓位：0 / 0.00Q\n量比/MACD柱变化：1.20 / -0.0100\n"
+             "确认因子：volume\n结构证据：兆易创新 603986 卖盘增强",
+        created_at="2026-09-14T10:00:05+08:00",
+        payload={"code": "603986", "name": "兆易创新", "direction": "sell_first",
+                 "signal": "S1", "l2_confirmed": False, "level": 3,
+                 "price": 277.123, "factor_score": 0, "position_q": 0,
+                 "volume_ratio": 1.2, "macd_hist_delta": -.01,
+                 "factor_flags": {"volume": True, "macd": False}},
+    ))
+    row = mcp_bs.today_records(datetime(2026, 9, 14, 11, tzinfo=TZ))[0]
+    assert row["display_type"] == "S1 · 277.123"
+    content = row["display_content"]
+    assert "评分：0" in content and "建议仓位：0.00Q" in content
+    assert content.count("量比") == 1 and content.count("确认因子") == 1
+    assert "卖盘增强" in content
+    assert "603986" not in content and "兆易创新" not in content
+    assert "payload" not in row
+
+
+@pytest.mark.parametrize("signal,confirmed,expected", [
+    ("B3", None, "B3"), ("S4", None, "S4"),
+    ("B3", True, "B"), ("S3", False, "S1"),
+])
+def test_event_cells_preserve_upstream_signal_labels(signal, confirmed, expected):
+    payload = {"signal": signal, "price": 100, "level": 4}
+    if confirmed is not None:
+        payload["l2_confirmed"] = confirmed
+    row = {"event_type": mcp_bs.BS_EVENT_TYPE, "side": signal[0], "payload": payload}
+    cells = mcp_bs._event_presentation(row)
+    assert cells["display_type"] == expected + " · 100.000"
+    assert cells["display_content"] == "未提供评分或详细指标"
+
+
+def test_event_cells_support_body_only_legacy_notifications():
+    cells = mcp_bs._event_presentation({
+        "event_type": mcp_bs.BS_EVENT_TYPE, "side": "B", "payload": {},
+        "title": "北京君正 300223 出现 B2 候选确认",
+        "body": "信号：B2 候选确认\n价格：101.50\n评分/建议仓位：3 / 0.50Q\nD/ATR：-0.3",
+    })
+    assert cells["display_type"] == "B2 · 101.50"
+    assert cells["display_content"] == "评分/建议仓位：3 / 0.50Q\nD/ATR：-0.3"
+
+
+def test_non_bs_event_cells_keep_full_body():
+    assert mcp_bs._event_presentation({
+        "event_type": "system.test", "title": "标题", "body": "完整正文",
+    }) == {"display_type": "system.test", "display_content": "完整正文"}

@@ -42,7 +42,6 @@
   function stockLabel(item) {
     const code = item.stock_code || '';
     const name = item.stock_name || '';
-    if (name && code) return `${name} ${code}`;
     return name || code || '-';
   }
 
@@ -104,8 +103,8 @@
         const values = [
           (item.created_at_local || '').slice(11, 19) || '-',
           stockLabel(item),
-          item.side ? `${item.side} · ${item.event_type || ''}` : (item.event_type || '-'),
-          item.title || item.body || '-',
+          item.display_type || item.event_type || '-',
+          item.display_content || item.body || item.title || '-',
         ];
         for (const value of values) {
           const cell = document.createElement('td');
@@ -113,6 +112,7 @@
           cell.style.padding = '6px 8px';
           cell.style.borderTop = '1px solid rgba(127,127,127,.22)';
           cell.style.verticalAlign = 'top';
+          cell.style.whiteSpace = 'pre-line';
           row.append(cell);
         }
         body.append(row);
