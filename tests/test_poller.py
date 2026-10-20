@@ -1,9 +1,14 @@
 from datetime import datetime
+from types import SimpleNamespace
+
+import pytest
 
 from stockwidget.config import Config
 from stockwidget.intraday import CACHE_TTL_SECONDS
-from stockwidget.market_hours import FALLBACK_HEARTBEAT_SECONDS, SHANGHAI_TZ
+from stockwidget.market_hours import SHANGHAI_TZ
+from stockwidget import poller as poller_module
 from stockwidget.poller import CHART_REFRESH_SECONDS, Poller
+from stockwidget.providers.base import Quote
 
 
 def _sunday() -> datetime:
@@ -35,11 +40,54 @@ def test_theme2_keeps_intraday_refresh_even_when_classic_sparkline_is_hidden():
     assert Poller._loop_interval(config) == 1.0
 
 
-def test_non_debug_falls_back_to_a_low_frequency_heartbeat():
-    """非 Debug 常态由 MCP 推送事件驱动，循环里只留 5 分钟兜底心跳。"""
-    config = Config(refresh_seconds=3, show_sparkline=True, intraday_chart=True)
+@pytest.mark.parametrize("seconds", [1, 3, 5, 60, 3600])
+@pytest.mark.parametrize("theme", ["classic", "theme2"])
+def test_non_debug_uses_configured_quote_interval(seconds, theme):
+    config = Config(refresh_seconds=seconds, display_theme=theme, show_sparkline=True, intraday_chart=True)
     assert config.debug_mode is False
-    assert Poller._loop_interval(config) == FALLBACK_HEARTBEAT_SECONDS == 300.0
+    assert Poller._loop_interval(config) == float(seconds)
+
+
+def test_quotes_keep_refreshing_without_mcp_and_interval_changes_apply(monkeypatch):
+    """运行真实轮询循环：没有任何 MCP 事件，改间隔后按新间隔继续拉行情。"""
+    config = Config(symbols=["600519"], refresh_seconds=3, show_dark_trade=False, intraday_chart=False)
+    poller = Poller(config)
+    clock = [100.0]
+    fetched_at = []
+    waits = []
+    snapshots = []
+
+    def fetch(symbols):
+        fetched_at.append(clock[0])
+        return [Quote(symbol=symbols[0], name="测试", price=float(len(fetched_at)))]
+
+    class Wake:
+        def wait(self, timeout):
+            waits.append(timeout)
+            clock[0] += timeout
+            if len(waits) == 2:
+                poller.apply_config(Config(**{**vars(config), "refresh_seconds": 7}))
+                return True
+            if len(waits) == 4:
+                poller.stop()
+            return False
+
+        def set(self):
+            pass
+
+        def clear(self):
+            pass
+
+    monkeypatch.setattr(poller_module.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(poller_module, "active_updates_allowed", lambda debug, now=None: True)
+    monkeypatch.setattr(poller_module.providers, "resolve", lambda provider: SimpleNamespace(id="test", fetch=fetch))
+    poller._wake = Wake()
+    poller.snapshot_ready.connect(snapshots.append)
+    poller.run()
+
+    assert waits == [3.0, 3.0, 7.0, 7.0]
+    assert fetched_at == [100.0, 103.0, 106.0, 113.0]
+    assert [s.quotes[0].price for s in snapshots] == [1.0, 2.0, 3.0, 4.0]
 
 
 def test_non_debug_does_not_poll_proactively_but_explicit_requests_pass():

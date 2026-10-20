@@ -14,7 +14,6 @@ from .config import Config
 from .darktrade import DarkTradeClient
 from .intraday import IntradayClient, Trend
 from .market_hours import (
-    FALLBACK_HEARTBEAT_SECONDS,
     OFF_HOURS_WAKE_SECONDS,
     active_updates_allowed,
 )
@@ -92,7 +91,7 @@ class Poller(QThread):
         """显式刷新：绕过 Debug / 休市限制，立刻拉一次行情与分时。
 
         调用方包括启动首帧、手动刷新、MCP 推送与取数相关配置变更；这四类都属于
-        显式意图，不受「非 Debug 只被动接收」的约束。走势图缓存一并清掉。
+        显式意图，不受交易时段限制。走势图缓存一并清掉。
         """
         self._intraday.reset_cache()
         with self._lock:
@@ -111,14 +110,11 @@ class Poller(QThread):
 
     @staticmethod
     def _loop_interval(config: Config) -> float:
-        """Debug 全速轮询；非 Debug 只在活跃时段保留低频兜底心跳。
+        """行情始终按设置间隔轮询，不依赖 MCP 推送。
 
         主题2的展开K线在 Debug 下也要求秒级；普通报价仍按 refresh_seconds 自己节流。
         """
-        if not config.debug_mode:
-            # 非 Debug 常态由 MCP 推送驱动，心跳只为兜住「推送通道静默失效」。
-            return FALLBACK_HEARTBEAT_SECONDS
-        if Poller._chart_enabled(config):
+        if config.debug_mode and Poller._chart_enabled(config):
             return CHART_REFRESH_SECONDS
         return float(config.refresh_seconds)
 

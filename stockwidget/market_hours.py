@@ -16,11 +16,6 @@ AFTERNOON_END = time(15, 0)
 # 非交易时段线程只做本地时间检查，不发网络请求；30 秒内自动跟上开盘。
 OFF_HOURS_WAKE_SECONDS = 30.0
 
-# 非 Debug 模式在活跃时段只保留的低频兜底心跳。
-# 常态由 MCP 推送事件驱动刷新，心跳仅用于发现「推送通道静默失效」这一盲区。
-FALLBACK_HEARTBEAT_SECONDS = 300.0
-
-
 def _shanghai_now(now: datetime | None = None) -> datetime:
     if now is None:
         return datetime.now(SHANGHAI_TZ)

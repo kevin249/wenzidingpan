@@ -57,7 +57,7 @@
                         {% if config.debug_mode %}checked{% endif %} />
             Debug 模式：全天主动刷新行情、K线、千档和 B/S</label>
         </div>
-        <p class="hint">默认关闭。关闭时不做定时轮询，只被动接收 MCP 推送 —— 推送到达即刷新一次行情与分时；仅在 A 股活跃窗口（上海时区，周一至周五 09:15–11:30、13:00–15:00）保留每 5 分钟的兜底心跳，用于发现推送通道静默失效。打开程序、手动刷新和修改自选股等取数设置时仍会无条件请求一次。Debug 模式用于收盘后联调。</p>
+        <p class="hint">默认关闭。关闭时，行情在 A 股活跃窗口（上海时区，周一至周五 09:15–11:30、13:00–15:00）按下方设置的刷新间隔独立更新，不依赖 MCP 连接；千档和 B/S 的调度不变。MCP 推送到达仍会立即刷新行情与分时。打开程序、手动刷新和修改自选股等取数设置时仍会无条件请求一次。Debug 模式用于收盘后联调。</p>
       </section>
 
       <section class="card">
@@ -227,7 +227,7 @@
 
         <div class="grid">
           <div class="field">
-            <label for="refresh_seconds">刷新间隔（秒）</label>
+            <label for="refresh_seconds">行情刷新间隔（秒）</label>
             <input id="refresh_seconds" name="refresh_seconds" type="number" min="1" max="3600"
                    step="1" value="{{ config.refresh_seconds }}" />
           </div>
