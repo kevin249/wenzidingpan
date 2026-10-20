@@ -85,7 +85,7 @@ class _FakeTray:
 
 
 class _FakePoller:
-    """只记推送触发的刷新次数：非 Debug 模式下这是界面数据更新的主要来源。"""
+    """只记推送触发的即时刷新次数。"""
 
     def __init__(self) -> None:
         self.refreshes = 0
@@ -131,7 +131,7 @@ def test_all_four_channels_fire_by_default(dispatch):
 
 
 def test_push_triggers_a_market_refresh(dispatch):
-    """推送到达要顺带刷新行情与分时：非 Debug 不做定时轮询，界面靠这条通路更新。"""
+    """推送到达仍要顺带即时刷新行情与分时。"""
     assert dispatch(Config(), times=3).refresh == 3
 
 

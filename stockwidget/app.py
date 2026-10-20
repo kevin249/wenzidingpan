@@ -300,7 +300,7 @@ class WidgetApp:
 
     def _on_mcp_notification(self, notification: McpNotification) -> None:
         # 事件驱动：MCP 推送到达即拉一次行情与分时，保证异动发生时价格已经同步，
-        # 这也是非 Debug 模式下界面更新的主要来源。千档不在此列——它本身来自 MCP，
+        # 行情也会独立按设置间隔轮询。千档不在此列——它本身来自 MCP，
         # 推送密集时再叠加深度请求只会放大服务端开销。
         self.poller.refresh_now()
         timestamp = notification.created_at or "时间未知"
