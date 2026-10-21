@@ -24,6 +24,8 @@ DEPTH_RETRY_SECONDS = 5.0
 # 多股票严格串行：上一只深度链完成后至少留这个间隔，再请求下一只。
 DEPTH_INTER_SYMBOL_GAP_SECONDS = 0.75
 BS_POLL_SECONDS = 60.0
+DEPTH_REQUEST_TIMEOUT_SECONDS = 15.0
+BS_REQUEST_TIMEOUT_SECONDS = 10.0
 MIN_THOUSAND_LEVELS = 11
 DEPTH_ERROR_FAILURES = 3
 
@@ -196,7 +198,7 @@ async def _fetch_volatility_bs(session: ClientSession, symbol: str) -> dict[str,
         session.call_tool(
             "get_volatility_bs",
             arguments={"symbol": symbol, "trade_date": "", "limit": 1000},
-        )
+        ), timeout_seconds=BS_REQUEST_TIMEOUT_SECONDS,
     )
     payload = _tool_payload(result)
     record_volatility_bs(payload)
@@ -216,7 +218,7 @@ async def _fetch_requested_depth(
                 "force": True,
                 "requested_depth": requested_depth,
             },
-        )
+        ), timeout_seconds=DEPTH_REQUEST_TIMEOUT_SECONDS,
     )
     return parse_depth_payload(
         symbol,
@@ -330,6 +332,7 @@ class McpDepthPoller(QThread):
         self._next_depth_due: dict[str, float] = {}
         self._last_full_depth: dict[str, DepthSnapshot] = {}
         self._full_depth_failures: dict[str, int] = {}
+        self._bs_errors: dict[str, str] = {}
 
     @staticmethod
     def _enabled(config: Config) -> bool:
@@ -365,6 +368,7 @@ class McpDepthPoller(QThread):
                 self._next_depth_due.clear()
                 self._last_full_depth.clear()
                 self._full_depth_failures.clear()
+                self._bs_errors.clear()
             self._wake.set()
 
     def refresh_now(self) -> None:
@@ -432,10 +436,11 @@ class McpDepthPoller(QThread):
                 if fetch_bs:
                     self._last_bs_fetch_at = time.monotonic()
                 if not self._stopping.is_set():
-                    self._emit_status(
-                        _status_text(all_full_depth) if fetch_depth
-                        else "已连接 · B/S 同步（千档被动）"
-                    )
+                    status = (_status_text(all_full_depth) if fetch_depth
+                              else "已连接 · B/S 同步（千档被动）")
+                    if self._bs_errors:
+                        status += f" · B/S {len(self._bs_errors)}只未就绪"
+                    self._emit_status(status)
             except (KeyboardInterrupt, SystemExit):
                 raise
             except BaseException as exc:  # noqa: BLE001
@@ -486,8 +491,6 @@ class McpDepthPoller(QThread):
         if not key:
             return False
         headers = {"Authorization": f"Bearer {key}"}
-        now = time.monotonic()
-        last_depth_finished_at = 0.0
         valid_codes = [
             item.code
             for raw in config.symbols
@@ -501,56 +504,68 @@ class McpDepthPoller(QThread):
             ) as (read_stream, write_stream):
                 async with ClientSession(read_stream, write_stream) as session:
                     await _bounded(session.initialize())
-                    for raw_symbol in config.symbols:
-                        if self._stopping.is_set() or self._wake.is_set():
-                            return False
-                        symbol = classify(raw_symbol)
-                        if symbol is None:
-                            continue
-
-                        due = self._next_depth_due.get(symbol.code, 0.0)
-                        depth_due = fetch_depth and (force_depth or now >= due)
-                        if not depth_due and not fetch_bs:
-                            continue
-
-                        if fetch_bs:
-                            try:
-                                await _fetch_volatility_bs(session, symbol.code)
-                                # 独立通知 UI：不能等待下一次行情快照才出现标记。
-                                self.bs_ready.emit(symbol.code)
-                            except Exception as exc:
-                                # B/S 与盘口恢复独立，失败可诊断但不影响千档。
-                                self.status_changed.emit(
-                                    f"B/S {symbol.code} 读取失败：{type(exc).__name__}: {str(exc)[:80]}"
-                                )
-
-                        if depth_due:
-                            # 绝不并发，也不背靠背挤服务器：上一只完整结束后留空档。
-                            delay = _serial_depth_delay(last_depth_finished_at)
-                            if delay > 0:
-                                await asyncio.sleep(delay)
-                            snapshot = await _fetch_depth_with_fallback(session, symbol.code)
-                            last_depth_finished_at = time.monotonic()
-                            self._depth_modes[symbol.code] = snapshot.depth_mode
-
-                            display_snapshot, cached_full, failures = _merge_depth_state(
-                                snapshot,
-                                self._last_full_depth.get(symbol.code),
-                                self._full_depth_failures.get(symbol.code, 0),
-                            )
-                            if cached_full is not None:
-                                self._last_full_depth[symbol.code] = cached_full
-                            self._full_depth_failures[symbol.code] = failures
-
-                            # 每只股票独立计时：降级后至少 5 秒再尝试它自己的千档。
-                            self._next_depth_due[symbol.code] = (
-                                last_depth_finished_at + _poll_seconds(snapshot.full_depth)
-                            )
-                            # 千档短暂失败时继续显示本地缓存，避免 UI 突然切到十档/五档。
-                            # 连续失败次数随快照下发，UI 达到阈值后在价格虚线上显示 ERROR。
-                            self.depth_ready.emit(display_snapshot)
+                    jobs = []
+                    if fetch_depth:
+                        jobs.append(self._fetch_depth_rows(session, config, force=force_depth))
+                    if fetch_bs:
+                        jobs.append(self._fetch_bs_rows(session, config))
+                    # 两类请求各自计时；千档完成即可发给 UI，不等待 B/S。
+                    await asyncio.gather(*jobs)
 
         # 未抓过的股票也视为未恢复；它们会在下一轮立刻到期。
         return bool(valid_codes) and all(
             self._depth_modes.get(code) == DEPTH_FULL for code in valid_codes
         )
+
+    async def _fetch_bs_rows(self, session, config):
+        for raw_symbol in config.symbols:
+            if self._stopping.is_set() or self._wake.is_set():
+                return
+            symbol = classify(raw_symbol)
+            if symbol is None:
+                continue
+            try:
+                payload = await _fetch_volatility_bs(session, symbol.code)
+                if payload.get('available') is False:
+                    self._bs_errors[symbol.code] = payload.get('message') or 'B/S结果尚未就绪'
+                    self.status_changed.emit(f"B/S {symbol.code} 暂无可用结果，千档继续刷新")
+                else:
+                    self._bs_errors.pop(symbol.code, None)
+                self.bs_ready.emit(symbol.code)
+            except TimeoutError:
+                self._bs_errors[symbol.code] = 'timeout'
+                self.status_changed.emit(
+                    f"B/S {symbol.code} 同步超时（{BS_REQUEST_TIMEOUT_SECONDS:g}秒），千档继续刷新"
+                )
+            except Exception as exc:
+                self._bs_errors[symbol.code] = type(exc).__name__
+                self.status_changed.emit(
+                    f"B/S {symbol.code} 读取失败：{type(exc).__name__}: {str(exc)[:80]}"
+                )
+
+    async def _fetch_depth_rows(self, session, config, *, force=False):
+        last_finished = 0.0
+        for raw_symbol in config.symbols:
+            if self._stopping.is_set() or self._wake.is_set():
+                return
+            symbol = classify(raw_symbol)
+            if symbol is None:
+                continue
+            if not force and time.monotonic() < self._next_depth_due.get(symbol.code, 0):
+                continue
+            delay = _serial_depth_delay(last_finished)
+            if delay > 0:
+                await asyncio.sleep(delay)
+            snapshot = await _fetch_depth_with_fallback(session, symbol.code)
+            last_finished = time.monotonic()
+            self._publish_depth(symbol.code, snapshot, last_finished)
+
+    def _publish_depth(self, code, snapshot, finished_at):
+        self._depth_modes[code] = snapshot.depth_mode
+        display, cached_full, failures = _merge_depth_state(
+            snapshot, self._last_full_depth.get(code), self._full_depth_failures.get(code, 0))
+        if cached_full is not None:
+            self._last_full_depth[code] = cached_full
+        self._full_depth_failures[code] = failures
+        self._next_depth_due[code] = finished_at + _poll_seconds(snapshot.full_depth)
+        self.depth_ready.emit(display)

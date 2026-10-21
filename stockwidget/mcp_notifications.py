@@ -100,13 +100,17 @@ def _resource_payload(result: Any) -> dict[str, Any]:
     return _json_text_payload(getattr(result, "contents", ()))
 
 
-async def _bounded(coro: Any, cancel_event: asyncio.Event | None = None) -> Any:
+async def _bounded(
+    coro: Any, cancel_event: asyncio.Event | None = None, *,
+    timeout_seconds: float | None = None,
+) -> Any:
     request_task = asyncio.ensure_future(coro)
     cancel_task = asyncio.ensure_future(cancel_event.wait()) if cancel_event is not None else None
     tasks = [request_task] if cancel_task is None else [request_task, cancel_task]
     try:
         done, _pending = await asyncio.wait(
-            tasks, timeout=REQUEST_TIMEOUT_SECONDS, return_when=asyncio.FIRST_COMPLETED
+            tasks, timeout=REQUEST_TIMEOUT_SECONDS if timeout_seconds is None else timeout_seconds,
+            return_when=asyncio.FIRST_COMPLETED
         )
     finally:
         for task in tasks:
