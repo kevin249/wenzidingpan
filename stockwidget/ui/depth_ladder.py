@@ -32,6 +32,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
@@ -93,6 +94,10 @@ MODE_INTRADAY = "intraday"
 MODE_DAILY = "daily"
 MODE_LABELS = {MODE_INTRADAY: "分时", MODE_DAILY: "日K"}
 MODE_ORDER = (MODE_INTRADAY, MODE_DAILY)
+
+_ChartValues = tuple[
+    list[float], list[float], list[float], list[Bar], Callable[[float], float] | None
+]
 
 # 当日交易分钟数：9:30–11:30 与 13:00–15:00 各 120 分钟，午休被压缩掉。
 # 所以 11:30 与 13:00 共用同一条竖线，且正好落在时间轴正中。
@@ -988,7 +993,7 @@ class DepthLadder(QWidget):
             text,
         )
 
-    def _chart_values(self) -> tuple[list[float], list[float], list[float], list[Bar], object]:
+    def _chart_values(self) -> _ChartValues:
         """图表区一次绘制所需的全部数据，供「背景层 / 前景层」两次绘制共用。"""
         prices, volumes, levels, bars = self._chart_series()
         values = list(prices)
@@ -1000,15 +1005,19 @@ class DepthLadder(QWidget):
         y_of = self._price_mapper(values) if values else None
         return prices, volumes, levels, bars, y_of
 
-    def _draw_chart_background(self, painter: QPainter, layout: _Layout) -> None:
+    def _draw_chart_background(
+        self, painter: QPainter, layout: _Layout, chart_values: _ChartValues
+    ) -> None:
         """K 线之下的一层：时间网格 + 成交量柱。"""
         self._draw_time_grid(painter, layout)
         if not layout.has_chart_band:
             return
-        _prices, volumes, levels, _bars, y_of = self._chart_values()
+        _prices, volumes, levels, _bars, y_of = chart_values
         self._draw_volume(painter, layout, y_of, levels, volumes)
 
-    def _draw_chart_foreground(self, painter: QPainter, layout: _Layout) -> None:
+    def _draw_chart_foreground(
+        self, painter: QPainter, layout: _Layout, chart_values: _ChartValues
+    ) -> None:
         """K 线之上的一层：曲线/蜡烛压在最上层。
 
         曲线现在横跨两根竖轴，会从盘口量条和成交量柱上方经过；先画它们、后画
@@ -1016,7 +1025,7 @@ class DepthLadder(QWidget):
         """
         if not layout.has_chart_band:
             return
-        prices, _volumes, _levels, bars, y_of = self._chart_values()
+        prices, _volumes, _levels, bars, y_of = chart_values
         if y_of is None:
             message = self._kline_message or (
                 "日K 加载中…" if self._chart_mode == MODE_DAILY else "暂无分时数据"
@@ -1042,14 +1051,16 @@ class DepthLadder(QWidget):
                 max(0.0, layout.chart_right - layout.chart_left),
                 float(self.height()),
             )
-            self._draw_chart_background(painter, layout)
+            # 同一帧只更新一次缩放，成交量与曲线/蜡烛共用完全相同的价格映射。
+            chart_values = self._chart_values()
+            self._draw_chart_background(painter, layout, chart_values)
         else:
             self._chart_rect = QRectF()
 
         self._draw_depth(painter, layout)
 
         if self._expanded:
-            self._draw_chart_foreground(painter, layout)
+            self._draw_chart_foreground(painter, layout, chart_values)
 
         self._draw_price_and_guide(painter, layout)
 

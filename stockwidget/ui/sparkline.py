@@ -181,8 +181,9 @@ class Sparkline(QWidget):
             grayscale_level=grayscale_level,
         )
 
-    def clear(self) -> None:
-        self._price_scale.reset()
+    def clear(self, *, preserve_scale: bool = False) -> None:
+        if not preserve_scale:
+            self._price_scale.reset()
         self._samples.clear()
         self._series = []
         self._volumes = []

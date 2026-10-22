@@ -259,6 +259,40 @@ def test_price_mapper_mode_switch_refits_and_depth_does_not_change_scale(app):
     assert widget._price_mapper([99.0, 101.0])(101.0) == pytest.approx(initial)
 
 
+def test_chart_layers_share_one_price_mapping_per_frame(app, monkeypatch):
+    widget = _widget()
+    widget.set_intraday(_session_trend())
+    widget.set_expanded(True)
+    mappings = []
+    original = widget._price_mapper
+
+    def record_mapping(values):
+        mapper = original(values)
+        mappings.append(mapper)
+        return mapper
+
+    monkeypatch.setattr(widget, "_price_mapper", record_mapping)
+    _render(widget)
+    assert len(mappings) == 1
+
+
+@pytest.mark.parametrize("mode", [MODE_INTRADAY, MODE_DAILY])
+def test_live_chart_quote_movement_and_short_data_keep_scale(app, mode):
+    widget = _widget()
+    widget.set_chart_mode(mode)
+    widget.set_kline(_kline())
+    widget.set_intraday(_session_trend())
+    widget.set_quote(107.0, 7.0, QColor(220, 224, 234))
+    mapper = widget._chart_values()[-1]
+    baseline = mapper(101.0) - mapper(100.0)
+    for price in [100.0, 107.0] * 15:
+        widget.set_quote(price, None, QColor(220, 224, 234))
+        widget.set_intraday(Trend(prices=[99.99, 100.01], prev_close=100.0))
+        mapper = widget._chart_values()[-1]
+        assert mapper(101.0) - mapper(100.0) == pytest.approx(baseline)
+        assert mapper(price) == pytest.approx(widget.height() / 2.0)
+
+
 def _trend() -> Trend:
     prices = [100 + (index % 7 - 3) * 0.4 for index in range(30)]
     return Trend(
