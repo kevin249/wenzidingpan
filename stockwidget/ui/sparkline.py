@@ -15,6 +15,7 @@ from PySide6.QtWidgets import QWidget
 
 from ..config import DEFAULT_GRAYSCALE_LEVEL
 from ..mcp_depth import DEPTH_FIVE, DEPTH_FULL, DEPTH_TEN, DepthSnapshot
+from .price_scale import PriceScale
 from .theme import display_color
 
 SAMPLE_LEN = 40  # 回退模式下保留的采样点数
@@ -52,6 +53,7 @@ class Sparkline(QWidget):
         self._annotation_font = QFont()
         self._annotation_font.setPixelSize(9)
         self._depth: DepthSnapshot | None = None
+        self._price_scale = PriceScale()
         self.setAttribute(Qt.WA_TransparentForMouseEvents)
 
     # ------------------------------------------------------------ 尺寸
@@ -180,6 +182,7 @@ class Sparkline(QWidget):
         )
 
     def clear(self) -> None:
+        self._price_scale.reset()
         self._samples.clear()
         self._series = []
         self._volumes = []
@@ -323,7 +326,8 @@ class Sparkline(QWidget):
             low, high = min(low, self._prev_close), max(high, self._prev_close)
         if self._show_open_line and self._open_price is not None:
             low, high = min(low, self._open_price), max(high, self._open_price)
-        span = (high - low) or max(abs(high) * 0.01, 0.01)
+        low, high = self._price_scale.bounds(low, high)
+        span = high - low
 
         def y_of(value: float) -> float:
             return (height - 2) - (value - low) / span * (height - 4)

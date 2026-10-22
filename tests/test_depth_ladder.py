@@ -239,6 +239,26 @@ def _text_runs(rows: list[int]) -> list[list[int]]:
     return runs
 
 
+def test_price_mapper_does_not_stretch_between_flat_and_one_tick(app):
+    widget = _widget()
+    baseline = widget._price_mapper([100.0, 100.0])(99.99)
+    for high in [100.01, 100.0] * 30:
+        mapper = widget._price_mapper([100.0, high])
+        assert mapper(99.99) == pytest.approx(baseline)
+        assert mapper(100.0) == pytest.approx(widget.height() / 2.0)
+
+
+def test_price_mapper_mode_switch_refits_and_depth_does_not_change_scale(app):
+    widget = _widget()
+    initial = widget._price_mapper([99.0, 101.0])(101.0)
+    expanded = widget._price_mapper([99.0, 101.11])(101.0)
+    assert expanded != pytest.approx(initial)
+    widget.set_depth(_depth())
+    assert widget._price_mapper([99.0, 101.0])(101.0) == pytest.approx(expanded)
+    widget.set_chart_mode(MODE_DAILY)
+    assert widget._price_mapper([99.0, 101.0])(101.0) == pytest.approx(initial)
+
+
 def _trend() -> Trend:
     prices = [100 + (index % 7 - 3) * 0.4 for index in range(30)]
     return Trend(
