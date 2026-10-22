@@ -60,7 +60,9 @@ def rendered(app):
 
     low = min(min(prices), 10.0)
     high = max(max(prices), 10.0)
-    span = (high - low) or 0.01
+    padding = (high - low) * 0.05
+    low, high = low - padding, high + padding
+    span = high - low
 
     def y_of(value: float) -> float:
         return (image.height() - 2) - (value - low) / span * (image.height() - 4)
@@ -69,6 +71,22 @@ def rendered(app):
         return round(index / (len(prices) - 1) * (image.width() - 1))
 
     return image, signals, prices, y_of, x_of
+
+
+def test_flat_and_one_tick_keep_historical_curve_at_same_height(app):
+    widget = Sparkline()
+    widget.set_color(CURVE_COLOR)
+    widget.set_annotations(None, [], show_signals=False, show_open_line=False,
+                           show_high_low=False, show_fill=False, grayscale=False)
+    widget.resize(WIDTH, HEIGHT)
+    heights = []
+    for high in [100.0, 100.01, 100.0, 100.01]:
+        widget.set_series([100.0, 100.0, high])
+        image = widget.grab().toImage()
+        extent = _line_extent(image, 20, CURVE_COLOR)
+        assert extent is not None
+        heights.append(extent)
+    assert len(set(heights)) == 1
 
 
 def _line_extent(image, x: int, color: QColor):

@@ -48,6 +48,7 @@ from ..mcp_depth import (
     DEPTH_TEN,
     DepthSnapshot,
 )
+from .price_scale import PriceScale
 from .sparkline import ANNOTATION_COLOR
 from .sparkline import BUY_COLOR as BS_BUY_COLOR
 from .sparkline import SELL_COLOR as BS_SELL_COLOR
@@ -162,6 +163,7 @@ class DepthLadder(QWidget):
         self._prev_close: float | None = None
         self._kline: Kline | None = None
         self._kline_message = ""
+        self._price_scale = PriceScale()
         self._signals: list[tuple[int, str]] = []
         self._daily_signals: list[tuple[int, str]] = []
         self._show_signals = True
@@ -230,6 +232,7 @@ class DepthLadder(QWidget):
         if mode == self._chart_mode:
             return
         self._chart_mode = mode
+        self._price_scale.reset()
         self.update()
         if notify:
             self.chart_mode_changed.emit(mode)
@@ -329,6 +332,15 @@ class DepthLadder(QWidget):
             self.update()
 
     def set_kline(self, kline: Kline | None, message: str = "") -> None:
+        if (
+            self._chart_mode == MODE_DAILY
+            and kline is not None
+            and self._kline is not None
+            and (kline.symbol, kline.period, kline.adjust) != (
+                self._kline.symbol, self._kline.period, self._kline.adjust
+            )
+        ):
+            self._price_scale.reset()
         self._kline = kline
         self._kline_message = message
         self.update()
@@ -757,9 +769,8 @@ class DepthLadder(QWidget):
         center_y = float(self.height()) / 2.0
         low, high = min(values), max(values)
         center = self._price if self._price and self._price > 0 else (low + high) / 2.0
-        half = max(center - low, high - center)
-        if half <= 0:
-            half = max(abs(center) * 0.005, 0.01)
+        axis_low, axis_high = self._price_scale.bounds(low, high, center=center)
+        half = (axis_high - axis_low) / 2.0
 
         def y_of(value: float) -> float:
             return center_y - (value - center) / (2.0 * half) * inner
