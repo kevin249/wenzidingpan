@@ -1650,6 +1650,27 @@ def test_theme2_canvas_receives_mcp_bs_points(app, monkeypatch):
     row.close()
 
 
+def test_quote_errors_and_short_trend_recovery_preserve_sparkline_scale(app):
+    from stockwidget.providers.base import Quote
+
+    config = Config(show_bs_points=False)
+    row = QuoteRow("600519")
+    row.apply_config(config)
+    quote = Quote.from_prices("600519", "测试股票", 100.0, 100.0)
+    row.update_quote(quote, config, Trend(prices=[99.0, 101.0], prev_close=100.0))
+    row.sparkline.resize(400, 100)
+    row.sparkline.grab()
+    baseline = row.sparkline._price_scale._bounds
+    assert baseline is not None
+    for _ in range(10):
+        row.update_quote(Quote.failed("600519", "临时取数失败"), config)
+        assert row.sparkline.points == []
+        row.update_quote(quote, config, Trend(prices=[99.99, 100.01], prev_close=100.0))
+        row.sparkline.grab()
+        assert row.sparkline._price_scale._bounds == baseline
+    row.close()
+
+
 def test_theme2_bs_markers_are_cleared_when_the_quote_fails(app, monkeypatch):
     from stockwidget import mcp_bs
     from stockwidget.providers.base import Quote

@@ -634,7 +634,8 @@ class QuoteRow(QWidget):
             self.price_label.setText(quote.error)
             self.price_label.setStyleSheet(_color_style(MUTED))
             self.percent_label.setText("")
-            self.sparkline.clear()
+            # 暂时取数失败只清显示；恢复时沿用原尺度，避免错误/恢复反复重置纵轴。
+            self.sparkline.clear(preserve_scale=True)
             self._set_dark(None, config)
             return
 
