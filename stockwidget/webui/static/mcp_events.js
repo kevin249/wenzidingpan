@@ -18,7 +18,7 @@
           <option value="local">本地计算</option>
           <option value="mcp">MCP 订阅</option>
         </select>
-        <p class="hint">选择本地并开启 B/S 标记时，新确认的 B/S 会在启动终端输出，重复刷新不重复提示，首次载入不补发历史点。选择 MCP 时，只显示 MCP 通道收到的当日 B/S 信号；本地反转算法不再参与。</p>
+        <p class="hint">本地计算针对分时反转点：开启 B/S 标记后，新信号会输出转折时间、确认时间与确认价；短数据恢复、重复刷新及历史补齐不重报。日K 的 MCP 标记是另一组信号。选择 MCP 时，分时只显示 MCP 的当日 B/S 信号。</p>
       </div>
       <div class="field">
         <label for="mcp-event-sort">当日 MCP 信息排序</label>
