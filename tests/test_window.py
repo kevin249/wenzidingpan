@@ -1628,6 +1628,7 @@ def test_theme2_canvas_receives_mcp_bs_points(app, monkeypatch):
         return [(1, "B"), (2, "S")]
 
     monkeypatch.setattr(mcp_bs, "bs_points", fake_bs_points)
+    monkeypatch.setattr(mcp_bs, "get_source", lambda: "mcp")
 
     config = Config(display_theme="theme2", show_bs_points=True)
     row = QuoteRow("600519")
@@ -1641,12 +1642,33 @@ def test_theme2_canvas_receives_mcp_bs_points(app, monkeypatch):
     row.update_quote(quote, config, trend)
 
     # 主题2 的 K 线画在行内，B/S 仍要按当天 MCP 信号映射到分时索引上。
-    assert requested == [("600519", trend.prices)]
+    assert requested == [("600519", trend.prices)] * 2
     assert row.theme2_depth._signals == [(1, "B"), (2, "S")]
     assert row.theme2_depth._show_signals is True
 
     row.set_theme2_expanded(True, notify=False)
     assert row.theme2_depth._layout().has_chart_band is True
+    row.close()
+
+
+def test_both_themes_follow_local_source_on_snapshot_and_signal_refresh(app, monkeypatch):
+    from stockwidget import mcp_bs
+    from stockwidget.providers.base import Quote
+
+    monkeypatch.setattr(mcp_bs, "get_source", lambda: "local")
+    monkeypatch.setattr(mcp_bs, "bs_points", lambda *args: pytest.fail("local source called MCP"))
+    config = Config(display_theme="theme2", show_bs_points=True)
+    row = QuoteRow("603986")
+    row.apply_config(config)
+    row.update_quote(
+        Quote.from_prices("603986", "兆易创新", 10.04, 10.0),
+        config,
+        Trend(prices=[10.0, 10.06, 10.12, 10.05, 9.98, 10.04]),
+    )
+    expected = [(0, "B"), (2, "S"), (4, "B")]
+    assert row.theme2_depth._signals == row.sparkline._signals == expected
+    row.refresh_bs_signals()
+    assert row.theme2_depth._signals == row.sparkline._signals == expected
     row.close()
 
 
@@ -1676,6 +1698,7 @@ def test_theme2_bs_markers_are_cleared_when_the_quote_fails(app, monkeypatch):
     from stockwidget.providers.base import Quote
 
     monkeypatch.setattr(mcp_bs, "bs_points", lambda symbol, prices, now=None: [(0, "B")])
+    monkeypatch.setattr(mcp_bs, "get_source", lambda: "mcp")
 
     config = Config(display_theme="theme2", show_bs_points=True)
     row = QuoteRow("600519")

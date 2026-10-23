@@ -14,11 +14,11 @@ from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QWidget
 
 from ..config import DEFAULT_GRAYSCALE_LEVEL
+from ..local_bs import SAMPLE_LEN
 from ..mcp_depth import DEPTH_FIVE, DEPTH_FULL, DEPTH_TEN, DepthSnapshot
 from .price_scale import PriceScale
 from .theme import display_color
 
-SAMPLE_LEN = 40  # 回退模式下保留的采样点数
 FILL_ALPHA = 38  # 面积填充的透明度，压得比曲线淡很多
 BASELINE_ALPHA = 110
 BUY_COLOR = QColor(240, 79, 90)

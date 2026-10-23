@@ -9,9 +9,10 @@ from PySide6.QtCore import QEvent, QObject, QTimer, QUrl, Qt, Signal
 from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import QApplication, QSystemTrayIcon
 
-from . import desktop, kline, providers
+from . import desktop, kline, mcp_bs, providers
 from .config import Config, Store
 from .hotkey import DEFAULT_WINDOW_TOGGLE_HOTKEY, WindowsGlobalHotkey
+from .local_bs import LocalBsNotifier
 from .mcp_depth import DepthSnapshot, McpDepthPoller
 from .mcp_notifications import McpNotification, McpNotificationListener
 from .poller import Poller, Snapshot
@@ -51,6 +52,7 @@ class WidgetApp:
         self.store = store or Store()
         self.config = config = self.store.get()
         self._unread = 0
+        self._local_bs_notifier = LocalBsNotifier()
         self.tray: Tray | None = None
 
         self.window = TickerWindow(config)
@@ -278,6 +280,13 @@ class WidgetApp:
         if snapshot.effective_provider:
             label = f"自动 · {listing.get(snapshot.effective_provider, snapshot.effective_provider)}"
         self.window.update_snapshot(snapshot, label)
+        for message in self._local_bs_notifier.collect(
+            snapshot.quotes,
+            snapshot.trends,
+            enabled=self.config.show_bs_points and mcp_bs.get_source() == mcp_bs.SOURCE_LOCAL,
+            at=snapshot.at,
+        ):
+            print(message, flush=True)
 
     def _on_depth_snapshot(self, snapshot: DepthSnapshot) -> None:
         self.window.update_depth(snapshot)

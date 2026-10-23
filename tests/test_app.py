@@ -411,3 +411,25 @@ def test_mcp_bs_update_targets_chart_without_refreshing_quotes():
     stub = SimpleNamespace(window=window)
     app_module.WidgetApp._on_bs_updated(stub, "603986")
     assert window.updated == ["603986"]
+
+
+@pytest.mark.parametrize("source, show, expected", [("local", True, 1), ("mcp", True, 0), ("local", False, 0)])
+def test_snapshot_prints_only_new_enabled_local_bs(monkeypatch, capsys, source, show, expected):
+    from stockwidget.intraday import Trend
+    from stockwidget.local_bs import LocalBsNotifier
+    from stockwidget.poller import Snapshot
+    from stockwidget.providers.base import Quote
+
+    monkeypatch.setattr(app_module.mcp_bs, "get_source", lambda: source)
+    updates = []
+    stub = SimpleNamespace(
+        config=Config(show_bs_points=show),
+        window=SimpleNamespace(update_snapshot=lambda *args: updates.append(args)),
+        _local_bs_notifier=LocalBsNotifier(),
+    )
+    quote = Quote.from_prices("603986", "兆易创新", 10.1, 10.0)
+    for prices in ([10.0, 10.01], [10.0, 10.01, 10.1], [10.0, 10.01, 10.1]):
+        snapshot = Snapshot(provider_id="mock", quotes=[quote], trends={quote.symbol: Trend(prices=prices)})
+        app_module.WidgetApp._on_snapshot(stub, snapshot)
+    assert len(updates) == 3
+    assert capsys.readouterr().out.count("[本地B/S]") == expected

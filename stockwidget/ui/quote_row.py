@@ -663,7 +663,7 @@ class QuoteRow(QWidget):
         prices = trend.prices if trend else self.sparkline.points
         self.sparkline.set_annotations(
             trend.open_price if trend else (prices[0] if prices else None),
-            calculate_bs_points(prices),
+            calculate_bs_points(prices, symbol=quote.symbol),
             show_signals=config.show_bs_points,
             show_open_line=config.show_open_line,
             show_high_low=config.show_high_low,
@@ -736,7 +736,7 @@ class QuoteRow(QWidget):
 
         # B/S 标记跟着分时曲线走；行情出错或没数据时清空，避免留下上一只的点。
         signals = (
-            mcp_bs.bs_points(quote.symbol, prices)
+            calculate_bs_points(prices, symbol=quote.symbol)
             if prices and config.show_bs_points and not quote.error
             else []
         )
@@ -757,7 +757,7 @@ class QuoteRow(QWidget):
         enabled = bool(config.show_bs_points and not quote.error)
         prices = trend.prices if trend else []
         self.theme2_depth.set_signals(
-            mcp_bs.bs_points(quote.symbol, prices) if enabled and prices else [],
+            calculate_bs_points(prices, symbol=quote.symbol) if enabled and prices else [],
             show=config.show_bs_points,
         )
         bars = self.theme2_depth.kline.bars if self.theme2_depth.kline else []
@@ -768,7 +768,7 @@ class QuoteRow(QWidget):
             spark_prices = trend.prices if trend else self.sparkline.points
             self.sparkline.set_annotations(
                 trend.open_price if trend else (spark_prices[0] if spark_prices else None),
-                calculate_bs_points(spark_prices),
+                calculate_bs_points(spark_prices, symbol=quote.symbol),
                 show_signals=config.show_bs_points,
                 show_open_line=config.show_open_line,
                 show_high_low=config.show_high_low,

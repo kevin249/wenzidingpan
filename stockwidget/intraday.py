@@ -103,13 +103,15 @@ def _local_bs_points(prices: list[float], reversal_percent: float = 0.005) -> li
     return signals
 
 
-def calculate_bs_points(prices: list[float], reversal_percent: float = 0.005) -> list[tuple[int, str]]:
+def calculate_bs_points(
+    prices: list[float], reversal_percent: float = 0.005, *, symbol: str = ""
+) -> list[tuple[int, str]]:
     """按设置选择 B/S 来源。
 
-    普通 list（含单元测试和采样回退）继续使用本地算法；只有联网分时返回的
-    :class:`PriceSeries` 带股票代码，MCP 模式才从当天 MCP 信号映射到曲线。
+    界面可显式传股票代码，联网分时也可通过 :class:`PriceSeries` 携带代码。
+    无股票上下文的普通 list 保持本地计算，供算法测试和独立调用使用。
     """
-    symbol = getattr(prices, "symbol", "")
+    symbol = symbol or getattr(prices, "symbol", "")
     if symbol and mcp_bs.get_source() == mcp_bs.SOURCE_MCP:
         return mcp_bs.bs_points(symbol, prices)
     return _local_bs_points(prices, reversal_percent)
