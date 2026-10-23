@@ -12,6 +12,7 @@ from stockwidget.intraday import (
     IntradayClient,
     Trend,
     calculate_bs_points,
+    local_bs_signals,
     parse_eastmoney,
     parse_tencent,
 )
@@ -29,6 +30,9 @@ def test_eastmoney_takes_close_price_and_prev_close():
         ])
     )
     assert trend.prices == [10.10, 10.30]  # 取的是收盘价（第 3 个字段）
+    assert trend.minutes == ["09:30", "09:31"]
+    assert trend.trade_date == "2026-08-24"
+    assert trend.source == "eastmoney"
     assert trend.volumes == [100.0, 120.0]
     assert trend.prev_close == 10.0
     assert trend.open_price == 10.0
@@ -69,6 +73,7 @@ def test_eastmoney_skips_malformed_and_zero_rows():
         ])
     )
     assert trend.prices == [10.40]
+    assert trend.minutes == ["09:33"]
 
 
 def test_eastmoney_rejects_bad_payload():
@@ -92,8 +97,15 @@ def test_bs_points_ignore_noise_and_unconfirmed_last_wave():
     assert calculate_bs_points([10.00, 10.01, 9.99, 10.02]) == []
 
 
+def test_bs_confirmation_indices_match_chart_pivots_and_threshold_crossing():
+    prices = [10.00, 10.06, 10.12, 10.05, 9.98, 10.04]
+    signals = local_bs_signals(prices)
+    assert [(s.index, s.side) for s in signals] == calculate_bs_points(prices)
+    assert [(s.index, s.confirmed_index) for s in signals] == [(0, 1), (2, 3), (4, 5)]
+
+
 def test_tencent_fallback_parses_minutes():
-    payload = {"data": {"sh600000": {"data": {"data": [
+    payload = {"data": {"sh600000": {"data": {"date": "20261023", "data": [
         "0930 10.10 100 1000",
         "0931 10.30 220 2200",
         "1201 9.90 1 1",  # 午休，应被滤掉
@@ -101,6 +113,9 @@ def test_tencent_fallback_parses_minutes():
     trend = parse_tencent(payload, "sh600000")
     assert trend.prices == [10.10, 10.30]
     assert trend.volumes == [100.0, 120.0]
+    assert trend.minutes == ["09:30", "09:31"]
+    assert trend.trade_date == "2026-10-23"
+    assert trend.source == "tencent"
 
 
 def test_tencent_rejects_bad_payload():

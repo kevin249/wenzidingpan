@@ -8,6 +8,7 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass, field
+from datetime import date
 
 import requests
 
@@ -45,6 +46,17 @@ def _number(value: object) -> float | None:
     return result if result == result and abs(result) != float("inf") else None
 
 
+def _trade_date(value: object) -> str:
+    text = str(value or "").strip()
+    # Python 3.10 的 date.fromisoformat 还不接受 YYYYMMDD。
+    if len(text) == 8 and text.isdigit():
+        text = f"{text[:4]}-{text[4:6]}-{text[6:]}"
+    try:
+        return date.fromisoformat(text).isoformat()
+    except ValueError:
+        return ""
+
+
 @dataclass
 class Trend:
     """一只股票的当日分时曲线。"""
@@ -56,6 +68,10 @@ class Trend:
     high_price: float | None = None
     low_price: float | None = None
     error: str | None = None
+    # 与 prices 严格对齐，保留真实分钟，不能用数组下标代替行情时间。
+    minutes: list[str] = field(default_factory=list)
+    trade_date: str = ""
+    source: str = ""
 
     def __bool__(self) -> bool:
         return len(self.prices) >= 2
@@ -65,7 +81,15 @@ def _secid(symbol: Symbol) -> str:
     return f"{1 if symbol.market == 'sh' else 0}.{symbol.code}"
 
 
-def _local_bs_points(prices: list[float], reversal_percent: float = 0.005) -> list[tuple[int, str]]:
+@dataclass(frozen=True)
+class LocalBsSignal:
+    index: int
+    side: str
+    confirmed_index: int
+
+
+def local_bs_signals(prices: list[float], reversal_percent: float = 0.005) -> list[LocalBsSignal]:
+    """与绘图共用的反转扫描，同时保留转折点和首次确认点。"""
     if len(prices) < 3:
         return []
     direction = 0
@@ -73,7 +97,7 @@ def _local_bs_points(prices: list[float], reversal_percent: float = 0.005) -> li
     extreme = prices[0]
     low = high = prices[0]
     low_index = high_index = 0
-    signals: list[tuple[int, str]] = []
+    signals: list[LocalBsSignal] = []
     for index, price in enumerate(prices[1:], 1):
         if direction == 0:
             if price < low:
@@ -81,26 +105,30 @@ def _local_bs_points(prices: list[float], reversal_percent: float = 0.005) -> li
             if price > high:
                 high, high_index = price, index
             if low and (price - low) / low >= reversal_percent:
-                signals.append((low_index, "B"))
+                signals.append(LocalBsSignal(low_index, "B", index))
                 direction, extreme, extreme_index = 1, price, index
             elif high and (high - price) / high >= reversal_percent:
-                signals.append((high_index, "S"))
+                signals.append(LocalBsSignal(high_index, "S", index))
                 direction, extreme, extreme_index = -1, price, index
         elif direction > 0:
             if price >= extreme:
                 extreme, extreme_index = price, index
             elif extreme and (extreme - price) / extreme >= reversal_percent:
-                signals.append((extreme_index, "S"))
+                signals.append(LocalBsSignal(extreme_index, "S", index))
                 direction = -1
                 extreme, extreme_index = price, index
         else:
             if price <= extreme:
                 extreme, extreme_index = price, index
             elif extreme and (price - extreme) / extreme >= reversal_percent:
-                signals.append((extreme_index, "B"))
+                signals.append(LocalBsSignal(extreme_index, "B", index))
                 direction = 1
                 extreme, extreme_index = price, index
     return signals
+
+
+def _local_bs_points(prices: list[float], reversal_percent: float = 0.005) -> list[tuple[int, str]]:
+    return [(signal.index, signal.side) for signal in local_bs_signals(prices, reversal_percent)]
 
 
 def calculate_bs_points(
@@ -124,6 +152,8 @@ def parse_eastmoney(payload: object) -> Trend:
 
     prices: list[float] = []
     volumes: list[float] = []
+    minutes: list[str] = []
+    trade_date = ""
     open_price: float | None = None
     high_price: float | None = None
     low_price: float | None = None
@@ -144,6 +174,9 @@ def parse_eastmoney(payload: object) -> Trend:
             if low is not None and low > 0:
                 low_price = low if low_price is None else min(low_price, low)
             prices.append(close)
+            minutes.append(minute)
+            stamp = parts[0].strip().split(" ")[0]
+            trade_date = _trade_date(stamp) or trade_date
             volume = _number(parts[5]) if len(parts) > 5 else None
             volumes.append(volume if volume is not None and volume > 0 else 0.0)
 
@@ -154,16 +187,22 @@ def parse_eastmoney(payload: object) -> Trend:
         open_price=open_price,
         high_price=high_price if high_price is not None else (max(prices) if prices else None),
         low_price=low_price if low_price is not None else (min(prices) if prices else None),
+        minutes=minutes,
+        trade_date=trade_date,
+        source="eastmoney",
     )
 
 
 def parse_tencent(payload: object, key: str) -> Trend:
     if not isinstance(payload, dict):
         return Trend(error="返回格式异常")
-    block = (((payload.get("data") or {}).get(key) or {}).get("data") or {}).get("data") or []
+    data = (((payload.get("data") or {}).get(key) or {}).get("data") or {})
+    block = data.get("data") or []
+    trade_date = _trade_date(data.get("date"))
 
     prices: list[float] = []
     volumes: list[float] = []
+    minutes: list[str] = []
     prev_volume = 0.0
     for line in block:
         parts = str(line or "").split(" ")
@@ -173,6 +212,7 @@ def parse_tencent(payload: object, key: str) -> Trend:
         price = _number(parts[1])
         if price is not None and price > 0 and _is_trading_minute(minute):
             prices.append(price)
+            minutes.append(minute)
             cumulative = _number(parts[2]) if len(parts) > 2 else None
             if cumulative is not None and cumulative > 0:
                 volume = max(cumulative - prev_volume, 0.0)
@@ -187,6 +227,9 @@ def parse_tencent(payload: object, key: str) -> Trend:
         open_price=prices[0] if prices else None,
         high_price=max(prices) if prices else None,
         low_price=min(prices) if prices else None,
+        minutes=minutes,
+        trade_date=trade_date,
+        source="tencent",
     )
 
 
