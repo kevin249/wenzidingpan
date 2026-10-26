@@ -1,9 +1,12 @@
 """网格里的一格行情。
 
-主题1有两种版式，中间永远是当日分时图：
+主题1有三种版式：
 
 * 左中右（``row_style="sides"``）：左边名称压暗盘资金，右边现价压涨跌幅，左右各两行；
 * 上中下（``row_style="stacked"``）：上面名称与现价同一行，下面暗盘与涨跌幅同一行。
+* 上下（``row_style="top_bottom"``）：上面依次为名称、现价、涨跌幅、暗盘，下面是分时图。
+
+上中下与上下的文字行保持自然高度，与走势图之间不留间距。
 
 选左中右时，格子窄到三列放不下才会临时退回上中下，避免文字被裁掉。
 
@@ -353,6 +356,24 @@ class QuoteRow(QWidget):
         margins = self._layout.contentsMargins()
         return self.theme2_depth.sizeHint().width() + margins.left() + margins.right()
 
+    def classic_header_width(self) -> int:
+        """上下版式的自动列宽：给同一行四项信息留足自然宽度。"""
+        config = self._config
+        # 自动列宽不依赖当前窄格子的间距，避免按压窄后的 sizeHint 反复缩小。
+        padding = max(4, round(config.font_size * 0.65))
+        gap = max(4, round(config.font_size * 0.6))
+        widths = [
+            label.sizeHint().width()
+            for label in (self.name_label, self.price_label, self.percent_label)
+            if not label.isHidden()
+        ]
+        if not self.dark_box.isHidden():
+            widths.append(
+                self.dark_label.sizeHint().width() + self.dark_value.sizeHint().width()
+                + max(2, gap // 2)
+            )
+        return sum(widths) + max(0, len(widths) - 1) * gap + padding * 2
+
     def _request_theme2_kline(self) -> None:
         """日K 只在「已展开且切到日K」时才拉，避免白白发请求。"""
         if not self._theme2_expanded or self.theme2_depth.chart_mode != MODE_DAILY:
@@ -396,6 +417,10 @@ class QuoteRow(QWidget):
     def _update_layout_mode(self) -> None:
         """按所选版式摆放文字；各类字体保持用户设置的比例。"""
         config = self._config
+        # 切换主题/版式后旧网格仍保留空行，先解除旧的拉伸权重。
+        for row in range(self._layout.rowCount()):
+            self._layout.setRowStretch(row, 0)
+        self._layout.setAlignment(Qt.AlignmentFlag(0))
         if config.display_theme == "theme2":
             # 顶部信息条（价格上方）恒占一行，画布吃满剩余高度；展开与否只改
             # 画布内部的分区，行内布局本身不变，所以外框不会跟着跳。
@@ -424,7 +449,7 @@ class QuoteRow(QWidget):
             self._layout.setContentsMargins(padding, padding, padding, padding)
             self._layout.setHorizontalSpacing(0)
             self._layout.setVerticalSpacing(max(1, round(config.font_size * 0.12)))
-            for column in range(3):
+            for column in range(self._layout.columnCount()):
                 self._layout.setColumnStretch(column, 0)
             self._layout.setColumnStretch(0, 1)
             self._layout.setRowStretch(0, 0)
@@ -496,9 +521,20 @@ class QuoteRow(QWidget):
         fixed_chart = config.chart_height > 0
         compact_padding = max(2, round(config.font_size * 0.35))
         compact_gap = max(2, round(config.font_size * 0.25))
-        # 用户选上中下就一直上中下；选左中右时，只有窄到三列排不开才临时退回来。
-        prefer_stacked = config.row_style == "stacked"
+        # 显式选择纵向版式就保持它；左中右只有窄到三列排不开才临时退回上中下。
+        top_bottom = config.row_style == "top_bottom"
+        prefer_stacked = config.row_style in ("stacked", "top_bottom")
         stacked = prefer_stacked or narrow
+        # 文字不能随格子长高，否则文字在高单元格里居中，看起来图表上下各空一大截。
+        # 左中右仍保持原来的两侧居中排列；纵向版式只让自动高度的图表吃剩余空间。
+        for widget in (
+            self.name_label, self.price_label, self.percent_label, self.dark_box
+        ):
+            policy = widget.sizePolicy()
+            policy.setVerticalPolicy(QSizePolicy.Fixed if stacked else QSizePolicy.Preferred)
+            widget.setSizePolicy(policy)
+        if stacked and (fixed_chart or not show_chart):
+            self._layout.setAlignment(Qt.AlignTop)
         # 上中下要求上下两行各自同行，所以显式选它时不再往下拆行。
         stacked_sides = (
             not prefer_stacked
@@ -526,9 +562,9 @@ class QuoteRow(QWidget):
             + compact_gap
             > self.width() - max(8, compact_gap * 2)
         )
-        layout_state = (stacked, show_chart, stacked_sides, stacked_secondary, fixed_chart)
-        # 固定高度的走势图在格子里垂直居中；自动高度则铺满，交给布局拉伸。
-        chart_align = Qt.AlignVCenter if fixed_chart else Qt.AlignmentFlag(0)
+        layout_state = (top_bottom, stacked, show_chart, stacked_sides, stacked_secondary, fixed_chart)
+        # 左中右的固定图表仍居中；纵向版式紧贴文字，自动图表吃满剩余高度。
+        chart_align = Qt.AlignVCenter if fixed_chart and not stacked else Qt.AlignmentFlag(0)
         if layout_state != self._layout_state:
             for widget in (
                 self.name_label,
@@ -538,7 +574,18 @@ class QuoteRow(QWidget):
                 self.sparkline,
             ):
                 self._layout.removeWidget(widget)
-            if stacked:
+            for column in range(self._layout.columnCount()):
+                self._layout.setColumnStretch(column, 0)
+            if top_bottom:
+                self._layout.addWidget(self.name_label, 0, 0)
+                self._layout.addWidget(self.price_label, 0, 1)
+                self._layout.addWidget(self.percent_label, 0, 2)
+                self._layout.addWidget(self.dark_box, 0, 3, Qt.AlignLeft | Qt.AlignVCenter)
+                if show_chart:
+                    self._layout.addWidget(self.sparkline, 1, 0, 1, 4)
+                # 信息按顺序紧排，多余宽度留在暗盘之后，图表仍铺满整行。
+                self._layout.setColumnStretch(3, 1)
+            elif stacked:
                 if stacked_sides:
                     self._layout.addWidget(self.name_label, 0, 0, 1, 2)
                     self._layout.addWidget(self.price_label, 1, 0, 1, 2)
@@ -584,6 +631,8 @@ class QuoteRow(QWidget):
                     self._layout.setColumnStretch(1, 0)
                     self._layout.setColumnStretch(2, 1)
             self._layout_state = layout_state
+        if stacked and show_chart and not fixed_chart:
+            self._layout.setRowStretch(2 if stacked_sides else 1, 1)
         self._narrow = narrow
 
         compact = config.compact
@@ -602,7 +651,7 @@ class QuoteRow(QWidget):
             chart_height = config.chart_height
         self._layout.setContentsMargins(padding, padding, padding, padding)
         self._layout.setHorizontalSpacing(gap)
-        self._layout.setVerticalSpacing(1)
+        self._layout.setVerticalSpacing(0 if stacked else 1)
         self._dark_layout.setSpacing(max(2, gap // 2))
         self.sparkline.setMinimumWidth(chart_width if config.show_sparkline else 0)
         if not config.show_sparkline:

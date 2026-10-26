@@ -280,9 +280,11 @@ function refreshHints() {
 
   el('row_style-hint').textContent = theme2
     ? '主题 2 不使用行内样式。'
-    : el('row_style').value === 'stacked'
-      ? '上中下：上面一行是名称与现价，下面一行是暗盘与涨跌幅，中间永远是 K 线。'
-      : '左中右：左边名称压暗盘、右边现价压涨跌幅，左右各两行，中间永远是 K 线；格子窄到排不下时会自动改用上中下。';
+    : el('row_style').value === 'top_bottom'
+      ? '上下：上面一行依次显示股票名称、现价、涨跌幅、暗盘，下面紧贴 K 线。'
+      : el('row_style').value === 'stacked'
+        ? '上中下：上面一行是名称与现价，下面一行是暗盘与涨跌幅，中间紧贴 K 线，上下不留间距。'
+        : '左中右：左边名称压暗盘、右边现价压涨跌幅，左右各两行，中间永远是 K 线；格子窄到排不下时会自动改用上中下。';
 }
 
 function note(text) {

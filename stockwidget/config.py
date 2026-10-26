@@ -26,8 +26,8 @@ DISPLAY_THEMES = ("theme1", "theme2")
 # stockwidget/kline.py 直接读它，两边不会再各写一份。
 KLINE_SOURCES = ("auto", "eastmoney", "tencent", "sina")
 THEME2_SIDES = ("right", "left")
-# sides = 左中右（左右各两行文字），stacked = 上中下（上下各一行文字）
-ROW_STYLES = ("sides", "stacked")
+# sides = 左中右，stacked = 上中下，top_bottom = 信息在上、K 线在下
+ROW_STYLES = ("sides", "stacked", "top_bottom")
 COLOR_SCHEMES = ("cn", "us")
 
 # 只把“显示/窗口外观”按主题隔离。数据源、自选、刷新频率、Debug、
@@ -172,6 +172,7 @@ class Config:
     layout: str = "multi"  # multi = 多行列表，single = 单行滚动
     # sides = 左中右：左侧名称/暗盘两行，右侧现价/涨跌幅两行，走势图在中间；
     # stacked = 上中下：名称与现价同一行，暗盘与涨跌幅同一行，走势图永远在中间。
+    # top_bottom = 上下：上面一行依次为名称、现价、涨跌幅、暗盘，下面为走势图。
     row_style: str = "sides"
     visible_rows: int = 4
     chart_height: int = 0  # K 线（走势图）高度，0 表示按字号自动推算
