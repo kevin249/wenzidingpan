@@ -7,12 +7,13 @@ from __future__ import annotations
 
 import threading
 import time
-from dataclasses import dataclass, field
-from datetime import date
+from dataclasses import dataclass, field, replace
+from datetime import date, datetime
 
 import requests
 
 from . import mcp_bs
+from .market_hours import SHANGHAI_TZ
 from .providers.base import USER_AGENT, describe_error
 from .symbols import Symbol, classify
 
@@ -72,6 +73,8 @@ class Trend:
     minutes: list[str] = field(default_factory=list)
     trade_date: str = ""
     source: str = ""
+    fetched_at: float = 0.0  # 最近一次成功获取该曲线的时间
+    stale: bool = False  # 接口失败时暂用当天最后一份有效曲线
 
     def __bool__(self) -> bool:
         return len(self.prices) >= 2
@@ -239,6 +242,7 @@ class IntradayClient:
     def __init__(self, session: requests.Session | None = None) -> None:
         self.session = session or requests.Session()
         self._cache: dict[str, tuple[float, Trend]] = {}
+        self._last_good: dict[str, tuple[float, Trend]] = {}
         self._lock = threading.Lock()
 
     def _fetch_eastmoney(self, symbol: Symbol) -> Trend:
@@ -296,11 +300,25 @@ class IntradayClient:
                 return cached[1]
 
         trend = self._load(symbol)
-        trend.prices = PriceSeries(trend.prices, symbol.code)
         with self._lock:
+            if trend:
+                trend.fetched_at = now
+                self._last_good[symbol.key] = (now, trend)
+            elif previous := self._last_good.get(symbol.key):
+                stamp, good = previous
+                same_day = (datetime.fromtimestamp(now, SHANGHAI_TZ).date()
+                            == datetime.fromtimestamp(stamp, SHANGHAI_TZ).date())
+                same_session = not (trend.trade_date and good.trade_date
+                                    and trend.trade_date != good.trade_date)
+                if same_day and same_session:
+                    trend = replace(good, stale=True, error=trend.error or "分时数据暂不可用")
+                else:
+                    self._last_good.pop(symbol.key, None)
+            trend.prices = PriceSeries(trend.prices, symbol.code)
             self._cache[symbol.key] = (now, trend)
         return trend
 
     def reset_cache(self) -> None:
         with self._lock:
+            # 强制重新请求仍保留最近成功帧；这次请求失败时图表不闪为空白。
             self._cache.clear()

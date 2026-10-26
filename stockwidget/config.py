@@ -51,6 +51,7 @@ THEME_SCOPED_FIELDS = (
     "always_on_top",
     "show_title_buttons",
     "show_sparkline",
+    "show_chart_depth",
     "show_sparkline_fill",
     "show_bs_points",
     "show_open_line",
@@ -166,6 +167,7 @@ class Config:
     # 窗口只剩行情内容。改配置、刷新和退出仍可从托盘菜单和设置页进行。
     show_title_buttons: bool = True
     show_sparkline: bool = True
+    show_chart_depth: bool = True  # 经典主题：在走势图内叠加千档挂单分布
     show_sparkline_fill: bool = False
     show_bs_points: bool = True
     show_open_line: bool = True
@@ -435,6 +437,7 @@ def sanitize(raw: Any, *, _include_theme_profiles: bool = True) -> Config:
         "always_on_top",
         "show_title_buttons",
         "show_sparkline",
+        "show_chart_depth",
         "show_sparkline_fill",
         "show_bs_points",
         "show_open_line",

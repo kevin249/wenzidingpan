@@ -159,6 +159,46 @@ def test_client_rejects_invalid_symbol_without_network():
     assert IntradayClient(session=session).fetch("不是代码").error == "代码格式不正确"
 
 
+def test_failed_or_empty_refresh_keeps_last_good_curve_and_recovers(monkeypatch):
+    client = IntradayClient()
+    good = Trend(prices=[10.0, 10.2], minutes=["09:30", "09:31"], trade_date="2026-10-26")
+    recovered = Trend(prices=[10.0, 10.2, 10.3], trade_date="2026-10-26")
+    responses = iter([good, Trend(error="请求超时"), Trend(), recovered])
+    monkeypatch.setattr(client, "_load", lambda symbol: next(responses))
+    fresh = client.fetch("600000", now=1000.0)
+    for now in (1002.0, 1004.0):
+        stale = client.fetch("600000", now=now)
+        assert stale.prices == fresh.prices
+        assert stale.minutes == fresh.minutes
+        assert stale.stale and stale.error
+        assert stale.fetched_at == 1000.0
+        assert not fresh.stale and fresh.error is None
+    latest = client.fetch("600000", now=1006.0)
+    assert latest.prices == [10.0, 10.2, 10.3]
+    assert not latest.stale and latest.error is None
+    assert latest.fetched_at == 1006.0
+
+
+def test_forced_refresh_keeps_fallback_but_day_and_session_changes_expire_it(monkeypatch):
+    client = IntradayClient()
+    responses = iter([
+        Trend(prices=[10.0, 10.2], trade_date="2026-10-26"),
+        Trend(error="请求超时"),
+        Trend(error="请求超时"),
+        Trend(prices=[10.1, 10.3], trade_date="2026-10-27"),
+        Trend(prices=[10.4], trade_date="2026-10-28"),
+    ])
+    monkeypatch.setattr(client, "_load", lambda symbol: next(responses))
+    client.fetch("600000", now=1000.0)
+    client.reset_cache()
+    assert client.fetch("600000", now=1000.1).stale
+    assert not client.fetch("600000", now=1000.0 + 86400).prices
+    client.fetch("600000", now=1002.0 + 86400)
+    next_session = client.fetch("600000", now=1004.0 + 86400)
+    assert next_session.prices == [10.4]
+    assert not next_session.stale
+
+
 # --------------------------------------------------------------- 测试替身
 
 

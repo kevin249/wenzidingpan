@@ -60,6 +60,7 @@ class Sparkline(SizedWidget):
         self._annotation_font = QFont()
         self._annotation_font.setPixelSize(9)
         self._depth: DepthSnapshot | None = None
+        self._show_depth = True
         self._price_scale = PriceScale()
         self.setAttribute(Qt.WA_TransparentForMouseEvents)
 
@@ -126,6 +127,12 @@ class Sparkline(SizedWidget):
     def set_depth(self, snapshot: DepthSnapshot | None) -> None:
         if snapshot != self._depth:
             self._depth = snapshot
+            self.update()
+
+    def set_show_depth(self, enabled: bool) -> None:
+        """只切换挂单叠加层，保留曲线、尺寸和最近收到的深度数据。"""
+        if self._show_depth != enabled:
+            self._show_depth = enabled
             self.update()
 
     def set_color(self, color: QColor) -> None:
@@ -402,7 +409,8 @@ class Sparkline(SizedWidget):
         # 主题2展开图：左侧历史成交量分布，右侧实时挂单分布，二者等宽；K线居中。
         if self._show_volume_profile:
             self._draw_traded_volume(painter, height, y_of, profile_width)
-        self._draw_depth(painter, width, height, y_of, profile_width or self._side_profile_width(width))
+        if self._show_depth:
+            self._draw_depth(painter, width, height, y_of, profile_width or self._side_profile_width(width))
 
         # 昨收基准线
         if self._prev_close is not None:
