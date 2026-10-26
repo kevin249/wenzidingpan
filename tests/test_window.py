@@ -1680,8 +1680,9 @@ def test_quote_errors_and_short_trend_recovery_preserve_sparkline_scale(app):
     baseline = row.sparkline._price_scale._bounds
     assert baseline is not None
     for _ in range(10):
+        previous_points = list(row.sparkline.points)
         row.update_quote(Quote.failed("600519", "临时取数失败"), config)
-        assert row.sparkline.points == []
+        assert row.sparkline.points == previous_points
         row.update_quote(quote, config, Trend(prices=[99.99, 100.01], prev_close=100.0))
         row.sparkline.grab()
         assert row.sparkline._price_scale._bounds == baseline

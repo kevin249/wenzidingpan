@@ -202,8 +202,7 @@ class Poller(QThread):
     def _attach_trends(self, quotes: list[Quote], snapshot: Snapshot) -> None:
         """走势图秒级刷新；客户端只缓存 1 秒，失败时界面继续保留普通报价。"""
         for quote in quotes:
-            if quote.error:
-                continue
+            # 分时与报价接口相互独立；报价失败时仍可刷新有效分时。
             trend = self._intraday.fetch(quote.symbol)
             if trend:
                 snapshot.trends[quote.symbol] = trend

@@ -22,6 +22,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import (
@@ -37,6 +39,7 @@ from .. import mcp_bs
 from ..config import Config
 from ..intraday import Trend, calculate_bs_points
 from ..kline import PERIOD_DAY
+from ..market_hours import SHANGHAI_TZ
 from ..mcp_depth import DepthSnapshot
 from ..providers.base import Quote
 from ..symbols import classify
@@ -122,6 +125,7 @@ class QuoteRow(SizedWidget):
         self.symbol = symbol
         self._last_quote: Quote | None = None
         self._last_trend: Trend | None = None
+        self._chart_day = None
         self._last_depth: DepthSnapshot | None = None
         self._theme2_expanded = False
 
@@ -228,9 +232,13 @@ class QuoteRow(SizedWidget):
             # 强制重建，不能复用旧 layout_state。
             self._layout_state = None
         self._config = config
+        if previous.intraday_chart != config.intraday_chart:
+            self._last_trend = None
+            self.sparkline.set_series([])
         # 紧凑模式只省掉暗盘和页脚，走势图照画——只是压扁一点。
         self.sparkline.setVisible(self._visible("chart"))
         self.sparkline.set_fill_width(config.chart_fill_width)
+        self.sparkline.set_show_depth(config.show_chart_depth)
         self.name_label.setVisible(self._visible("name"))
         self.price_label.setVisible(self._visible("price"))
         self.percent_label.setVisible(self._visible("percent"))
@@ -715,8 +723,34 @@ class QuoteRow(SizedWidget):
     # ------------------------------------------------------------ 数据
 
     def update_quote(self, quote: Quote, config: Config, trend: Trend | None = None) -> None:
+        today = datetime.now(SHANGHAI_TZ).date()
+        if self._chart_day is not None and self._chart_day != today:
+            # 跨日不能把昨天的曲线当作今天的故障保留帧。
+            self._last_trend = None
+            self.sparkline.clear()
+            self._chart_day = today
+        if not config.intraday_chart:
+            trend = None
+        elif quote.error and not trend:
+            trend = self._last_trend
+        if trend and trend.fetched_at and datetime.fromtimestamp(trend.fetched_at, SHANGHAI_TZ).date() != today:
+            trend = None
+        if (trend and self._last_trend and trend.trade_date and self._last_trend.trade_date
+                and trend.trade_date != self._last_trend.trade_date):
+            self.sparkline.clear()
         self._last_quote = quote
         self._last_trend = trend
+        if trend or (not quote.error and quote.price is not None):
+            self._chart_day = today
+        if trend and trend.stale:
+            stamp = datetime.fromtimestamp(trend.fetched_at, SHANGHAI_TZ).strftime("%H:%M:%S")
+            self.sparkline.setToolTip(f"分时刷新失败（{trend.error}），保留 {stamp} 的图表，等待下次更新")
+        elif quote.error:
+            self.sparkline.setToolTip(f"报价更新失败（{quote.error}），保留最后有效图表")
+        else:
+            self.sparkline.setToolTip("")
+        # 曲线对鼠标透明，悬停事件由股票卡片接收。
+        self.setToolTip(self.sparkline.toolTip())
         color = direction_color(config, quote.change)
         self._update_theme2_data(quote, config, trend, color)
         self.name_label.setText(quote.name or quote.symbol)
@@ -728,8 +762,9 @@ class QuoteRow(SizedWidget):
             self.price_label.setText(quote.error)
             self.price_label.setStyleSheet(_color_style(MUTED))
             self.percent_label.setText("")
-            # 暂时取数失败只清显示；恢复时沿用原尺度，避免错误/恢复反复重置纵轴。
-            self.sparkline.clear(preserve_scale=True)
+            # 报价错误只更新错误文字，不把已经画出的曲线清空后重画。
+            if trend:
+                self._update_sparkline_data(quote, config, trend, color)
             self._set_dark(None, config)
             self._update_layout_mode()
             self._apply_component_sizes()
@@ -749,29 +784,32 @@ class QuoteRow(SizedWidget):
             _color_style(text_color(config, config.stock_percent_color, color))
         )
 
-        self.sparkline.set_color(color)
-        self.sparkline.push_sample(quote.price)
+        self._update_sparkline_data(quote, config, trend, color)
+        self._set_dark(quote.dark_fund, config)
+        # 文本写入后 minimumSizeHint 才准确；必要时切到更窄的堆叠布局。
+        self._update_layout_mode()
+        self._apply_component_sizes()
+
+    def _update_sparkline_data(self, quote: Quote, config: Config, trend: Trend | None, color) -> None:
+        if not quote.error:
+            self.sparkline.set_color(color)
+            self.sparkline.push_sample(quote.price)
         self.sparkline.set_series(trend.prices if trend else [], trend.minutes if trend else [])
         # 分时接口给了昨收就用它的，否则用行情里的——虚线基准不能缺。
-        self.sparkline.set_prev_close(
-            (trend.prev_close if trend and trend.prev_close else None) or quote.prev_close
-        )
+        prev_close = (trend.prev_close if trend and trend.prev_close else None) or quote.prev_close
+        if prev_close is not None or not quote.error:
+            self.sparkline.set_prev_close(prev_close)
         prices = trend.prices if trend else self.sparkline.points
         self.sparkline.set_annotations(
             trend.open_price if trend else (prices[0] if prices else None),
             calculate_bs_points(prices, symbol=quote.symbol),
-            show_signals=config.show_bs_points,
+            show_signals=config.show_bs_points and not quote.error,
             show_open_line=config.show_open_line,
             show_high_low=config.show_high_low,
             show_fill=config.show_sparkline_fill,
             grayscale=config.grayscale,
             grayscale_level=config.grayscale_level,
         )
-
-        self._set_dark(quote.dark_fund, config)
-        # 文本写入后 minimumSizeHint 才准确；必要时切到更窄的堆叠布局。
-        self._update_layout_mode()
-        self._apply_component_sizes()
 
     def _update_theme2_data(self, quote: Quote, config: Config, trend: Trend | None, color) -> None:
         symbol = classify(quote.symbol)
@@ -829,7 +867,7 @@ class QuoteRow(SizedWidget):
             percent_color=text_color(config, config.stock_percent_color, color),
         )
         prev_close = (trend.prev_close if trend and trend.prev_close else None) or quote.prev_close
-        self.theme2_depth.set_intraday(trend if not quote.error else None, prev_close)
+        self.theme2_depth.set_intraday(trend, prev_close)
 
         # B/S 标记跟着分时曲线走；行情出错或没数据时清空，避免留下上一只的点。
         signals = (

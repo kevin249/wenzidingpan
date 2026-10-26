@@ -11,6 +11,7 @@ const CHECKBOXES = [
   'show_title_buttons',
   'show_dark_trade',
   'show_sparkline',
+  'show_chart_depth',
   'show_sparkline_fill',
   'show_bs_points',
   'show_open_line',
@@ -306,6 +307,7 @@ function refreshHints() {
   const theme2 = el('display_theme').value === 'theme2';
   const mirrorLeft = el('theme2_side').value === 'left';
   const single = !theme2 && el('layout').value === 'single';
+  el('show_chart_depth').disabled = theme2 || single;
   el('theme2_side').disabled = !theme2;
   el('theme2_depth_width').disabled = !theme2;
   el('theme2_popup_font_size').disabled = !theme2;
