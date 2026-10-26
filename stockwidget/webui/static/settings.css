@@ -314,11 +314,38 @@ button.primary:hover {
 
 .watchlist-item {
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  align-items: stretch;
   gap: 8px;
-  padding: 7px 8px 7px 12px;
+  padding: 9px 8px 10px 12px;
   border-bottom: 1px solid var(--border);
 }
+
+.watchlist-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.watchlist-toggles { display: flex; flex-wrap: wrap; gap: 6px; }
+
+.icon-btn.watchlist-toggle {
+  width: auto;
+  height: 28px;
+  padding: 0 9px;
+  font-size: 12px;
+  border-color: var(--border);
+}
+
+.watchlist-toggle[aria-pressed='true'] {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--card));
+  border-color: var(--accent);
+}
+
+.watchlist-toggle[aria-pressed='false'] { text-decoration: line-through; }
+
+.watchlist-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 .watchlist-item:last-child {
   border-bottom: none;

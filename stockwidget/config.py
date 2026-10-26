@@ -16,6 +16,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from .providers import DEFAULT_PROVIDER
+from .symbols import classify
 
 APP_DIR_NAME = "stock-ticker-widget"
 CONFIG_FILE_NAME = "config.json"
@@ -92,6 +93,7 @@ FONT_FAMILY_RE = re.compile(r"^[\w \-,'\"一-鿿]{0,120}$")
 HEX_COLOR_RE = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
 
 MAX_SYMBOLS = 50
+STOCK_COMPONENTS = ("name", "price", "percent", "dark", "chart")
 
 # 整窗透明度下限。留一丝可见度而不是 0：关掉鼠标穿透时，全隐的窗口照样拦鼠标，
 # 桌面上就多出一块看不见又点不穿的死区。想彻底看不见请配合「鼠标穿透」使用。
@@ -149,6 +151,8 @@ class Config:
     # K 线数据源：与行情快照的 provider 相互独立，但同样只走东财/腾讯/新浪公开接口。
     kline_source: str = KLINE_SOURCES[0]
     symbols: list[str] = field(default_factory=lambda: ["600519", "000001", "300750", "601318"])
+    # 自选显示开关按归一化代码保存；未设置的项目全开，与自选列表一起跨主题共享。
+    stock_visibility: dict[str, dict[str, bool]] = field(default_factory=dict)
     refresh_seconds: int = 5
     # Debug 模式绕过交易时段限制，便于收盘后调试实时行情 / K线 / MCP深度。
     debug_mode: bool = False
@@ -226,6 +230,23 @@ class Config:
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
+    def stock_component_visible(
+        self, symbol: str, component: str, *, include_global: bool = True
+    ) -> bool:
+        parsed = classify(symbol)
+        key = parsed.code if parsed is not None else symbol
+        enabled = self.stock_visibility.get(key, {}).get(component, True)
+        if not include_global:
+            return enabled
+        master = {
+            "name": self.show_stock_name,
+            "price": self.show_stock_price,
+            "percent": self.show_stock_price,
+            "dark": self.show_dark_trade and not self.compact,
+            "chart": self.show_sparkline,
+        }
+        return enabled and master.get(component, True)
+
 
 def _theme_profile_from_config(config: Config) -> dict[str, Any]:
     serialized = config.to_dict()
@@ -262,6 +283,24 @@ def sanitize(raw: Any, *, _include_theme_profiles: bool = True) -> Config:
                 seen.append(text)
         if seen:
             out.symbols = seen[:MAX_SYMBOLS]
+
+    visibility = raw.get("stock_visibility")
+    if isinstance(visibility, dict):
+        watched = {
+            parsed.code if (parsed := classify(symbol)) else symbol
+            for symbol in out.symbols
+        }
+        for symbol, values in visibility.items():
+            if not isinstance(symbol, str) or not isinstance(values, dict):
+                continue
+            parsed = classify(symbol)
+            key = parsed.code if parsed else symbol
+            if key not in watched:
+                continue
+            flags = {part: values[part] for part in STOCK_COMPONENTS
+                     if isinstance(values.get(part), bool)}
+            if flags:
+                out.stock_visibility[key] = flags
 
     refresh = _as_number(raw.get("refresh_seconds"))
     if refresh is not None:

@@ -77,11 +77,18 @@ const FONT_COLOR_FALLBACKS = {
   dark_trade_color: '#000000',
 };
 const MAX_SYMBOLS = 50;
+const STOCK_COMPONENTS = [
+  ['name', '股票名称'], ['price', '股价'], ['percent', '涨跌幅'],
+  ['dark', '暗盘'], ['chart', 'K线'],
+];
 const SIZE_REGIONS = ['row', 'name', 'price', 'percent', 'dark', 'chart', 'canvas'];
 const sizeInput = (region, axis) => el(region === 'chart' && axis === 'height' ? 'chart_height' : `size-${region}-${axis}`);
 
 let providers = [];
 let symbols = [];
+let stockVisibility = {};
+let saveQueue = Promise.resolve();
+let applySequence = 0;
 /** 代码 -> 名称，来自搜索结果或 /api/watchlist，缺了就只显示代码 */
 let names = {};
 let savedTimer = null;
@@ -121,9 +128,33 @@ function renderWatchlist() {
       button('✕', '移除', () => remove(index), false, 'danger')
     );
 
-    item.append(label, sub, actions);
+    const heading = document.createElement('div');
+    heading.className = 'watchlist-heading';
+    heading.append(label, sub, actions);
+    const toggles = document.createElement('div');
+    toggles.className = 'watchlist-toggles';
+    toggles.setAttribute('role', 'group');
+    toggles.setAttribute('aria-label', `${names[code] || code} 显示项目`);
+    const key = visibilityKey(code);
+    for (const [part, text] of STOCK_COMPONENTS) {
+      const enabled = stockVisibility[key]?.[part] !== false;
+      const toggle = button(text, `${enabled ? '关闭' : '显示'}${text}`, () => {
+        stockVisibility[key] = { ...stockVisibility[key], [part]: !enabled };
+        renderWatchlist();
+        apply('显示设置已应用');
+      }, false, 'watchlist-toggle');
+      toggle.setAttribute('aria-pressed', String(enabled));
+      toggle.setAttribute('aria-label', `${names[code] || code} ${text}`);
+      toggles.append(toggle);
+    }
+    item.append(heading, toggles);
     list.append(item);
   });
+}
+
+function visibilityKey(code) {
+  const match = code.replace(/\s/g, '').match(/^(?:(?:sh|sz|bj))?(\d{6})(?:\.(?:sh|sz|bj))?$/i);
+  return match ? match[1] : code;
 }
 
 function button(text, title, onClick, disabled = false, extra = '') {
@@ -146,7 +177,10 @@ function move(index, delta) {
 }
 
 function remove(index) {
-  symbols.splice(index, 1);
+  const [code] = symbols.splice(index, 1);
+  if (!symbols.some((symbol) => visibilityKey(symbol) === visibilityKey(code))) {
+    delete stockVisibility[visibilityKey(code)];
+  }
   renderWatchlist();
   apply('已应用');
 }
@@ -217,7 +251,7 @@ async function search(text) {
 /* ------------------------------------------------------------ 表单 */
 
 function collect() {
-  const patch = { symbols };
+  const patch = { symbols, stock_visibility: stockVisibility };
   patch.component_sizes = {};
   for (const region of SIZE_REGIONS) {
     patch.component_sizes[region] = { width: Number(sizeInput(region, 'width').value) };
@@ -235,6 +269,7 @@ function collect() {
 function fill(config) {
   activeTheme = config.display_theme;
   symbols = [...config.symbols];
+  stockVisibility = structuredClone(config.stock_visibility || {});
   for (const id of TEXTS) el(id).value = config[id];
   for (const id of NUMBERS) el(id).value = config[id];
   for (const id of CHECKBOXES) el(id).checked = config[id];
@@ -313,23 +348,32 @@ function note(text) {
 }
 
 async function postConfig(patch) {
-  const response = await fetch(api('/api/config'), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(patch),
+  // 点击多个开关时按顺序保存快照，避免较早的响应把刚点的新状态覆盖。
+  const body = JSON.stringify(patch);
+  const pending = saveQueue.then(async () => {
+    const response = await fetch(api('/api/config'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return (await response.json()).config;
   });
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  return (await response.json()).config;
+  saveQueue = pending.catch(() => {});
+  return pending;
 }
 
 async function apply(label = '已保存') {
+  const sequence = ++applySequence;
   try {
     // 只有 switchTheme() 可以改变主题。其它控件即使和下拉框事件撞在一起，
     // 也强制写回当前 activeTheme，避免旧主题整页值误覆盖目标 profile。
     const patch = collect();
     patch.display_theme = activeTheme;
     // 服务端会做最终校验，用返回值回填，页面始终反映真实生效的配置。
-    fill(await postConfig(patch));
+    const config = await postConfig(patch);
+    if (sequence !== applySequence) return;
+    fill(config);
     await applyWindowSize();
     note(label);
   } catch (error) {
