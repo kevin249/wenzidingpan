@@ -316,8 +316,6 @@ class TickerWindow(QWidget):
         self._manual_size = False
         self._drag_start_size = QSize()
         self._drag_start_scale = 1.0
-        self._drag_reference_height = 0
-        self._restore_scale_from_height = False
         # 手动外框下藏起标题栏时真正减掉的高度，开回来时原样加回去；同时记下
         # 当时的 sizeHint（藏着期间改了字号按它等比换算）和减完后的外框高度
         # （外框被任何路径改过，这份记账即作废）。
@@ -471,7 +469,6 @@ class TickerWindow(QWidget):
             else:
                 self._scale = _clamp(config.bounds.scale, 0.6, 3.0)
                 self._manual_size = config.bounds.manual_size
-            self._restore_scale_from_height = False
             # 标题栏显隐的补偿记账只能属于原主题；跨主题复用会把新主题高度加减错。
             self._hidden_title_height = 0
             self._hidden_title_hint = 0
@@ -691,7 +688,6 @@ class TickerWindow(QWidget):
         self.scroll.setVisible(not single and bool(self._rows))
         self.empty_label.setVisible(not single and not self._rows)
         self._resize_to_grid()
-        self._sync_restored_scale_from_height()
 
     def _grid_size(self, count: int) -> tuple[int, int]:
         """主题2固定一列；主题1仍按设置行数铺网格。"""
@@ -791,17 +787,8 @@ class TickerWindow(QWidget):
     ) -> None:
         """手动外框下，标题栏显隐要连着外框一起加减那一条高度。
 
-        标题栏是外框自带的 chrome，不是用户拖出来的内容高度。外框不动的话，
-        藏起来等于白送内容区一条高度：当场看不出问题，但下次拖右下角时，绝对
-        缩放基准（``_absolute_scale_reference``）已经少了这条 chrome，连只拖宽度
-        都会照着歪掉的基准把字号顶大一截（实测 +25%，字号 19→24）。
-
-        这里按标题栏在布局里真实占到的高度同步外框，内容区就一个像素都不动。
-        基准仍会差一点点——它是按各部件的 sizeHint 估的，和被压扁后的实际高度
-        对不齐——于是之后只拖宽度还会有约 5% 的偏移（最多一档字号）。要把这点
-        也抹平就得改动共用的缩放模型，不在本改动范围内，这里先保内容不跳。
-        自动尺寸不必管——``_resize_to_grid``
-        本来就会重算。
+        按标题栏在布局里真实占到的高度同步外框，保证切换按钮时内容区不变。
+        自动尺寸由 ``_resize_to_grid`` 重算，不需要补偿。
         """
         if not self._manual_size or (
             self._config.layout == "single" and self._config.display_theme != "theme2"
@@ -960,15 +947,12 @@ class TickerWindow(QWidget):
         if bounds is None:
             self._scale = 1.0
             self._manual_size = False
-            self._restore_scale_from_height = False
             self.resize(300, 260)
             self._apply_scale()
             return
         self._scale = _clamp(bounds.scale, 0.6, 3.0)
         self._manual_size = bounds.manual_size
-        self._restore_scale_from_height = (
-            bounds.manual_size and bounds.height >= 160 and bounds.scale < 0.9
-        )
+        # 高窗口可以配小字号或较高的股票卡片，不能从外框高度反推并覆盖保存的比例。
         if not available:
             self.resize(bounds.width, bounds.height)
             self.move(bounds.x, bounds.y)
@@ -1081,10 +1065,9 @@ class TickerWindow(QWidget):
         self._move_drag_active = False
 
     def _on_grip_drag_started(self, size: QSize) -> None:
-        """记录本次手势，并以当前列宽下的基准高度校准内容缩放。"""
+        """记录本次手势的外框与比例，配置重排后的实际尺寸就是新基准。"""
         self._drag_start_size = QSize(size)
         self._drag_start_scale = self._scale
-        self._drag_reference_height = self._absolute_scale_reference(size.width())
         self._manual_size = True
 
     def _on_grip_dragged(self, size: QSize) -> None:
@@ -1097,26 +1080,27 @@ class TickerWindow(QWidget):
             # 主题2拖宽/拖高只改变版面与每行可用空间，绝不联动字号/字体缩放。
             return
         start_height = max(1, self._drag_start_size.height())
-        # 主题1字体由高度决定；宽度只负责给走势图更多或更少的横向空间。
-        # 有行情行时使用绝对基准，避免历史上的错误 scale 一直累积。
-        if self._drag_reference_height > 0:
-            scale = _clamp(size.height() / self._drag_reference_height, 0.6, 3.0)
-        else:
-            scale = _clamp(
-                self._drag_start_scale * size.height() / start_height,
-                0.6,
-                3.0,
-            )
-        if abs(scale - self._scale) > 0.02:
+        # 只按本次高度变化缩放。自然高度随字号、组件宽高、换行变化，不能拿它
+        # 反推比例，否则只改宽度也会放大文字，往返调整还会丢掉原来的字号。
+        scale = _clamp(self._drag_start_scale * size.height() / start_height, 0.6, 3.0)
+        if abs(scale - self._scale) > 1e-9:
             self._scale = scale
             self._scale_timer.start()
 
     def _on_grip_drag_finished(self) -> None:
+        if self._scale_timer.isActive():
+            self._scale_timer.stop()
+            self._apply_scale()
         self._drag_start_size = QSize()
-        self._drag_reference_height = 0
 
     def resize_from_settings(self, dimensions: dict) -> None:
         """数字输入与右下角拖拽走同一条缩放路径，位置不变，0 保持当前轴。"""
+        if dimensions.get("reset_scale") is True:
+            self._scale_timer.stop()
+            self._scale = 1.0
+            self._apply_scale()
+            self.flush_bounds()
+            self._schedule_layout_metrics()
         if not dimensions.get("width", 0) and not dimensions.get("height", 0):
             return
         self._on_grip_drag_started(self.size())
@@ -1159,59 +1143,6 @@ class TickerWindow(QWidget):
                 regions["price"] = measure(row.price_label)
                 regions["percent"] = measure(row.percent_label)
         return {"theme": self._config.display_theme, "scale": self._scale, "regions": regions}
-
-    def _absolute_scale_reference(self, frame_width: int) -> int:
-        """能不能拿「1.0 倍时的自然高度」当缩放基准；不能就返回 0 改用相对比例。
-
-        自然高度高过屏幕时，窗口已经被 _keep_on_screen 压回屏幕内，谁也到不了
-        那个高度。再拿它作分母，用户只拖宽度也会被算成缩小——图和字一起变小。
-        """
-        reference = self._base_frame_height(frame_width)
-        screen = self.screen()
-        if screen is not None and reference > screen.availableGeometry().height():
-            return 0
-        return reference
-
-    def _base_frame_height(self, frame_width: int) -> int:
-        """计算当前列宽下、缩放为 1 时窗口内容所需的自然高度。"""
-        if not self._rows:
-            return 0
-
-        base = self._config
-        chrome = 2
-        if base.show_title_buttons:
-            title_probe = TitleBar()
-            title_probe.apply_config(base)
-            chrome += title_probe.sizeHint().height()
-
-        if base.layout == "single" and base.display_theme != "theme2":
-            marquee_probe = Marquee()
-            marquee_probe.apply_config(base)
-            return chrome + marquee_probe.height() + 4
-
-        rows, columns = self._grid_size(len(self._rows))
-        cell_width = max(1, (frame_width - 2) // columns)
-        row_probe = QuoteRow("__scale_probe__")
-        row_probe.name_label.setText("示例股票")
-        row_probe.price_label.setText("9999.99")
-        row_probe.percent_label.setText("+99.99%")
-        row_probe.dark_value.setText("+99.99亿")
-        row_probe.resize(cell_width, 100)
-        row_probe.apply_config(base)
-
-        return chrome + row_probe.sizeHint().height() * rows + 8
-
-    def _sync_restored_scale_from_height(self) -> None:
-        """旧配置可能保存了错误比例；首批行情出现后按实际窗口高度修正。"""
-        if not self._restore_scale_from_height or not self._rows:
-            return
-        self._restore_scale_from_height = False
-        # 同样只在自然高度落在屏幕内时才敢按高度反推，否则修出来的比例只会更小。
-        reference_height = self._absolute_scale_reference(self.width())
-        if reference_height <= 0:
-            return
-        self._scale = _clamp(self.height() / reference_height, 0.6, 3.0)
-        self._apply_scale()
 
     def _bounded_drag_size(self, size: QSize) -> QSize:
         screen = self.screen()
