@@ -852,9 +852,7 @@ class TickerWindow(QWidget):
             self.setMaximumHeight(16777215)
             if not self._rows:
                 return
-            sample = next(iter(self._rows.values()))
-            rows = len(self._rows)
-            total_height = chrome + sample.sizeHint().height() * rows + 8
+            total_height = chrome + sum(row.sizeHint().height() for row in self._rows.values()) + 8
             width = self._theme2_target_width()
             screen = self.screen()
             if screen is not None:
@@ -889,9 +887,15 @@ class TickerWindow(QWidget):
                 self._keep_on_screen()
             return
 
-        sample = next(iter(self._rows.values()))
         rows, columns = self._grid_size(len(self._rows))
-        height = chrome + sample.sizeHint().height() * rows + 8
+        # 每只股票的可见组件可能不同，逐网格行取最高卡片，再累加自然高度。
+        row_heights = [0] * rows
+        for card in self._rows.values():
+            index = self.rows_layout.indexOf(card)
+            if index >= 0:
+                grid_row = self.rows_layout.getItemPosition(index)[0]
+                row_heights[grid_row] = max(row_heights[grid_row], card.sizeHint().height())
+        height = chrome + sum(row_heights) + 8
 
         # 宽度直接问网格要：自己按 sizeHint×列数 估会漏掉边距和滚动条，
         # 差那十几像素就会把最右一列的价格裁掉。

@@ -180,13 +180,21 @@ class DepthLadder(SizedWidget):
 
     # ------------------------------------------------------------ 配置
 
-    def apply_config(self, config: Config) -> None:
+    def apply_config(self, config: Config, *, symbol: str = "") -> None:
         self._config = config
+        self._symbol = symbol
+        self._chart_rect = QRectF()
         self._preferred_width = self._natural_width()
         self._preferred_height = max(88, round(config.font_size * 7.2))
         self.set_display_size(config.component_sizes.get("canvas", {}))
         self.updateGeometry()
         self.update()
+
+    def _component_visible(self, component: str) -> bool:
+        # 主题2原有全局走势图开关只控制经典主题；每股K线开关同时控制这里的图表。
+        return self._config.stock_component_visible(
+            getattr(self, "_symbol", ""), component, include_global=component != "chart"
+        )
 
     def _metrics(self) -> tuple[float, float, float]:
         """返回 (外边距, 价格带宽度, 价格带与价格轴之间的间距)。
@@ -747,7 +755,7 @@ class DepthLadder(SizedWidget):
         # 借用中间那块文字位——价格列已经不占版面，没有别的落点了。
         self._price_rect = self._price_hit_rect()
 
-        if self._error:
+        if self._error and self._component_visible("price"):
             painter.setPen(self._paint_color(MUTED))
             painter.setFont(
                 make_font(config, pixel_size=max(8, config.stock_percent_font_size))
@@ -755,17 +763,15 @@ class DepthLadder(SizedWidget):
             painter.drawText(price_rect, align, self._error[:18])
             return
 
-        if not config.show_stock_price:
-            # 设置页关掉「显示股价」时，两块文字都不画，虚线照画。
-            return
+        if self._component_visible("price"):
+            painter.setPen(self._paint_color(self._price_color))
+            painter.setFont(price_font)
+            painter.drawText(price_rect, align, price_text)
 
-        painter.setPen(self._paint_color(self._price_color))
-        painter.setFont(price_font)
-        painter.drawText(price_rect, align, price_text)
-
-        painter.setPen(self._paint_color(self._percent_color))
-        painter.setFont(self._percent_font())
-        painter.drawText(percent_rect, align, percent_text)
+        if self._component_visible("percent"):
+            painter.setPen(self._paint_color(self._percent_color))
+            painter.setFont(self._percent_font())
+            painter.drawText(percent_rect, align, percent_text)
 
     # ------------------------------------------------------------ 绘制：图表
 
@@ -1047,7 +1053,7 @@ class DepthLadder(SizedWidget):
         painter.setRenderHint(QPainter.Antialiasing)
         layout = self._layout()
 
-        if self._expanded:
+        if self._expanded and self._component_visible("chart"):
             self._chart_rect = QRectF(
                 layout.chart_left,
                 0.0,
@@ -1062,7 +1068,7 @@ class DepthLadder(SizedWidget):
 
         self._draw_depth(painter, layout)
 
-        if self._expanded:
+        if self._expanded and self._component_visible("chart"):
             self._draw_chart_foreground(painter, layout, chart_values)
 
         self._draw_price_and_guide(painter, layout)

@@ -213,6 +213,9 @@ class QuoteRow(SizedWidget):
 
     # ------------------------------------------------------------ 外观
 
+    def _visible(self, component: str) -> bool:
+        return self._config.stock_component_visible(self.symbol, component)
+
     def apply_config(self, config: Config) -> None:
         previous = self._config
         if (
@@ -225,13 +228,12 @@ class QuoteRow(SizedWidget):
             # 强制重建，不能复用旧 layout_state。
             self._layout_state = None
         self._config = config
-        compact = config.compact
         # 紧凑模式只省掉暗盘和页脚，走势图照画——只是压扁一点。
-        self.sparkline.setVisible(config.show_sparkline)
+        self.sparkline.setVisible(self._visible("chart"))
         self.sparkline.set_fill_width(config.chart_fill_width)
-        self.name_label.setVisible(config.show_stock_name)
-        self.price_label.setVisible(config.show_stock_price)
-        self.percent_label.setVisible(config.show_stock_price)
+        self.name_label.setVisible(self._visible("name"))
+        self.price_label.setVisible(self._visible("price"))
+        self.percent_label.setVisible(self._visible("percent"))
         self.sparkline.set_annotation_options(
             show_signals=config.show_bs_points,
             show_open_line=config.show_open_line,
@@ -243,13 +245,15 @@ class QuoteRow(SizedWidget):
         self.sparkline.set_annotation_font(
             make_font(config, pixel_size=config.chart_label_font_size)
         )
-        self.theme2_depth.apply_config(config)
+        self.theme2_depth.apply_config(config, symbol=self.symbol)
         self._apply_component_sizes()
         self._apply_theme2_metrics(config)
         self._update_layout_mode()
         self._apply_component_sizes()
         if self._last_quote is not None:
             self.update_quote(self._last_quote, config, self._last_trend)
+        if self._theme2_expanded:
+            self._request_theme2_kline()
 
     def resizeEvent(self, event) -> None:  # noqa: N802 - Qt 命名
         super().resizeEvent(event)
@@ -268,7 +272,7 @@ class QuoteRow(SizedWidget):
         self.sparkline.set_display_size({
             "width": sizes.get("chart", {}).get("width", 0),
             "height": self._config.chart_height,
-        } if self._config.show_sparkline else {})
+        } if self._visible("chart") else {})
 
     def _apply_theme2_metrics(self, config: Config) -> None:
         """主题2只调顶部信息条与画布的字体/间距，不再靠撑宽详情区腾地方。
@@ -355,11 +359,11 @@ class QuoteRow(SizedWidget):
         """
         config = self._config
         expanded = self._theme2_expanded
-        self.theme2_name_label.setVisible(expanded and config.show_stock_name)
-        self.theme2_code_label.setVisible(expanded and config.show_stock_name)
+        self.theme2_name_label.setVisible(expanded and self._visible("name"))
+        self.theme2_code_label.setVisible(expanded and self._visible("name"))
         self.theme2_high_low_label.setVisible(expanded and config.show_high_low)
         self.theme2_dark_label.setVisible(
-            expanded and config.show_dark_trade and not config.compact
+            expanded and self._visible("dark")
         )
 
     def _request_theme2_expand(self) -> None:
@@ -399,7 +403,8 @@ class QuoteRow(SizedWidget):
 
     def _request_theme2_kline(self) -> None:
         """日K 只在「已展开且切到日K」时才拉，避免白白发请求。"""
-        if not self._theme2_expanded or self.theme2_depth.chart_mode != MODE_DAILY:
+        if (not self._theme2_expanded or self.theme2_depth.chart_mode != MODE_DAILY
+                or not self._config.stock_component_visible(self.symbol, "chart", include_global=False)):
             return
         kline = self.theme2_depth.kline
         if kline is not None and kline.bars:
@@ -493,10 +498,14 @@ class QuoteRow(SizedWidget):
         self.theme2_depth.hide()
         self._layout.setRowStretch(0, 0)
         self._layout.setRowStretch(1, 0)
-        self.name_label.setVisible(config.show_stock_name)
-        self.price_label.setVisible(config.show_stock_price)
-        self.percent_label.setVisible(config.show_stock_price)
-        self.sparkline.setVisible(config.show_sparkline)
+        self.name_label.setVisible(self._visible("name"))
+        self.price_label.setVisible(self._visible("price"))
+        self.percent_label.setVisible(self._visible("percent"))
+        self.sparkline.setVisible(self._visible("chart"))
+        self.dark_box.setVisible(
+            self._visible("dark") and (self._last_quote is None
+            or (not self._last_quote.error and fmt_money(self._last_quote.dark_fund) is not None))
+        )
         self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
         # Theme 2 为纵向盘口设过最小行高；经典主题必须彻底解除，否则上中下布局
         # 会被残留的 Theme 2 行高约束干扰。
@@ -539,7 +548,7 @@ class QuoteRow(SizedWidget):
                 pixel_size=config.dark_trade_font_size,
             )
         )
-        show_chart = config.show_sparkline
+        show_chart = self._visible("chart")
         # 用户设了 K 线高度就锁死走势图；留 0 时仍按字号推算并可随格子拉伸。
         fixed_chart = config.chart_height > 0
         compact_padding = max(2, round(config.font_size * 0.35))
@@ -563,8 +572,8 @@ class QuoteRow(SizedWidget):
             not prefer_stacked
             and narrow
             and self.width() < 180
-            and config.show_stock_name
-            and config.show_stock_price
+            and self._visible("name")
+            and self._visible("price")
             and self.name_label.minimumSizeHint().width()
             + self.price_label.minimumSizeHint().width()
             + compact_padding * 2
@@ -576,7 +585,7 @@ class QuoteRow(SizedWidget):
             and narrow
             and self.width() < 180
             and not self.dark_box.isHidden()
-            and config.show_stock_price
+            and self._visible("percent")
             and self.dark_label.minimumSizeHint().width()
             + self.dark_value.minimumSizeHint().width()
             + self._dark_layout.spacing()
@@ -586,7 +595,15 @@ class QuoteRow(SizedWidget):
             > self.width() - max(8, compact_gap * 2)
         )
         fixed_width = config.component_sizes.get("chart", {}).get("width", 0) > 0
-        layout_state = (top_bottom, stacked, show_chart, stacked_sides, stacked_secondary, fixed_chart, fixed_width)
+        text_widgets = (self.name_label, self.price_label, self.percent_label, self.dark_box)
+
+        def in_layout(widget):
+            # 暗盘尚无数据时保留旧有格位；明确关闭暗盘才移除该项。
+            return self._visible("dark") if widget is self.dark_box else not widget.isHidden()
+
+        text_visibility = tuple(in_layout(widget) for widget in text_widgets)
+        layout_state = (top_bottom, stacked, show_chart, stacked_sides, stacked_secondary,
+                        fixed_chart, fixed_width, text_visibility)
         # 左中右的固定图表仍居中；纵向版式紧贴文字，自动图表吃满剩余高度。
         chart_align = Qt.AlignVCenter if fixed_chart and not stacked else Qt.AlignmentFlag(0)
         if fixed_width:
@@ -603,62 +620,64 @@ class QuoteRow(SizedWidget):
             for column in range(self._layout.columnCount()):
                 self._layout.setColumnStretch(column, 0)
             if top_bottom:
-                self._layout.addWidget(self.name_label, 0, 0)
-                self._layout.addWidget(self.price_label, 0, 1)
-                self._layout.addWidget(self.percent_label, 0, 2)
-                self._layout.addWidget(self.dark_box, 0, 3, Qt.AlignLeft | Qt.AlignVCenter)
+                visible = [widget for widget in text_widgets if in_layout(widget)]
+                for column, widget in enumerate(visible):
+                    self._layout.addWidget(widget, 0, column)
                 if show_chart:
-                    self._layout.addWidget(self.sparkline, 1, 0, 1, 4, chart_align)
+                    self._layout.addWidget(self.sparkline, int(bool(visible)), 0,
+                                           1, max(1, len(visible)), chart_align)
                 # 信息按顺序紧排，多余宽度留在暗盘之后，图表仍铺满整行。
-                self._layout.setColumnStretch(3, 1)
+                self._layout.setColumnStretch(max(0, len(visible) - 1), 1)
             elif stacked:
-                if stacked_sides:
-                    self._layout.addWidget(self.name_label, 0, 0, 1, 2)
-                    self._layout.addWidget(self.price_label, 1, 0, 1, 2)
-                    chart_row = 2
-                else:
-                    self._layout.addWidget(self.name_label, 0, 0)
-                    self._layout.addWidget(self.price_label, 0, 1)
-                    chart_row = 1
+                next_row = 0
+
+                def add_text_row(widgets, split):
+                    nonlocal next_row
+                    visible = [widget for widget in widgets if in_layout(widget)]
+                    for column, widget in enumerate(visible):
+                        if split:
+                            self._layout.addWidget(widget, next_row, 0, 1, 2)
+                            next_row += 1
+                        else:
+                            self._layout.addWidget(widget, next_row, column, 1,
+                                                   2 if len(visible) == 1 else 1)
+                    if visible and not split:
+                        next_row += 1
+
+                add_text_row((self.name_label, self.price_label), stacked_sides)
                 if show_chart:
-                    self._layout.addWidget(self.sparkline, chart_row, 0, 1, 2, chart_align)
-                    details_row = chart_row + 1
-                else:
-                    details_row = chart_row
-                if stacked_secondary:
-                    self._layout.addWidget(
-                        self.dark_box, details_row, 0, 1, 2, Qt.AlignLeft | Qt.AlignVCenter
-                    )
-                    self._layout.addWidget(self.percent_label, details_row + 1, 0, 1, 2)
-                else:
-                    self._layout.addWidget(
-                        self.dark_box, details_row, 0, Qt.AlignLeft | Qt.AlignVCenter
-                    )
-                    self._layout.addWidget(self.percent_label, details_row, 1)
+                    self._layout.addWidget(self.sparkline, next_row, 0, 1, 2, chart_align)
+                    next_row += 1
+                add_text_row((self.dark_box, self.percent_label), stacked_secondary)
                 self._layout.setColumnStretch(0, 1)
                 # 右列按现价/涨跌幅的自然宽度分配，避免等分后文字被裁切。
                 self._layout.setColumnStretch(1, 0 if not stacked_sides else 1)
                 self._layout.setColumnStretch(2, 0)
             else:
-                self._layout.addWidget(self.name_label, 0, 0)
-                self._layout.addWidget(self.dark_box, 1, 0, Qt.AlignLeft | Qt.AlignVCenter)
+                top_visible = not self.name_label.isHidden() or not self.price_label.isHidden()
+                bottom_visible = in_layout(self.dark_box) or not self.percent_label.isHidden()
+                bottom_row = int(top_visible)
+                right_column = int(not self.name_label.isHidden() or in_layout(self.dark_box))
+                if not self.name_label.isHidden():
+                    self._layout.addWidget(self.name_label, 0, 0)
+                if in_layout(self.dark_box):
+                    self._layout.addWidget(self.dark_box, bottom_row, 0, Qt.AlignLeft | Qt.AlignVCenter)
                 if show_chart:
-                    self._layout.addWidget(self.sparkline, 0, 1, 2, 1, chart_align)
-                    self._layout.addWidget(self.price_label, 0, 2)
-                    self._layout.addWidget(self.percent_label, 1, 2)
-                    self._layout.setColumnStretch(0, 0)
-                    self._layout.setColumnStretch(1, 1)
-                    self._layout.setColumnStretch(2, 0)
-                else:
-                    self._layout.addWidget(self.price_label, 0, 1)
-                    self._layout.addWidget(self.percent_label, 1, 1)
-                    # 多余宽度放在内容右侧，中间不再保留走势图空位。
-                    self._layout.setColumnStretch(0, 0)
-                    self._layout.setColumnStretch(1, 0)
-                    self._layout.setColumnStretch(2, 1)
+                    self._layout.addWidget(self.sparkline, 0, right_column,
+                                           max(1, int(top_visible) + int(bottom_visible)), 1, chart_align)
+                    self._layout.setColumnStretch(right_column, 1)
+                    right_column += 1
+                if not self.price_label.isHidden():
+                    self._layout.addWidget(self.price_label, 0, right_column)
+                if not self.percent_label.isHidden():
+                    self._layout.addWidget(self.percent_label, bottom_row, right_column)
+                if not show_chart:
+                    # 多余宽度放在内容右侧，不保留已关闭组件的空列。
+                    self._layout.setColumnStretch(right_column + 1, 1)
             self._layout_state = layout_state
         if stacked and show_chart and not fixed_chart:
-            self._layout.setRowStretch(2 if stacked_sides else 1, 1)
+            chart_row = self._layout.getItemPosition(self._layout.indexOf(self.sparkline))[0]
+            self._layout.setRowStretch(chart_row, 1)
         self._narrow = narrow
 
         compact = config.compact
@@ -679,8 +698,8 @@ class QuoteRow(SizedWidget):
         self._layout.setHorizontalSpacing(gap)
         self._layout.setVerticalSpacing(0 if stacked else 1)
         self._dark_layout.setSpacing(max(2, gap // 2))
-        self.sparkline.setMinimumWidth(chart_width if config.show_sparkline else 0)
-        if not config.show_sparkline:
+        self.sparkline.setMinimumWidth(chart_width if show_chart else 0)
+        if not show_chart:
             self.sparkline.set_preferred_height(0)
             self.sparkline.setMinimumHeight(0)
             self.sparkline.setMaximumHeight(MAX_WIDGET_SIZE)
@@ -712,6 +731,8 @@ class QuoteRow(SizedWidget):
             # 暂时取数失败只清显示；恢复时沿用原尺度，避免错误/恢复反复重置纵轴。
             self.sparkline.clear(preserve_scale=True)
             self._set_dark(None, config)
+            self._update_layout_mode()
+            self._apply_component_sizes()
             return
 
         self.price_label.setText(fmt_price(quote.price))
@@ -859,7 +880,7 @@ class QuoteRow(SizedWidget):
         self.theme2_depth.set_depth(snapshot)
 
     def _set_dark(self, dark_fund: float | None, config: Config) -> None:
-        text = fmt_money(dark_fund) if config.show_dark_trade and not config.compact else None
+        text = fmt_money(dark_fund) if self._visible("dark") else None
         dark_color = text_color(
             config,
             config.dark_trade_color,
