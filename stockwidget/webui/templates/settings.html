@@ -109,6 +109,7 @@
             <select id="row_style" name="row_style">
               <option value="sides" {% if config.row_style == 'sides' %}selected{% endif %}>左中右</option>
               <option value="stacked" {% if config.row_style == 'stacked' %}selected{% endif %}>上中下</option>
+              <option value="top_bottom" {% if config.row_style == 'top_bottom' %}selected{% endif %}>上下</option>
             </select>
           </div>
           <div class="field">
@@ -275,6 +276,8 @@
                         {% if config.show_dark_trade %}checked{% endif %} /> 显示东方财富暗盘资金</label>
           <label><input id="show_sparkline" name="show_sparkline" type="checkbox"
                         {% if config.show_sparkline %}checked{% endif %} /> 显示走势图</label>
+          <label><input id="chart_fill_width" name="chart_fill_width" type="checkbox"
+                        {% if config.chart_fill_width %}checked{% endif %} /> K 线按已有数据铺满宽度</label>
           <label><input id="show_sparkline_fill" name="show_sparkline_fill" type="checkbox"
                         {% if config.show_sparkline_fill %}checked{% endif %} /> 填充走势图下方颜色</label>
           <label><input id="show_bs_points" name="show_bs_points" type="checkbox"
@@ -294,6 +297,8 @@
           <label><input id="compact" name="compact" type="checkbox"
                         {% if config.compact %}checked{% endif %} /> 紧凑模式</label>
         </div>
+        <p class="hint">「K 线按已有数据铺满宽度」默认关闭：分时横轴固定为 09:30–15:00（压缩午休），未交易的时间留白；
+          开启后，已有分时数据从首个点到末个点铺满宽度。两个主题均生效，日 K 仍按日期显示。</p>
 
         <div class="field">
           <label for="grayscale_level">灰度值 <span class="value" id="grayscale_level-value"></span></label>

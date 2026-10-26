@@ -907,6 +907,11 @@ class TickerWindow(QWidget):
         scaled = self.scaled_config()
         if self._config.display_theme == "theme2":
             return max(148, round(scaled.font_size * 12.5))
+        if self._config.row_style == "top_bottom":
+            return max(
+                (row.classic_header_width() for row in self._rows.values()),
+                default=round(scaled.font_size * 22),
+            ) + 4
         if self._config.row_style != "sides":
             return round(scaled.font_size * 13)
         side_font = max(scaled.stock_name_font_size, scaled.stock_price_font_size)
