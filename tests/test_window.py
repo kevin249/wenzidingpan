@@ -656,6 +656,7 @@ def test_sparkline_fill_is_disabled_by_default_and_can_be_enabled(app):
 
 def test_sparkline_fill_switch_changes_area_below_curve(app):
     sparkline = Sparkline()
+    sparkline.set_fill_width(True)  # 两点铺满，才能在图中央比较面积填充开关。
     sparkline.resize(120, 60)
     sparkline.set_series([10.0, 20.0])
 

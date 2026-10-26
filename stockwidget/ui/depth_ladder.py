@@ -22,9 +22,8 @@
 2. **两侧的柱都不许越过行的水平中点。** 盘口量条与成交量柱各自留在自己那一半
    里（见 :meth:`DepthLadder._depth_share`）。
 3. **分时的横轴就是两根竖轴之间那一段**（``plot_left`` → ``plot_right``）：
-   左端固定 9:30、右端固定 15:00，午休压缩掉，所以每 30 分钟一条竖虚线，
-   而首末两条恰好压在成交量轴与价格轴上。曲线也铺满这一段，于是竖线与曲线的
-   时刻严格对应。
+   默认左端 9:30、右端 15:00，压缩午休，曲线只画到已有数据的时刻；开启
+   ``chart_fill_width`` 后按数据首末时刻铺满，半小时网格也随时间范围重算。
 
 盘口量条按档位顺序平均分布（不按绝对价差压缩），这条规则同样与展开与否无关，
 所以展开时其它档位不会因为多了一栏图表而跳动。
@@ -54,6 +53,7 @@ from .sparkline import ANNOTATION_COLOR
 from .sparkline import BUY_COLOR as BS_BUY_COLOR
 from .sparkline import SELL_COLOR as BS_SELL_COLOR
 from .theme import MUTED, display_color, down_color, make_font, up_color
+from .time_axis import intraday_fraction, intraday_grid_fractions
 
 # 主题2 的配色口径（用户口径 2026-09-23，v3）：分两种模式说话。
 #
@@ -98,11 +98,6 @@ MODE_ORDER = (MODE_INTRADAY, MODE_DAILY)
 _ChartValues = tuple[
     list[float], list[float], list[float], list[Bar], Callable[[float], float] | None
 ]
-
-# 当日交易分钟数：9:30–11:30 与 13:00–15:00 各 120 分钟，午休被压缩掉。
-# 所以 11:30 与 13:00 共用同一条竖线，且正好落在时间轴正中。
-SESSION_MINUTES = 240
-GRID_STEP_MINUTES = 30  # 竖虚线间隔：每半小时一条
 
 OUTER_PAD = 4.0
 INNER_PAD = 2.0
@@ -323,11 +318,13 @@ class DepthLadder(QWidget):
         resolved = (trend.prev_close if trend and trend.prev_close else None) or prev_close
         state = (
             list(trend.prices) if trend else None,
+            list(trend.minutes) if trend else None,
             list(trend.volumes) if trend else None,
             resolved,
         )
         old = (
             list(self._trend.prices) if self._trend else None,
+            list(self._trend.minutes) if self._trend else None,
             list(self._trend.volumes) if self._trend else None,
             self._prev_close,
         )
@@ -463,30 +460,26 @@ class DepthLadder(QWidget):
         return max(12.0, min(chart_width * 0.30, max(16.0, self._config.font_size * 3.2)))
 
     def _intraday_x(self, layout: _Layout, index: int, count: int) -> float:
-        """分时序列下标 → 横坐标：横轴固定为一个完整交易日。
-
-        分母取 ``max(SESSION_MINUTES, count - 1)``，一举满足两种情形：
-
-        * 整天数据（>=241 点）铺满整条轴，末点落在 15:00 上；
-        * 半天数据按「下标即开盘后的第几分钟」定位，11:30 恰好落在正中，
-          曲线只画到当前时刻，不会把半天数据拉长成一天。
-
-        午休被压缩，所以 11:30 与 13:00 是同一条线。
-        """
-        if count <= 1:
-            return layout.plot_left
-        denominator = max(SESSION_MINUTES, count - 1)
-        fraction = min(max(index, 0), denominator) / denominator
+        """与经典主题共用时间轴；默认完整交易日，可切换为已有数据铺满。"""
+        minutes = self._trend.minutes if self._trend else []
+        fraction = intraday_fraction(
+            index, count, minutes, fill_width=self._config.chart_fill_width
+        )
         return layout.plot_left + layout.plot_span * fraction
 
     def _grid_xs(self, layout: _Layout) -> list[float]:
-        """半小时刻度线的横坐标，含两端，共 ``240/30 + 1 = 9`` 条。"""
+        """当前时间范围内的半小时刻度，含两端；默认全天为 9 条。"""
         if layout.plot_span < 2.0:
             return []
-        steps = max(1, SESSION_MINUTES // GRID_STEP_MINUTES)
+        trend = self._trend
+        fractions = intraday_grid_fractions(
+            len(trend.prices) if trend else 0,
+            trend.minutes if trend else [],
+            fill_width=self._config.chart_fill_width,
+        )
         return [
-            layout.plot_left + layout.plot_span * index / steps
-            for index in range(steps + 1)
+            layout.plot_left + layout.plot_span * fraction
+            for fraction in fractions
         ]
 
     def _price_hit_rect(self) -> QRectF:
@@ -861,8 +854,8 @@ class DepthLadder(QWidget):
     def _draw_time_grid(self, painter: QPainter, layout: _Layout) -> None:
         """分时的半小时竖虚线，纵向与两根竖轴等高。
 
-        首末两条分别压在成交量轴与价格轴上，所以「9:30 对左轴、15:00 对右轴」
-        是几何恒等式，不靠视觉对齐。日K 的横轴是日期，没有半小时可言，不画。
+        首末两条压在两根轴上；默认是 9:30 与 15:00，铺满模式则是数据首末时刻。
+        日K 的横轴是日期，没有半小时可言，不画。
         """
         if self._chart_mode != MODE_INTRADAY:
             return

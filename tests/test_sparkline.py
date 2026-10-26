@@ -75,6 +75,7 @@ def rendered(app):
 
 def test_flat_and_one_tick_keep_historical_curve_at_same_height(app):
     widget = Sparkline()
+    widget.set_fill_width(True)  # 本用例比较纵轴；用铺满模式在固定 X 位置取像素。
     widget.set_color(CURVE_COLOR)
     widget.set_annotations(None, [], show_signals=False, show_open_line=False,
                            show_high_low=False, show_fill=False, grayscale=False)

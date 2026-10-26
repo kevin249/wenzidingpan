@@ -227,6 +227,7 @@ class QuoteRow(QWidget):
         compact = config.compact
         # 紧凑模式只省掉暗盘和页脚，走势图照画——只是压扁一点。
         self.sparkline.setVisible(config.show_sparkline)
+        self.sparkline.set_fill_width(config.chart_fill_width)
         self.name_label.setVisible(config.show_stock_name)
         self.price_label.setVisible(config.show_stock_price)
         self.percent_label.setVisible(config.show_stock_price)
@@ -704,7 +705,7 @@ class QuoteRow(QWidget):
 
         self.sparkline.set_color(color)
         self.sparkline.push_sample(quote.price)
-        self.sparkline.set_series(trend.prices if trend else [])
+        self.sparkline.set_series(trend.prices if trend else [], trend.minutes if trend else [])
         # 分时接口给了昨收就用它的，否则用行情里的——虚线基准不能缺。
         self.sparkline.set_prev_close(
             (trend.prev_close if trend and trend.prev_close else None) or quote.prev_close
