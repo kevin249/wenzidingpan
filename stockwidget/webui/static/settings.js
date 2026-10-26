@@ -77,6 +77,8 @@ const FONT_COLOR_FALLBACKS = {
   dark_trade_color: '#000000',
 };
 const MAX_SYMBOLS = 50;
+const SIZE_REGIONS = ['row', 'name', 'price', 'percent', 'dark', 'chart', 'canvas'];
+const sizeInput = (region, axis) => el(region === 'chart' && axis === 'height' ? 'chart_height' : `size-${region}-${axis}`);
 
 let providers = [];
 let symbols = [];
@@ -216,6 +218,11 @@ async function search(text) {
 
 function collect() {
   const patch = { symbols };
+  patch.component_sizes = {};
+  for (const region of SIZE_REGIONS) {
+    patch.component_sizes[region] = { width: Number(sizeInput(region, 'width').value) };
+    if (region !== 'chart') patch.component_sizes[region].height = Number(sizeInput(region, 'height').value);
+  }
   for (const id of TEXTS) patch[id] = el(id).value;
   for (const id of NUMBERS) patch[id] = Number(el(id).value);
   for (const id of CHECKBOXES) patch[id] = el(id).checked;
@@ -231,6 +238,12 @@ function fill(config) {
   for (const id of TEXTS) el(id).value = config[id];
   for (const id of NUMBERS) el(id).value = config[id];
   for (const id of CHECKBOXES) el(id).checked = config[id];
+  for (const region of SIZE_REGIONS) {
+    for (const axis of ['width', 'height']) {
+      if (region === 'chart' && axis === 'height') continue;
+      sizeInput(region, axis).value = config.component_sizes?.[region]?.[axis] || 0;
+    }
+  }
   for (const id of FONT_COLORS) {
     const automatic = config[id] === 'auto';
     el(`${id}_auto`).checked = automatic;
@@ -266,6 +279,11 @@ function refreshHints() {
   el('layout').disabled = theme2;
   for (const id of ['visible_rows', 'row_style', 'chart_height']) {
     el(id).disabled = single || theme2;
+  }
+  for (const region of SIZE_REGIONS) {
+    for (const axis of ['width', 'height']) {
+      sizeInput(region, axis).disabled = single || (region === 'chart' && theme2) || (region === 'canvas' && !theme2);
+    }
   }
   el('layout-hint').textContent = theme2
     ? '主题 2 固定为一列纵向排列；显示模式、网格行数与行内样式不参与排版。'
@@ -312,6 +330,7 @@ async function apply(label = '已保存') {
     patch.display_theme = activeTheme;
     // 服务端会做最终校验，用返回值回填，页面始终反映真实生效的配置。
     fill(await postConfig(patch));
+    await applyWindowSize();
     note(label);
   } catch (error) {
     note(`保存失败：${error.message}`);
@@ -344,6 +363,55 @@ async function switchTheme() {
 }
 
 /* ------------------------------------------------------------ 事件 */
+
+async function applyWindowSize() {
+  const axes = ['width', 'height'];
+  if (!axes.some((axis) => el(`window_${axis}`).dataset.dirty)) return;
+  const dimensions = Object.fromEntries(axes.map((axis) => [axis,
+    el(`window_${axis}`).dataset.dirty ? Number(el(`window_${axis}`).value) : 0]));
+  const response = await fetch(api('/api/window-size'), {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(dimensions),
+  });
+  if (!response.ok) throw new Error(`调整窗口失败（HTTP ${response.status}）`);
+  for (const axis of axes) delete el(`window_${axis}`).dataset.dirty;
+}
+
+let readingMetrics = false;
+async function refreshLayoutMetrics() {
+  if (readingMetrics || document.hidden) return;
+  readingMetrics = true;
+  try {
+    const response = await fetch(api('/api/layout-metrics'));
+    if (!response.ok) return;
+    const metrics = await response.json();
+    if (metrics.theme !== activeTheme) return;
+    for (const region of ['window', ...SIZE_REGIONS]) {
+      const size = metrics.regions?.[region];
+      el(`size-current-${region}`).textContent = size
+        ? (size.visible ? `${size.width} × ${size.height}` : '隐藏') : '暂无股票数据';
+    }
+    const windowSize = metrics.regions?.window;
+    if (windowSize) {
+      for (const axis of ['width', 'height']) {
+        const input = el(`window_${axis}`);
+        if (document.activeElement !== input && !input.dataset.dirty) input.value = windowSize[axis];
+      }
+    }
+    el('size-scale-hint').textContent = `当前缩放：${Number(metrics.scale || 1).toFixed(2)} 倍；右下角拖拽后实际尺寸会自动更新。`;
+  } catch (_) { /* 桌面暂时离线时保留最后一次尺寸。 */ }
+  finally { readingMetrics = false; }
+}
+
+for (const region of SIZE_REGIONS) {
+  for (const axis of ['width', 'height']) {
+    if (region === 'chart' && axis === 'height') continue;
+    sizeInput(region, axis).addEventListener('blur', () => apply('尺寸已应用'));
+  }
+}
+for (const axis of ['width', 'height']) {
+  el(`window_${axis}`).addEventListener('input', (event) => { event.target.dataset.dirty = '1'; });
+  el(`window_${axis}`).addEventListener('blur', () => apply('尺寸已应用'));
+}
 
 // 开关和下拉改完即时生效；字号短延迟自动保存，避免改完直接退出时丢失。
 for (const id of [...CHECKBOXES, 'provider', 'kline_source', 'theme2_side', 'layout', 'row_style', 'color_scheme', 'background_color']) {
@@ -415,6 +483,8 @@ document.addEventListener('click', (event) => {
   const data = await response.json();
   providers = data.providers;
   fill(data.config);
+  refreshLayoutMetrics();
+  setInterval(refreshLayoutMetrics, 1000);
 
   // 名称是额外信息，拿不到也不影响列表可用
   try {

@@ -112,15 +112,44 @@
               <option value="top_bottom" {% if config.row_style == 'top_bottom' %}selected{% endif %}>上下</option>
             </select>
           </div>
-          <div class="field">
-            <label for="chart_height">K 线高度（px）</label>
-            <input id="chart_height" name="chart_height" type="number" min="0" max="400" step="1"
-                   value="{{ config.chart_height }}" />
-          </div>
         </div>
         <p class="hint" id="row_style-hint"></p>
         <p class="hint">K 线高度填 0 表示按字号自动推算；填了具体像素就固定成该高度，并随窗口拖拽等比缩放。
           行数多到窗口放不下时，走势图会自动压扁，保证每只股票都还在可视区里。</p>
+
+        <h3>显示区域宽高</h3>
+        <p class="hint">单位为 px；窗口填 0 保持该方向的当前尺寸，其余区域填 0 自动适配。
+          当前实际宽高取第一张股票卡片并自动更新；未显示的区域会标记为隐藏。
+          区域尺寸按当前主题保存，经典主题随右下角拖拽缩放，空间不足时自动压缩。</p>
+        <div class="dimensions-wrap">
+          <table class="dimensions-table">
+            <thead><tr><th scope="col">显示区域</th><th scope="col">宽度</th><th scope="col">高度</th><th scope="col">当前实际宽 × 高</th></tr></thead>
+            <tbody>
+              <tr>
+                <th scope="row">整个窗口</th>
+                <td><input id="window_width" type="number" min="0" max="8192" value="0" aria-label="窗口宽度" /></td>
+                <td><input id="window_height" type="number" min="0" max="8192" value="0" aria-label="窗口高度" /></td>
+                <td><output id="size-current-window">等待桌面窗口</output></td>
+              </tr>
+              {% for region, label in component_regions %}
+              <tr>
+                <th scope="row">{{ label }}</th>
+                {% for axis, axis_label in [('width', '宽度'), ('height', '高度')] %}
+                {% if region == 'chart' and axis == 'height' %}
+                <td><input id="chart_height" name="chart_height" type="number" min="0" max="400" step="1"
+                           value="{{ config.chart_height }}" aria-label="K 线高度（px）" /></td>
+                {% else %}
+                <td><input id="size-{{ region }}-{{ axis }}" type="number" min="0" max="8192" step="1"
+                           value="{{ config.component_sizes.get(region, {}).get(axis, 0) }}" aria-label="{{ label }}{{ axis_label }}" /></td>
+                {% endif %}
+                {% endfor %}
+                <td><output id="size-current-{{ region }}">等待桌面窗口</output></td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        <p class="hint" id="size-scale-hint"></p>
 
         <div class="grid">
           <div class="field">

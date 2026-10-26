@@ -43,6 +43,7 @@ from ..symbols import classify
 from . import kline_loader
 from .depth_ladder import MODE_DAILY, OUTER_PAD, DepthLadder
 from .sparkline import Sparkline
+from .sizing import SizedLabel, SizedWidget
 from .theme import (
     BLACK,
     MUTED,
@@ -62,7 +63,7 @@ def _color_style(color) -> str:
     return f"color: rgba({color.red()},{color.green()},{color.blue()},{color.alpha()});"
 
 
-class _ElidedLabel(QLabel):
+class _ElidedLabel(SizedLabel):
     """主题2 顶部信息条专用：放不下时按省略号截断，而不是把整行顶宽。
 
     QLabel 默认的 ``minimumSizeHint`` 就是整段文字的宽度。主题2 的信息条一层层
@@ -98,7 +99,7 @@ class _ElidedLabel(QLabel):
     def sizeHint(self) -> QSize:  # noqa: N802
         metrics = QFontMetrics(self.font())
         # 想要整段文字的宽度，布局有地方就给全；没地方则由 minimumSizeHint 兜底。
-        return QSize(metrics.horizontalAdvance(self._full_text), metrics.height())
+        return self._display_size_hint(QSize(metrics.horizontalAdvance(self._full_text), metrics.height()))
 
     def minimumSizeHint(self) -> QSize:  # noqa: N802
         metrics = QFontMetrics(self.font())
@@ -109,7 +110,7 @@ class _ElidedLabel(QLabel):
         self._refresh_elide()
 
 
-class QuoteRow(QWidget):
+class QuoteRow(SizedWidget):
     theme2_expansion_changed = Signal(str, bool)
     # 点价格＝请求「整张自选列表一起展开 / 收起」。行自己不决定展开态：展开是
     # 全列表级动作，而且要求「鼠标移开不收起、点任意屏幕位置才收起」，这两件事
@@ -124,9 +125,9 @@ class QuoteRow(QWidget):
         self._last_depth: DepthSnapshot | None = None
         self._theme2_expanded = False
 
-        self.name_label = QLabel()
-        self.price_label = QLabel()
-        self.percent_label = QLabel()
+        self.name_label = SizedLabel()
+        self.price_label = SizedLabel()
+        self.percent_label = SizedLabel()
         self.dark_label = QLabel("暗")
         self.dark_value = QLabel()
         self.sparkline = Sparkline()
@@ -142,7 +143,7 @@ class QuoteRow(QWidget):
         self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
         self.setMinimumSize(0, 0)
 
-        self.dark_box = QWidget()
+        self.dark_box = SizedWidget()
         dark_layout = QHBoxLayout(self.dark_box)
         dark_layout.setContentsMargins(0, 0, 0, 0)
         dark_layout.setSpacing(5)
@@ -243,14 +244,31 @@ class QuoteRow(QWidget):
             make_font(config, pixel_size=config.chart_label_font_size)
         )
         self.theme2_depth.apply_config(config)
+        self._apply_component_sizes()
         self._apply_theme2_metrics(config)
         self._update_layout_mode()
+        self._apply_component_sizes()
         if self._last_quote is not None:
             self.update_quote(self._last_quote, config, self._last_trend)
 
     def resizeEvent(self, event) -> None:  # noqa: N802 - Qt 命名
         super().resizeEvent(event)
         self._update_layout_mode()
+        self._apply_component_sizes()
+
+    def _apply_component_sizes(self) -> None:
+        sizes = self._config.component_sizes
+        self.set_display_size(sizes.get("row", {}))
+        for region, widget in (
+            ("name", self.name_label), ("price", self.price_label),
+            ("percent", self.percent_label), ("dark", self.dark_box),
+            ("name", self.theme2_name_label), ("dark", self.theme2_dark_label),
+        ):
+            widget.set_display_size(sizes.get(region, {}))
+        self.sparkline.set_display_size({
+            "width": sizes.get("chart", {}).get("width", 0),
+            "height": self._config.chart_height,
+        } if self._config.show_sparkline else {})
 
     def _apply_theme2_metrics(self, config: Config) -> None:
         """主题2只调顶部信息条与画布的字体/间距，不再靠撑宽详情区腾地方。
@@ -354,6 +372,9 @@ class QuoteRow(QWidget):
 
     def theme2_natural_width(self) -> int:
         """自动/启动布局用的自然宽度：画布自然宽 + 左右边距，展开不再追加。"""
+        requested = self._config.component_sizes.get("row", {}).get("width", 0)
+        if requested:
+            return requested
         margins = self._layout.contentsMargins()
         return self.theme2_depth.sizeHint().width() + margins.left() + margins.right()
 
@@ -370,8 +391,9 @@ class QuoteRow(QWidget):
         ]
         if not self.dark_box.isHidden():
             widths.append(
-                self.dark_label.sizeHint().width() + self.dark_value.sizeHint().width()
-                + max(2, gap // 2)
+                config.component_sizes.get("dark", {}).get("width", 0)
+                or (self.dark_label.sizeHint().width() + self.dark_value.sizeHint().width()
+                    + max(2, gap // 2))
             )
         return sum(widths) + max(0, len(widths) - 1) * gap + padding * 2
 
@@ -563,9 +585,12 @@ class QuoteRow(QWidget):
             + compact_gap
             > self.width() - max(8, compact_gap * 2)
         )
-        layout_state = (top_bottom, stacked, show_chart, stacked_sides, stacked_secondary, fixed_chart)
+        fixed_width = config.component_sizes.get("chart", {}).get("width", 0) > 0
+        layout_state = (top_bottom, stacked, show_chart, stacked_sides, stacked_secondary, fixed_chart, fixed_width)
         # 左中右的固定图表仍居中；纵向版式紧贴文字，自动图表吃满剩余高度。
         chart_align = Qt.AlignVCenter if fixed_chart and not stacked else Qt.AlignmentFlag(0)
+        if fixed_width:
+            chart_align |= Qt.AlignLeft
         if layout_state != self._layout_state:
             for widget in (
                 self.name_label,
@@ -583,7 +608,7 @@ class QuoteRow(QWidget):
                 self._layout.addWidget(self.percent_label, 0, 2)
                 self._layout.addWidget(self.dark_box, 0, 3, Qt.AlignLeft | Qt.AlignVCenter)
                 if show_chart:
-                    self._layout.addWidget(self.sparkline, 1, 0, 1, 4)
+                    self._layout.addWidget(self.sparkline, 1, 0, 1, 4, chart_align)
                 # 信息按顺序紧排，多余宽度留在暗盘之后，图表仍铺满整行。
                 self._layout.setColumnStretch(3, 1)
             elif stacked:
@@ -725,6 +750,7 @@ class QuoteRow(QWidget):
         self._set_dark(quote.dark_fund, config)
         # 文本写入后 minimumSizeHint 才准确；必要时切到更窄的堆叠布局。
         self._update_layout_mode()
+        self._apply_component_sizes()
 
     def _update_theme2_data(self, quote: Quote, config: Config, trend: Trend | None, color) -> None:
         symbol = classify(quote.symbol)

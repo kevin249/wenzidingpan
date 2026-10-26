@@ -29,6 +29,15 @@ THEME2_SIDES = ("right", "left")
 # sides = 左中右，stacked = 上中下，top_bottom = 信息在上、K 线在下
 ROW_STYLES = ("sides", "stacked", "top_bottom")
 COLOR_SCHEMES = ("cn", "us")
+COMPONENT_REGIONS = (
+    ("row", "股票卡片"),
+    ("name", "股票名称"),
+    ("price", "股价"),
+    ("percent", "涨跌幅"),
+    ("dark", "暗盘"),
+    ("chart", "K 线（经典主题）"),
+    ("canvas", "千档与 K 线画布（主题 2）"),
+)
 
 # 只把“显示/窗口外观”按主题隔离。数据源、自选、刷新频率、Debug、
 # MCP/托盘提醒仍是全局共享配置，切主题不会复制或分叉这些运行状态。
@@ -60,6 +69,7 @@ THEME_SCOPED_FIELDS = (
     "row_style",
     "visible_rows",
     "chart_height",
+    "component_sizes",
     "font_family",
     "font_size",
     "stock_name_font_size",
@@ -178,6 +188,7 @@ class Config:
     row_style: str = "sides"
     visible_rows: int = 4
     chart_height: int = 0  # K 线（走势图）高度，0 表示按字号自动推算
+    component_sizes: dict[str, dict[str, int]] = field(default_factory=dict)
     font_family: str = ""  # 留空表示跟随系统字体
     font_size: int = 13  # 按钮与间距的基础字号
     stock_name_font_size: int = 12
@@ -292,6 +303,23 @@ def sanitize(raw: Any, *, _include_theme_profiles: bool = True) -> Config:
     depth_width = _as_number(raw.get("theme2_depth_width"))
     if depth_width is not None:
         out.theme2_depth_width = int(_clamp(round(depth_width), 40, 600))
+
+    component_sizes = raw.get("component_sizes")
+    if isinstance(component_sizes, dict):
+        for region, _label in COMPONENT_REGIONS:
+            values = component_sizes.get(region)
+            if not isinstance(values, dict):
+                continue
+            size = {}
+            for axis in ("width", "height"):
+                # chart.height 继续使用兼容旧配置的 chart_height 字段。
+                if region == "chart" and axis == "height":
+                    continue
+                value = _as_number(values.get(axis))
+                if value is not None:
+                    size[axis] = int(_clamp(round(value), 0, 8192))
+            if size and any(size.values()):
+                out.component_sizes[region] = size
 
     grayscale_level = _as_number(raw.get("grayscale_level"))
     if grayscale_level is not None:

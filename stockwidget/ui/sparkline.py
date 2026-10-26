@@ -19,6 +19,7 @@ from ..local_bs import SAMPLE_LEN
 from ..market_hours import SHANGHAI_TZ
 from ..mcp_depth import DEPTH_FIVE, DEPTH_FULL, DEPTH_TEN, DepthSnapshot
 from .price_scale import PriceScale
+from .sizing import SizedWidget
 from .theme import display_color
 from .time_axis import intraday_fraction
 
@@ -34,7 +35,7 @@ ANNOTATION_COLOR = QColor(185, 190, 202)  # 「成交量 / 十档」这类小字
 DEPTH_STALE_SECONDS = 120
 
 
-class Sparkline(QWidget):
+class Sparkline(SizedWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._samples: deque[float] = deque(maxlen=SAMPLE_LEN)
@@ -75,7 +76,7 @@ class Sparkline(QWidget):
             self.updateGeometry()
 
     def sizeHint(self) -> QSize:  # noqa: N802 - Qt 命名
-        return QSize(self.minimumWidth(), self._preferred_height)
+        return self._display_size_hint(QSize(self.minimumWidth(), self._preferred_height))
 
     # ------------------------------------------------------------ 数据
 

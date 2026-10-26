@@ -26,6 +26,7 @@ class ConfigBridge(QObject):
     """WebUI 跑在另一个线程，配置变更通过信号回到界面线程。"""
 
     changed = Signal(object)
+    resize_requested = Signal(object)
 
 
 class WindowActivationFilter(QObject):
@@ -87,7 +88,13 @@ class WidgetApp:
 
         self.bridge = ConfigBridge()
         self.bridge.changed.connect(self._apply_config, Qt.QueuedConnection)
-        self.server = SettingsServer(self.store, on_change=self.bridge.changed.emit)
+        self.bridge.resize_requested.connect(self.window.resize_from_settings, Qt.QueuedConnection)
+        self.server = SettingsServer(
+            self.store, on_change=self.bridge.changed.emit,
+            on_resize=self.bridge.resize_requested.emit,
+        )
+        self.window.layout_metrics_changed.connect(self.server.publish_layout_metrics)
+        self.server.publish_layout_metrics(self.window.layout_metrics())
 
         self.poller = Poller(config)
         self.poller.snapshot_ready.connect(self._on_snapshot, Qt.QueuedConnection)

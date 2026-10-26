@@ -49,6 +49,7 @@ from ..mcp_depth import (
     DepthSnapshot,
 )
 from .price_scale import PriceScale
+from .sizing import SizedWidget
 from .sparkline import ANNOTATION_COLOR
 from .sparkline import BUY_COLOR as BS_BUY_COLOR
 from .sparkline import SELL_COLOR as BS_SELL_COLOR
@@ -142,7 +143,7 @@ class _Layout:
         return self.kline_right - self.kline_left >= 2.0
 
 
-class DepthLadder(QWidget):
+class DepthLadder(SizedWidget):
     """主题2 的整行主体：价格列 + 千档盘口（展开后追加图表栏）。"""
 
     price_clicked = Signal()
@@ -183,6 +184,7 @@ class DepthLadder(QWidget):
         self._config = config
         self._preferred_width = self._natural_width()
         self._preferred_height = max(88, round(config.font_size * 7.2))
+        self.set_display_size(config.component_sizes.get("canvas", {}))
         self.updateGeometry()
         self.update()
 
@@ -202,7 +204,7 @@ class DepthLadder(QWidget):
         return int(outer + price_width + gap + depth + outer + 5)
 
     def sizeHint(self) -> QSize:  # noqa: N802
-        return QSize(max(self._preferred_width, 120), self._preferred_height)
+        return self._display_size_hint(QSize(max(self._preferred_width, 120), self._preferred_height))
 
     # ------------------------------------------------------------ 状态
 
@@ -670,14 +672,22 @@ class DepthLadder(QWidget):
         )
         price_height = max(20.0, price_metrics.height() + 2.0)
         percent_height = max(16.0, percent_metrics.height() + 2.0)
+        price_size = self._config.component_sizes.get("price", {})
+        percent_size = self._config.component_sizes.get("percent", {})
+        price_width = min(float(self.width()), price_size.get("width", 0) or width)
+        percent_width = min(float(self.width()), percent_size.get("width", 0) or width)
+        if price_size.get("height", 0):
+            price_height = min(max(0, self.height() / 2.0 - gap), price_size["height"])
+        if percent_size.get("height", 0):
+            percent_height = min(max(0, self.height() / 2.0 - gap), percent_size["height"])
         return (
             QRectF(
-                center_x - width / 2.0,
+                center_x - price_width / 2.0,
                 center_y - gap - price_height,
-                width,
+                price_width,
                 price_height,
             ),
-            QRectF(center_x - width / 2.0, center_y + gap, width, percent_height),
+            QRectF(center_x - percent_width / 2.0, center_y + gap, percent_width, percent_height),
         )
 
     def _draw_price_and_guide(self, painter: QPainter, layout: _Layout) -> None:
