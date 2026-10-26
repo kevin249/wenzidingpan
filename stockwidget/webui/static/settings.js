@@ -377,6 +377,20 @@ async function applyWindowSize() {
 }
 
 let readingMetrics = false;
+el('reset-window-scale').addEventListener('click', async () => {
+  try {
+    const response = await fetch(api('/api/window-size'), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reset_scale: true }),
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    await refreshLayoutMetrics();
+    note('已恢复 100% 缩放');
+  } catch (error) {
+    note(`恢复缩放失败：${error.message}`);
+  }
+});
+
 async function refreshLayoutMetrics() {
   if (readingMetrics || document.hidden) return;
   readingMetrics = true;

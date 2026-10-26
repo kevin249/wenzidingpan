@@ -42,6 +42,8 @@ def test_settings_page_renders(server):
     assert "显示左侧股票名称" in body
     assert "股票名称字号" in body
     assert "暗盘字号" in body
+    assert 'id="reset-window-scale"' in body
+    assert "恢复 100% 缩放" in body
     assert "填充走势图下方颜色" in body
     assert "字体颜色与字重" in body
     assert "跟随涨跌" in body

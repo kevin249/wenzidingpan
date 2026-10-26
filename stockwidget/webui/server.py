@@ -117,6 +117,10 @@ class SettingsServer:
                         or not 0 <= value <= 8192 or not math.isfinite(value)):
                     return jsonify({"error": "宽高必须为 0–8192 的数字"}), 400
                 dimensions[axis] = round(value)
+            if "reset_scale" in values:
+                if not isinstance(values["reset_scale"], bool):
+                    return jsonify({"error": "恢复缩放必须为布尔值"}), 400
+                dimensions["reset_scale"] = values["reset_scale"]
             if self.on_resize is None:
                 return jsonify({"error": "桌面窗口尚未连接"}), 503
             self.on_resize(dimensions)

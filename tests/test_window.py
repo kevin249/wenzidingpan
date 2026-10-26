@@ -610,7 +610,7 @@ def test_width_only_drag_keeps_scale_when_content_is_screen_compressed(app):
     window.show()
     app.processEvents()
     screen = window.screen().availableGeometry()
-    assert window._base_frame_height(window.width()) > screen.height()  # 确实超屏
+    assert sum(row.sizeHint().height() for row in window._rows.values()) > screen.height()
 
     height = window.height()
     window._on_grip_drag_started(window.size())
@@ -810,7 +810,7 @@ def test_grip_uses_height_for_content_scale(app):
     window.close()
 
 
-def test_restored_large_frame_repairs_stale_small_label_scale(app):
+def test_restored_large_frame_preserves_explicit_small_label_scale(app):
     from stockwidget.config import Bounds
     from stockwidget.providers.base import Quote
 
@@ -830,10 +830,10 @@ def test_restored_large_frame_repairs_stale_small_label_scale(app):
     )
     app.processEvents()
 
-    assert window._scale > 1.0
-    assert all(row.name_label.font().pixelSize() > 9 for row in window._rows.values())
-    assert all(row.price_label.font().pixelSize() > 9 for row in window._rows.values())
-    assert all(row.percent_label.font().pixelSize() > 7 for row in window._rows.values())
+    assert window._scale == pytest.approx(0.696)
+    assert all(row.name_label.font().pixelSize() == 8 for row in window._rows.values())
+    assert all(row.price_label.font().pixelSize() == 10 for row in window._rows.values())
+    assert all(row.percent_label.font().pixelSize() == 8 for row in window._rows.values())
     window.close()
 
 
@@ -1164,12 +1164,7 @@ def test_hidden_title_buttons_keep_window_draggable_and_point_to_tray(app):
 
 
 def test_toggling_title_buttons_keeps_manual_frame_content_and_scale(app):
-    """手动尺寸下切换标题栏，不能把缩放基准搞歪。
-
-    标题栏是 chrome：外框不跟着加减那一条，内容区就凭空多／少一截高度，
-    而绝对缩放基准（_absolute_scale_reference）已经按新的 chrome 算了——
-    下一次哪怕只拖宽度，也会照着歪掉的基准把字号顶大一截。
-    """
+    """手动尺寸下切换标题栏应保持内容高度，之后只调宽度也不能改变字号。"""
     from stockwidget.providers.base import Quote
 
     window = TickerWindow(Config(visible_rows=2))
@@ -1221,13 +1216,12 @@ def test_toggling_title_buttons_keeps_manual_frame_content_and_scale(app):
     assert hidden[0] < settled[0]
     assert hidden[1] == settled[1]  # 内容区始终不变，少掉的只有 chrome
 
-    # 藏起来之后只拖宽度、高度不动，缩放就该基本留在原地：修之前这里会照着
-    # 少了一条 chrome 的基准算，scale 直接涨 25%，字号 19→24。
+    # 藏起来之后只拖宽度、高度不动，缩放和字号必须原样保留。
     window.apply_config(Config(visible_rows=2, show_title_buttons=False))
     app.processEvents()
     drag(QSize(window.width() + 120, window.height()))
-    assert window._scale == pytest.approx(scale, rel=0.08)
-    assert abs(window.scaled_config().stock_price_font_size - font) <= 1
+    assert window._scale == pytest.approx(scale)
+    assert window.scaled_config().stock_price_font_size == font
     window.close()
 
 
