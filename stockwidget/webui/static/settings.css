@@ -382,3 +382,8 @@ input[type='color'] {
   background: var(--bg);
   cursor: pointer;
 }
+.dimensions-wrap { overflow-x: auto; }
+.dimensions-table { width: 100%; border-collapse: collapse; margin: 12px 0; }
+.dimensions-table th, .dimensions-table td { padding: 9px 8px; text-align: left; border-bottom: 1px solid var(--border); }
+.dimensions-table input { width: 100%; min-width: 72px; max-width: 120px; box-sizing: border-box; }
+.dimensions-table output { white-space: nowrap; font-variant-numeric: tabular-nums; }
