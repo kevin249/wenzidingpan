@@ -47,6 +47,15 @@ def test_chart_refresh_persists_and_is_shared_between_themes(tmp_path):
     assert store.update({"display_theme": "theme1"}).chart_refresh_seconds == 0.1
 
 
+def test_quote_refresh_supports_tenths_without_changing_chart_interval(tmp_path):
+    store = Store(tmp_path / "config.json")
+    assert store.update({"refresh_seconds": 0.1}).refresh_seconds == 0.1
+    assert Store(store.path).get().refresh_seconds == 0.1
+    assert store.get().chart_refresh_seconds == 1.0
+    assert sanitize({"refresh_seconds": 0.34}).refresh_seconds == 0.3
+    assert sanitize({"refresh_seconds": 0}).refresh_seconds == 0.1
+
+
 def test_out_of_range_values_are_clamped():
     config = sanitize(
         {

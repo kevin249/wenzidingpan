@@ -299,13 +299,16 @@ class IntradayClient:
         if symbol is None:
             return Trend(error="代码格式不正确")
 
-        now = time.time() if now is None else now
+        wall_clock = now is None
+        now = time.time() if wall_clock else now
         with self._lock:
             cached = self._cache.get(symbol.key)
             if cached and now < cached[0] + self.cache_ttl_seconds:
                 return cached[1]
 
         trend = self._load(symbol)
+        if wall_clock:
+            now = time.time()  # Record receipt, rather than the request start.
         with self._lock:
             if trend:
                 trend.fetched_at = now

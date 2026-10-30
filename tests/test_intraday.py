@@ -148,6 +148,21 @@ def test_client_caches_within_ttl():
     assert session.calls == 2
 
 
+def test_fetch_timestamp_and_cache_age_start_at_response_receipt(monkeypatch):
+    from stockwidget import intraday
+
+    clock = iter([1000.0, 1000.4, 1001.0])
+    monkeypatch.setattr(intraday.time, "time", lambda: next(clock))
+    client = IntradayClient()
+    calls = []
+    monkeypatch.setattr(client, "_load", lambda symbol:
+                        calls.append(symbol) or Trend(prices=[10.0, 10.1]))
+    result = client.fetch("600000")
+    assert result.fetched_at == 1000.4
+    assert client.fetch("600000") is result
+    assert len(calls) == 1
+
+
 def test_client_reports_error_instead_of_raising():
     trend = IntradayClient(session=_FailingSession(requests.Timeout())).fetch("600000")
     assert trend.error == "请求超时"

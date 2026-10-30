@@ -624,6 +624,12 @@ class TickerWindow(QWidget):
         quotes = snapshot.quotes
         if self._config.layout == "single" and self._config.display_theme != "theme2":
             self.marquee.set_quotes(quotes)
+        elif snapshot.updated_symbols is not None:
+            changed = set(snapshot.updated_symbols)
+            scaled = self.scaled_config()
+            for quote in quotes:
+                if quote.symbol in changed and (row := self._rows.get(quote.symbol)) is not None:
+                    row.update_quote(quote, scaled, snapshot.trends.get(quote.symbol))
         else:
             self._sync_rows(quotes, snapshot.trends)
 

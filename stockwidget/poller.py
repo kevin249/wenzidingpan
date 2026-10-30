@@ -1,97 +1,84 @@
-"""后台轮询线程：拉行情 + 合并暗盘资金，通过信号送回界面线程。"""
+"""Independent quote, chart and dark-fund requests with latest-state delivery."""
 
 from __future__ import annotations
 
 import threading
 import time
-from dataclasses import dataclass, field
+from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 
 from PySide6.QtCore import QThread, Signal
 
 from . import providers
 from .config import Config
-from .darktrade import DarkTradeClient
+from .darktrade import CACHE_TTL_SECONDS as DARK_REFRESH_SECONDS, DarkResult, DarkTradeClient
 from .intraday import IntradayClient, Trend
-from .market_hours import (
-    OFF_HOURS_WAKE_SECONDS,
-    active_updates_allowed,
-)
+from .market_hours import OFF_HOURS_WAKE_SECONDS, active_updates_allowed
 from .providers.base import Quote
 from .symbols import classify
+
+CHART_WORKERS = 4
 
 
 @dataclass
 class Snapshot:
-    """一次轮询的完整结果。"""
-
     provider_id: str
     quotes: list[Quote]
     at: float = field(default_factory=time.time)
     dark_date: str = ""
     dark_error: str | None = None
     dark_enabled: bool = False
-    # 自选代码 -> 当日分时曲线，关掉分时图时为空
     trends: dict[str, Trend] = field(default_factory=dict)
-    # 「自动」模式下真正出数的那个源，供界面显示
     effective_provider: str | None = None
+    # None reconciles the watchlist; otherwise only these rows need updating.
+    updated_symbols: tuple[str, ...] | None = None
+    generation: int = 0
 
 
 class Poller(QThread):
-    snapshot_ready = Signal(object)
+    # At most one notification is queued. The GUI drains the newest state.
+    snapshot_ready = Signal()
 
     def __init__(self, config: Config, parent=None) -> None:
         super().__init__(parent)
         self._config = config
         self._dark = DarkTradeClient()
-        self._intraday = IntradayClient()
+        self._clients: dict[str, IntradayClient] = {}
         self._wake = threading.Event()
         self._stopping = threading.Event()
         self._lock = threading.Lock()
-        # 显式刷新请求（启动 / 手动 / MCP 推送 / 取数配置变更）：绕过时段限制拉一次。
         self._explicit = True
+        self._generation = 0
+        self._delivery_lock = threading.Lock()
+        self._pending: Snapshot | None = None
         self._quote_cache: list[Quote] = []
-        self._quote_cache_key: tuple[str, tuple[str, ...], bool] | None = None
-        self._quote_fetched_at = 0.0
-        self._provider_id = ""
+        self._trend_cache: dict[str, Trend] = {}
+        self._provider_setting = config.provider
+        self._provider_id = config.provider
         self._effective_provider: str | None = None
-        self._dark_date = ""
-        self._dark_error: str | None = None
-
-    # ------------------------------------------------------------ 控制
+        self._dark_result = DarkResult()
+        self._have_quotes = False
 
     @staticmethod
     def _fetch_identity(config: Config) -> tuple[object, ...]:
-        """影响取数的设置：变化时必须立刻按新配置重拉，否则界面会停留在旧数据。"""
         return (
-            config.provider,
-            tuple(config.symbols),
-            config.refresh_seconds,
-            config.chart_refresh_seconds,
-            config.show_sparkline,
-            config.intraday_chart,
-            config.display_theme,
-            config.show_dark_trade,
+            config.provider, tuple(config.symbols), config.refresh_seconds,
+            config.chart_refresh_seconds, config.show_sparkline,
+            config.intraday_chart, config.display_theme, config.show_dark_trade,
             config.debug_mode,
         )
 
     def apply_config(self, config: Config) -> None:
         with self._lock:
-            previous = self._config
+            changed = self._fetch_identity(self._config) != self._fetch_identity(config)
             self._config = config
-        if self._fetch_identity(previous) != self._fetch_identity(config):
-            self.refresh_now()
-            return
-        # 纯展示类变更（置顶、灰度与灰度值、字号…）只需让循环重算间隔，不额外发起请求。
+            if changed:
+                self._generation += 1
+                self._explicit = True
         self._wake.set()
 
     def refresh_now(self) -> None:
-        """显式刷新：绕过 Debug / 休市限制，立刻拉一次行情与分时。
-
-        调用方包括启动首帧、手动刷新、MCP 推送与取数相关配置变更；这四类都属于
-        显式意图，不受交易时段限制。走势图缓存一并清掉。
-        """
-        self._intraday.reset_cache()
         with self._lock:
             self._explicit = True
         self._wake.set()
@@ -100,120 +87,216 @@ class Poller(QThread):
         self._stopping.set()
         self._wake.set()
 
-    # ------------------------------------------------------------ 循环
-
     @staticmethod
     def _chart_enabled(config: Config) -> bool:
         return bool(config.intraday_chart and (config.show_sparkline or config.display_theme == "theme2"))
 
     @staticmethod
-    def _loop_interval(config: Config) -> float:
-        """Wake for either quotes or charts; each client keeps its own cadence."""
-        if Poller._chart_enabled(config):
-            return min(float(config.refresh_seconds), config.chart_refresh_seconds)
-        return float(config.refresh_seconds)
-
-    @staticmethod
-    def _should_poll(
-        config: Config, explicit: bool, now: datetime | None = None
-    ) -> bool:
-        """本轮是否允许发起主动请求。
-
-        显式意图（启动首帧 / 手动刷新 / MCP 推送 / 取数配置变更）优先放行；
-        其余情况只有 Debug 全时段或非 Debug 的活跃时段才轮询。
-        """
+    def _should_poll(config: Config, explicit: bool, now: datetime | None = None) -> bool:
         return bool(explicit) or active_updates_allowed(config.debug_mode, now)
 
-    def run(self) -> None:  # noqa: D102 - QThread 入口
-        force_quotes = True
-        while not self._stopping.is_set():
-            with self._lock:
-                config = self._config
-                explicit = self._explicit
-                self._explicit = False
+    def take_snapshot(self) -> Snapshot | None:
+        """Called on the GUI thread; queued older states never accumulate."""
+        with self._lock, self._delivery_lock:
+            snapshot, self._pending = self._pending, None
+            if snapshot is not None and snapshot.generation == self._generation:
+                return snapshot
+        return None
 
-            # 非 Debug 且不在活跃时段：不发任何主动请求，只做本地时间检查。
-            # 期间到达的手动刷新 / MCP 推送会置位 _explicit，下一轮立即放行一次。
-            if not Poller._should_poll(config, explicit):
-                self._wake.wait(OFF_HOURS_WAKE_SECONDS)
-                self._wake.clear()
-                # 出窗口后的第一帧要拿全量数据，不沿用上一轮的缓存判定。
-                force_quotes = True
-                continue
-
-            self.snapshot_ready.emit(self._tick(config, force_quotes=force_quotes or explicit))
-            woke = self._wake.wait(self._loop_interval(config))
-            self._wake.clear()
-            force_quotes = woke
-
-    def _tick(self, config: Config, *, force_quotes: bool = False) -> Snapshot:
-        provider = providers.resolve(config.provider)
-        cache_key = (config.provider, tuple(config.symbols), config.show_dark_trade)
-        now = time.monotonic()
-        quotes_due = (
-            force_quotes
-            or cache_key != self._quote_cache_key
-            or not self._quote_cache
-            or now - self._quote_fetched_at >= config.refresh_seconds
-        )
-
-        if quotes_due:
-            try:
-                quotes = provider.fetch(list(config.symbols))
-            except Exception as exc:  # 数据源整体挂掉时也要出一屏，让用户看到原因
-                quotes = [Quote.failed(symbol, str(exc)[:60]) for symbol in config.symbols]
-
-            base = Snapshot(
-                provider_id=provider.id,
-                quotes=quotes,
-                dark_enabled=config.show_dark_trade,
-                effective_provider=getattr(provider, "last_used", None),
-            )
-            if config.show_dark_trade:
-                self._attach_dark_trade(quotes, base)
-
-            self._quote_cache = quotes
-            self._quote_cache_key = cache_key
-            self._quote_fetched_at = now
-            self._provider_id = base.provider_id
-            self._effective_provider = base.effective_provider
-            self._dark_date = base.dark_date
-            self._dark_error = base.dark_error
-        else:
-            quotes = self._quote_cache
-
+    def _publish(self, config: Config, generation: int, symbols=None) -> None:
         snapshot = Snapshot(
-            provider_id=self._provider_id or provider.id,
-            quotes=quotes,
-            dark_date=self._dark_date,
-            dark_error=self._dark_error,
+            provider_id=self._provider_id,
+            quotes=list(self._quote_cache),
+            dark_date=self._dark_result.trade_date if config.show_dark_trade else "",
+            dark_error=self._dark_result.error if config.show_dark_trade else None,
             dark_enabled=config.show_dark_trade,
+            trends=dict(self._trend_cache),
             effective_provider=self._effective_provider,
+            updated_symbols=tuple(symbols) if symbols is not None else None,
+            generation=generation,
         )
-        if self._chart_enabled(config):
-            self._intraday.cache_ttl_seconds = config.chart_refresh_seconds
-            self._attach_trends(quotes, snapshot)
-        return snapshot
+        with self._lock, self._delivery_lock:
+            if generation != self._generation or self._stopping.is_set():
+                return
+            notify = self._pending is None
+            previous = self._pending
+            if previous is not None and previous.generation == generation:
+                if previous.updated_symbols is None or snapshot.updated_symbols is None:
+                    snapshot.updated_symbols = None
+                else:
+                    changed = set(previous.updated_symbols) | set(snapshot.updated_symbols)
+                    snapshot.updated_symbols = tuple(s for s in config.symbols if s in changed)
+            self._pending = snapshot
+        if notify:
+            self.snapshot_ready.emit()
 
-    def _attach_trends(self, quotes: list[Quote], snapshot: Snapshot) -> None:
-        """Fetch charts at their configured cadence, retaining quotes on failure."""
-        for quote in quotes:
-            # 分时与报价接口相互独立；报价失败时仍可刷新有效分时。
-            trend = self._intraday.fetch(quote.symbol)
-            if trend:
-                snapshot.trends[quote.symbol] = trend
+    def _prepare(self, config: Config) -> None:
+        old = {q.symbol: q for q in self._quote_cache}
+        if config.provider != self._provider_setting:
+            old = {}
+            self._effective_provider = None
+        self._have_quotes = self._have_quotes and all(s in old for s in config.symbols)
+        self._provider_setting = config.provider
+        self._provider_id = config.provider
+        self._quote_cache = [old.get(s, Quote(symbol=s, name=s)) for s in config.symbols]
+        self._trend_cache = {
+            s: t for s, t in self._trend_cache.items()
+            if s in config.symbols and self._chart_enabled(config)
+        }
+        self._clients = {s: c for s, c in self._clients.items() if s in config.symbols}
+        self._merge_dark(config)
 
-    def _attach_dark_trade(self, quotes: list[Quote], snapshot: Snapshot) -> None:
-        """暗盘是日频数据，客户端内部有缓存；拉不到只留空，不影响行情。"""
-        codes = {symbol.code for q in quotes if (symbol := classify(q.symbol))}
-        if not codes:
-            return
-        result = self._dark.fetch(codes)
-        snapshot.dark_date = result.trade_date
-        snapshot.dark_error = result.error
-        for quote in quotes:
+    def _merge_dark(self, config: Config) -> None:
+        quotes = []
+        for quote in self._quote_cache:
             symbol = classify(quote.symbol)
-            row = result.by_code.get(symbol.code) if symbol else None
-            if row is not None:
-                quote.dark_fund = row.dark_fund
-                quote.dark_main_net_inflow = row.main_net_inflow
+            row = self._dark_result.by_code.get(symbol.code) if symbol and config.show_dark_trade else None
+            # Emitted snapshots must never be mutated by later worker results.
+            quotes.append(replace(
+                quote, dark_fund=row.dark_fund if row else None,
+                dark_main_net_inflow=row.main_net_inflow if row else None,
+            ))
+        self._quote_cache = quotes
+
+    @staticmethod
+    def _fetch_quotes(config: Config):
+        try:
+            provider = providers.resolve(config.provider)
+            quotes = provider.fetch(list(config.symbols))
+            return provider.id, getattr(provider, "last_used", None), quotes
+        except Exception as exc:
+            quotes = [Quote.failed(s, str(exc)[:60]) for s in config.symbols]
+            return config.provider, None, quotes
+
+    def _fetch_dark(self, config: Config):
+        codes = {p.code for s in config.symbols if (p := classify(s))}
+        try:
+            return self._dark.fetch(codes)
+        except Exception as exc:
+            return DarkResult(error=str(exc)[:80])
+
+    @staticmethod
+    def _fetch_chart(client: IntradayClient, symbol: str) -> Trend:
+        try:
+            # Scheduling already enforces the interval; keep last-good fallback.
+            client.reset_cache()
+            return client.fetch(symbol)
+        except Exception as exc:
+            return Trend(error=str(exc)[:80])
+
+    @staticmethod
+    def _perform(fetch, *args):
+        started = time.monotonic()
+        return started, fetch(*args)
+
+    @staticmethod
+    def _jobs(config: Config) -> list[tuple[str, str]]:
+        jobs = [("quotes", "")]
+        if config.show_dark_trade:
+            jobs.append(("dark", ""))
+        if Poller._chart_enabled(config):
+            jobs.extend(("chart", s) for s in config.symbols)
+        return jobs
+
+    def _accept(self, key, result, config: Config, generation: int) -> None:
+        kind, symbol = key
+        if kind == "quotes":
+            first_quotes = not self._have_quotes
+            self._have_quotes = True
+            self._provider_id, self._effective_provider, quotes = result
+            by_symbol = {q.symbol: q for q in quotes}
+            self._quote_cache = [
+                by_symbol.get(s, Quote.failed(s, "无数据")) for s in config.symbols
+            ]
+            self._merge_dark(config)
+            changed = None if first_quotes else config.symbols
+        elif kind == "dark":
+            self._dark_result = result
+            self._merge_dark(config)
+            changed = config.symbols
+        else:
+            self._trend_cache[symbol] = result
+            changed = [symbol]
+        self._publish(config, generation, changed)
+
+    def run(self) -> None:  # noqa: D102
+        pools = {
+            "quotes": ThreadPoolExecutor(max_workers=1, thread_name_prefix="quotes"),
+            "dark": ThreadPoolExecutor(max_workers=1, thread_name_prefix="dark"),
+            "chart": ThreadPoolExecutor(max_workers=CHART_WORKERS, thread_name_prefix="chart"),
+        }
+        inflight: dict[tuple[str, str], tuple[Future, int]] = {}
+        due: dict[tuple[str, str], float] = {}
+        generation = -1
+        forced: set[tuple[str, str]] = set()
+        try:
+            while not self._stopping.is_set():
+                # Clear before inspecting futures/config so wakeups cannot be lost.
+                self._wake.clear()
+                with self._lock:
+                    config = self._config
+                    current = self._generation
+                    explicit, self._explicit = self._explicit, False
+                jobs = self._jobs(config)
+                if current != generation:
+                    generation = current
+                    due.clear()
+                    self._prepare(config)
+                    self._publish(config, generation)
+                if explicit:
+                    forced.update(jobs)
+                forced.intersection_update(jobs)
+
+                for key, (future, requested_generation) in list(inflight.items()):
+                    if not future.done():
+                        continue
+                    del inflight[key]
+                    started, result = future.result()
+                    if requested_generation != generation or key not in jobs:
+                        continue
+                    self._accept(key, result, config, generation)
+                    interval = (
+                        config.refresh_seconds if key[0] == "quotes" else
+                        config.chart_refresh_seconds if key[0] == "chart" else DARK_REFRESH_SECONDS
+                    )
+                    # Start-to-start cadence: network work is not added to the interval.
+                    due[key] = started + interval
+
+                active = self._should_poll(config, False)
+                chart_slots = CHART_WORKERS - sum(k[0] == "chart" for k in inflight)
+                now = time.monotonic()
+                for key in sorted(jobs, key=lambda k: due.get(k, 0.0)):
+                    kind, symbol = key
+                    if key in inflight or not (active or key in forced):
+                        continue
+                    if key not in forced and due.get(key, 0.0) > now:
+                        continue
+                    if kind == "chart" and chart_slots <= 0:
+                        continue
+                    forced.discard(key)
+                    if kind == "quotes":
+                        fetch, args = self._fetch_quotes, (config,)
+                    elif kind == "dark":
+                        fetch, args = self._fetch_dark, (config,)
+                    else:
+                        if symbol not in self._clients:
+                            self._clients[symbol] = IntradayClient()
+                        fetch, args = self._fetch_chart, (self._clients[symbol], symbol)
+                        chart_slots -= 1
+                    future = pools[kind].submit(self._perform, fetch, *args)
+                    inflight[key] = (future, generation)
+                    future.add_done_callback(lambda _: self._wake.set())
+
+                now = time.monotonic()
+                waits = [OFF_HOURS_WAKE_SECONDS]
+                for key in jobs:
+                    if key in inflight or not (active or key in forced):
+                        continue
+                    if key[0] == "chart" and chart_slots <= 0:
+                        continue
+                    waits.append(0.0 if key in forced else max(0.0, due.get(key, 0.0) - now))
+                self._wake.wait(min(waits))
+        finally:
+            # Requests have timeouts; shutdown must not block the GUI on network I/O.
+            for pool in pools.values():
+                pool.shutdown(wait=False, cancel_futures=True)

@@ -97,7 +97,7 @@ class WidgetApp:
         self.server.publish_layout_metrics(self.window.layout_metrics())
 
         self.poller = Poller(config)
-        self.poller.snapshot_ready.connect(self._on_snapshot, Qt.QueuedConnection)
+        self.poller.snapshot_ready.connect(self._on_poll_ready, Qt.QueuedConnection)
         self.depth_poller = McpDepthPoller(config)
         self.depth_poller.depth_ready.connect(self._on_depth_snapshot, Qt.QueuedConnection)
         self.depth_poller.bs_ready.connect(self._on_bs_updated, Qt.QueuedConnection)
@@ -281,14 +281,23 @@ class WidgetApp:
     def _flush_bounds(self) -> None:
         self.window.flush_bounds()
 
+    def _on_poll_ready(self) -> None:
+        snapshot = self.poller.take_snapshot()
+        if snapshot is not None:
+            self._on_snapshot(snapshot)
+
     def _on_snapshot(self, snapshot: Snapshot) -> None:
         listing = {p["id"]: p["label"] for p in providers.listing()}
         label = listing.get(snapshot.provider_id, snapshot.provider_id)
         if snapshot.effective_provider:
             label = f"自动 · {listing.get(snapshot.effective_provider, snapshot.effective_provider)}"
         self.window.update_snapshot(snapshot, label)
+        quotes = snapshot.quotes
+        if snapshot.updated_symbols is not None:
+            changed = set(snapshot.updated_symbols)
+            quotes = [quote for quote in quotes if quote.symbol in changed]
         for message in self._local_bs_notifier.collect(
-            snapshot.quotes,
+            quotes,
             snapshot.trends,
             enabled=self.config.show_bs_points and mcp_bs.get_source() == mcp_bs.SOURCE_LOCAL,
             at=snapshot.at,
