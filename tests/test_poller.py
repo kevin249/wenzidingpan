@@ -4,10 +4,10 @@ from types import SimpleNamespace
 import pytest
 
 from stockwidget.config import Config
-from stockwidget.intraday import CACHE_TTL_SECONDS
+from stockwidget.intraday import CACHE_TTL_SECONDS, Trend
 from stockwidget.market_hours import SHANGHAI_TZ
 from stockwidget import poller as poller_module
-from stockwidget.poller import CHART_REFRESH_SECONDS, Poller
+from stockwidget.poller import Poller
 from stockwidget.providers.base import Quote
 
 
@@ -19,7 +19,6 @@ def _sunday() -> datetime:
 def test_intraday_chart_refreshes_each_second_in_debug():
     config = Config(refresh_seconds=9, show_sparkline=True, intraday_chart=True, debug_mode=True)
     assert CACHE_TTL_SECONDS == 1
-    assert CHART_REFRESH_SECONDS == 1.0
     assert Poller._loop_interval(config) == 1.0
 
 
@@ -41,11 +40,53 @@ def test_theme2_keeps_intraday_refresh_even_when_classic_sparkline_is_hidden():
 
 
 @pytest.mark.parametrize("seconds", [1, 3, 5, 60, 3600])
-@pytest.mark.parametrize("theme", ["classic", "theme2"])
+@pytest.mark.parametrize("theme", ["theme1", "theme2"])
 def test_non_debug_uses_configured_quote_interval(seconds, theme):
-    config = Config(refresh_seconds=seconds, display_theme=theme, show_sparkline=True, intraday_chart=True)
+    config = Config(refresh_seconds=seconds, display_theme=theme, intraday_chart=False)
     assert config.debug_mode is False
     assert Poller._loop_interval(config) == float(seconds)
+
+
+@pytest.mark.parametrize("debug", [False, True])
+@pytest.mark.parametrize("theme", ["theme1", "theme2"])
+@pytest.mark.parametrize("seconds", [0.1, 0.2, 1.0, 10.0])
+def test_charts_use_independent_interval_in_both_modes_and_themes(debug, theme, seconds):
+    config = Config(
+        refresh_seconds=5,
+        chart_refresh_seconds=seconds,
+        display_theme=theme,
+        show_sparkline=theme == "theme1",
+        debug_mode=debug,
+    )
+    assert Poller._loop_interval(config) == min(5.0, seconds)
+
+
+def test_subsecond_chart_requests_bypass_old_cache_without_speeding_quotes(monkeypatch):
+    config = Config(symbols=["600519"], show_dark_trade=False, chart_refresh_seconds=0.1)
+    poller = Poller(config)
+    clock = [1000.0]
+    quote_calls = []
+    chart_calls = []
+
+    def fetch(symbols):
+        quote_calls.append(clock[0])
+        return [Quote(symbol=symbols[0], price=10.0)]
+
+    def load(symbol):
+        chart_calls.append(clock[0])
+        return Trend(prices=[10.0, 10.0 + len(chart_calls)])
+
+    monkeypatch.setattr(poller_module.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(poller_module.time, "time", lambda: clock[0])
+    monkeypatch.setattr(poller_module.providers, "resolve", lambda provider: SimpleNamespace(id="test", fetch=fetch))
+    monkeypatch.setattr(poller._intraday, "_load", load)
+    for moment in (1000.0, 1000.05, 1000.1, 1000.2, 1005.0):
+        clock[0] = moment
+        snapshot = poller._tick(config)
+        assert snapshot.trends["600519"].prices[-1] == 10.0 + len(chart_calls)
+
+    assert chart_calls == [1000.0, 1000.1, 1000.2, 1005.0]
+    assert quote_calls == [1000.0, 1005.0]
 
 
 def test_quotes_keep_refreshing_without_mcp_and_interval_changes_apply(monkeypatch):
@@ -126,3 +167,15 @@ def test_manual_refresh_sets_the_explicit_flag():
     poller._explicit = False
     poller.refresh_now()
     assert poller._explicit is True
+
+
+def test_chart_interval_change_wakes_poller_and_clears_cache():
+    poller = Poller(Config(chart_refresh_seconds=1.0))
+    poller._explicit = False
+    poller._intraday._cache["sh600519"] = (1000.0, Trend(prices=[10.0, 10.1]))
+
+    poller.apply_config(Config(chart_refresh_seconds=0.1))
+
+    assert poller._explicit is True
+    assert poller._wake.is_set()
+    assert poller._intraday._cache == {}

@@ -21,9 +21,6 @@ from .providers.base import Quote
 from .symbols import classify
 
 
-CHART_REFRESH_SECONDS = 1.0
-
-
 @dataclass
 class Snapshot:
     """一次轮询的完整结果。"""
@@ -70,6 +67,7 @@ class Poller(QThread):
             config.provider,
             tuple(config.symbols),
             config.refresh_seconds,
+            config.chart_refresh_seconds,
             config.show_sparkline,
             config.intraday_chart,
             config.display_theme,
@@ -110,12 +108,9 @@ class Poller(QThread):
 
     @staticmethod
     def _loop_interval(config: Config) -> float:
-        """行情始终按设置间隔轮询，不依赖 MCP 推送。
-
-        主题2的展开K线在 Debug 下也要求秒级；普通报价仍按 refresh_seconds 自己节流。
-        """
-        if config.debug_mode and Poller._chart_enabled(config):
-            return CHART_REFRESH_SECONDS
+        """Wake for either quotes or charts; each client keeps its own cadence."""
+        if Poller._chart_enabled(config):
+            return min(float(config.refresh_seconds), config.chart_refresh_seconds)
         return float(config.refresh_seconds)
 
     @staticmethod
@@ -196,11 +191,12 @@ class Poller(QThread):
             effective_provider=self._effective_provider,
         )
         if self._chart_enabled(config):
+            self._intraday.cache_ttl_seconds = config.chart_refresh_seconds
             self._attach_trends(quotes, snapshot)
         return snapshot
 
     def _attach_trends(self, quotes: list[Quote], snapshot: Snapshot) -> None:
-        """走势图秒级刷新；客户端只缓存 1 秒，失败时界面继续保留普通报价。"""
+        """Fetch charts at their configured cadence, retaining quotes on failure."""
         for quote in quotes:
             # 分时与报价接口相互独立；报价失败时仍可刷新有效分时。
             trend = self._intraday.fetch(quote.symbol)

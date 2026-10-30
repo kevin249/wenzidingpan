@@ -84,6 +84,21 @@ def test_title_buttons_switch_renders_and_persists(server):
     assert "checked" not in checkbox
 
 
+def test_chart_refresh_accepts_subsecond_value_and_notifies_poller(server):
+    client = _client(server)
+    config = client.post(
+        f"/api/config?token={server.token}", json={"chart_refresh_seconds": 0.1}
+    ).get_json()["config"]
+    assert config["chart_refresh_seconds"] == 0.1
+    assert config["refresh_seconds"] == 5
+    assert server.applied[-1].chart_refresh_seconds == 0.1
+    assert Store(server.store.path).get().chart_refresh_seconds == 0.1
+
+    body = client.get(f"/?token={server.token}").get_data(as_text=True)
+    field = body.split('id="chart_refresh_seconds"')[1].split("/>")[0]
+    assert 'min="0.1"' in field and 'step="0.1"' in field and 'value="0.1"' in field
+
+
 def test_mcp_bell_switches_render_and_persist_independently(server):
     client = _client(server)
     body = client.get(f"/?token={server.token}").get_data(as_text=True)

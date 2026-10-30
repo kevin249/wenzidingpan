@@ -155,6 +155,8 @@ class Config:
     # 自选显示开关按归一化代码保存；未设置的项目全开，与自选列表一起跨主题共享。
     stock_visibility: dict[str, dict[str, bool]] = field(default_factory=dict)
     refresh_seconds: int = 5
+    # Chart polling is independent of quote polling, with 0.1-second precision.
+    chart_refresh_seconds: float = 1.0
     # Debug 模式绕过交易时段限制，便于收盘后调试实时行情 / K线 / MCP深度。
     debug_mode: bool = False
     color_scheme: str = "cn"  # cn = 红涨绿跌，us = 绿涨红跌
@@ -307,6 +309,10 @@ def sanitize(raw: Any, *, _include_theme_profiles: bool = True) -> Config:
     refresh = _as_number(raw.get("refresh_seconds"))
     if refresh is not None:
         out.refresh_seconds = int(_clamp(round(refresh), 1, 3600))
+
+    chart_refresh = _as_number(raw.get("chart_refresh_seconds"))
+    if chart_refresh is not None:
+        out.chart_refresh_seconds = round(_clamp(chart_refresh, 0.1, 3600), 1)
 
     if raw.get("color_scheme") in COLOR_SCHEMES:
         out.color_scheme = raw["color_scheme"]
