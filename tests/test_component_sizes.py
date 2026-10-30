@@ -6,7 +6,8 @@ from dataclasses import replace
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtCore import QSize
+from PySide6.QtCore import QPoint, QPointF, QSize, Qt
+from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import QApplication
 
 from stockwidget.config import Config, Store, sanitize
@@ -91,6 +92,66 @@ def test_numeric_window_size_uses_drag_path_and_titlebar_keeps_grip_visible(app)
     window.apply_config(Config(click_through=True))
     assert window.grip.isHidden()
     window.close()
+
+
+@pytest.mark.parametrize("method", ["settings", "grip"])
+@pytest.mark.parametrize("side", ["left", "right"])
+@pytest.mark.parametrize("title", [False, True])
+def test_theme2_can_shrink_below_old_minimum_and_restore(app, tmp_path, method, side, title):
+    store = Store(tmp_path / "config.json")
+    config = store.update({"display_theme": "theme2", "theme2_side": side, "show_title_buttons": title})
+    window = TickerWindow(config)
+    quote = Quote.from_prices("603986", "一只名称特别长的股票", 286.12, 281.0)
+    window._sync_rows([quote])
+    window.bounds_changed.connect(lambda bounds: store.update({"bounds": bounds}))
+    window.show()
+    app.processEvents()
+    row = window._rows[quote.symbol]
+    price_font = row.theme2_depth._config.stock_price_font_size
+    try:
+        for width in (160, 100, 64):
+            if method == "settings":
+                window.resize_from_settings({"width": width})
+            else:
+                # Exercise the actual grip events as well as the shared resize handler.
+                grip = window.grip
+                origin = grip.mapToGlobal(grip.rect().center())
+                grip.mousePressEvent(QMouseEvent(
+                    QMouseEvent.MouseButtonPress, QPointF(grip.rect().center()), QPointF(origin),
+                    Qt.LeftButton, Qt.LeftButton, Qt.NoModifier,
+                ))
+                target = origin + QPoint(width - window.width(), 0)
+                grip.mouseMoveEvent(QMouseEvent(
+                    QMouseEvent.MouseMove, QPointF(grip.mapFromGlobal(target)), QPointF(target),
+                    Qt.NoButton, Qt.LeftButton, Qt.NoModifier,
+                ))
+                grip.mouseReleaseEvent(QMouseEvent(
+                    QMouseEvent.MouseButtonRelease, QPointF(grip.rect().center()), QPointF(target),
+                    Qt.LeftButton, Qt.NoButton, Qt.NoModifier,
+                ))
+                window.flush_bounds()
+            app.processEvents()
+            assert window.width() == width
+            for expanded in (True, False):
+                row.set_theme2_expanded(expanded, notify=False)
+                window._sync_rows([quote])
+                app.processEvents()
+                assert window.width() == width
+                assert row.width() <= window.scroll.viewport().width()
+                assert row.theme2_depth.width() <= row.width()
+                assert row.theme2_header.width() <= row.width()
+                assert row.theme2_depth._config.stock_price_font_size == price_font
+
+            reloaded = Store(store.path).get()
+            assert reloaded.bounds.width == width
+            assert reloaded.bounds.manual_size is True
+            store.update({"display_theme": "theme1"})
+            assert store.update({"display_theme": "theme2"}).bounds.width == width
+            window.restore_bounds(reloaded.bounds, [app.primaryScreen().availableGeometry()])
+            app.processEvents()
+            assert window.width() == width
+    finally:
+        window.close()
 
 
 def test_layout_api_publishes_snapshot_and_queues_validated_resize(tmp_path):

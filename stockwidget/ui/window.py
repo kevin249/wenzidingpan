@@ -203,7 +203,8 @@ class ResizeGrip(QWidget):
         delta = event.globalPosition().toPoint() - self._origin
         self.dragged.emit(
             QSize(
-                max(180, self._start_size.width() + delta.x()),
+                # The window applies the theme-specific width limit.
+                max(1, self._start_size.width() + delta.x()),
                 max(80, self._start_size.height() + delta.y()),
             )
         )
@@ -1149,13 +1150,15 @@ class TickerWindow(QWidget):
         return {"theme": self._config.display_theme, "scale": self._scale, "regions": regions}
 
     def _bounded_drag_size(self, size: QSize) -> QSize:
+        # Theme 2 is a compressible canvas; its natural width is only a preference.
+        minimum_width = 1 if self._config.display_theme == "theme2" else 180
         screen = self.screen()
         if screen is None:
-            return QSize(max(180, size.width()), max(80, size.height()))
+            return QSize(max(minimum_width, size.width()), max(80, size.height()))
         geo = screen.availableGeometry()
         max_width = max(1, geo.right() - max(self.x(), geo.left()) + 1)
         max_height = max(1, geo.bottom() - max(self.y(), geo.top()) + 1)
-        min_width = min(180, max_width)
+        min_width = min(minimum_width, max_width)
         min_height = min(80, max_height)
         return QSize(
             round(_clamp(size.width(), min_width, max_width)),
