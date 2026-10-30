@@ -48,6 +48,7 @@ const NUMBERS = [
   'theme2_depth_width',
   ...FONT_SIZES,
   'refresh_seconds',
+  'chart_refresh_seconds',
   'opacity',
   'background_alpha',
   'grayscale_level',
@@ -517,6 +518,7 @@ for (const id of [
   'theme2_depth_width',
   'font_family',
   'refresh_seconds',
+  'chart_refresh_seconds',
   'mcp_url',
   'mcp_api_key',
 ]) {

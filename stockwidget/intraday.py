@@ -239,8 +239,14 @@ def parse_tencent(payload: object, key: str) -> Trend:
 class IntradayClient:
     """带 TTL 缓存的分时数据查询，多个界面元素共用同一份结果。"""
 
-    def __init__(self, session: requests.Session | None = None) -> None:
+    def __init__(
+        self,
+        session: requests.Session | None = None,
+        *,
+        cache_ttl_seconds: float = CACHE_TTL_SECONDS,
+    ) -> None:
         self.session = session or requests.Session()
+        self.cache_ttl_seconds = cache_ttl_seconds
         self._cache: dict[str, tuple[float, Trend]] = {}
         self._last_good: dict[str, tuple[float, Trend]] = {}
         self._lock = threading.Lock()
@@ -296,7 +302,7 @@ class IntradayClient:
         now = time.time() if now is None else now
         with self._lock:
             cached = self._cache.get(symbol.key)
-            if cached and now - cached[0] < CACHE_TTL_SECONDS:
+            if cached and now < cached[0] + self.cache_ttl_seconds:
                 return cached[1]
 
         trend = self._load(symbol)

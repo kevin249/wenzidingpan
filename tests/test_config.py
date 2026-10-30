@@ -23,6 +23,30 @@ def test_empty_input_falls_back_to_defaults():
         assert config.symbols  # 自选列表不应为空
 
 
+@pytest.mark.parametrize(
+    "value, expected",
+    [(0.1, 0.1), (0.2, 0.2), (0.34, 0.3), (0, 0.1), (-1, 0.1), (1e9, 3600)],
+)
+def test_chart_refresh_precision_and_bounds(value, expected):
+    assert sanitize({"chart_refresh_seconds": value}).chart_refresh_seconds == expected
+
+
+@pytest.mark.parametrize("value", [True, False, None, "0.1", float("nan"), float("inf")])
+def test_invalid_chart_refresh_uses_default(value):
+    assert sanitize({"chart_refresh_seconds": value}).chart_refresh_seconds == 1.0
+
+
+def test_chart_refresh_persists_and_is_shared_between_themes(tmp_path):
+    path = tmp_path / "config.json"
+    store = Store(path)
+    saved = store.update({"chart_refresh_seconds": 0.1})
+    assert saved.chart_refresh_seconds == 0.1
+    assert saved.refresh_seconds == 5
+    assert Store(path).get().chart_refresh_seconds == 0.1
+    assert store.update({"display_theme": "theme2"}).chart_refresh_seconds == 0.1
+    assert store.update({"display_theme": "theme1"}).chart_refresh_seconds == 0.1
+
+
 def test_out_of_range_values_are_clamped():
     config = sanitize(
         {
