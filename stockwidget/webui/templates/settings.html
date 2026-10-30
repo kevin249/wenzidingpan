@@ -262,8 +262,9 @@
         <div class="grid">
           <div class="field">
             <label for="refresh_seconds">行情刷新间隔（秒）</label>
-            <input id="refresh_seconds" name="refresh_seconds" type="number" min="1" max="3600"
-                   step="1" value="{{ config.refresh_seconds }}" />
+            <input id="refresh_seconds" name="refresh_seconds" type="number" min="0.1" max="3600"
+                   step="0.1" value="{{ config.refresh_seconds }}" />
+            <p class="hint">控制股价数字的更新，最小 0.1 秒；与分时图刷新间隔分别设置。</p>
           </div>
           <div class="field">
             <label for="chart_refresh_seconds">K 线刷新间隔（秒）</label>

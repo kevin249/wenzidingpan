@@ -99,6 +99,17 @@ def test_chart_refresh_accepts_subsecond_value_and_notifies_poller(server):
     assert 'min="0.1"' in field and 'step="0.1"' in field and 'value="0.1"' in field
 
 
+def test_quote_refresh_accepts_subsecond_value(server):
+    client = _client(server)
+    response = client.post(f"/api/config?token={server.token}", json={"refresh_seconds": 0.1})
+    assert response.get_json()["config"]["refresh_seconds"] == 0.1
+    assert server.applied[-1].refresh_seconds == 0.1
+    assert Store(server.store.path).get().refresh_seconds == 0.1
+    body = client.get(f"/?token={server.token}").get_data(as_text=True)
+    field = body.split('id="refresh_seconds"')[1].split("/>")[0]
+    assert 'min="0.1"' in field and 'step="0.1"' in field and 'value="0.1"' in field
+
+
 def test_mcp_bell_switches_render_and_persist_independently(server):
     client = _client(server)
     body = client.get(f"/?token={server.token}").get_data(as_text=True)
