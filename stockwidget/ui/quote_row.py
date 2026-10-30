@@ -72,12 +72,12 @@ class _ElidedLabel(SizedLabel):
     QLabel 默认的 ``minimumSizeHint`` 就是整段文字的宽度。主题2 的信息条一层层
     算下来会比外框还宽（默认 415px 外框里要放 450px 以上的文字），而水平滚动条
     是关掉的——结果就是右侧内容被直接裁掉、拖窄窗口也没用。这里把最小宽度压到
-    几个字符，再由 ``elidedText`` 自己截断，任何宽度下都不会溢出。
+    0，再由 ``elidedText`` 自己截断，窄窗口下不会把行和画布撑出视口。
     """
 
-    def __init__(self, min_chars: int = 4, parent: QWidget | None = None) -> None:
+    def __init__(self, min_chars: int = 0, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._min_chars = max(1, int(min_chars))
+        self._min_chars = max(0, int(min_chars))
         self._full_text = ""
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
 

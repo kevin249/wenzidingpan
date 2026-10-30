@@ -474,10 +474,11 @@ def sanitize(raw: Any, *, _include_theme_profiles: bool = True) -> Config:
         values = {k: _as_number(bounds.get(k)) for k in ("x", "y", "width", "height")}
         if all(v is not None for v in values.values()):
             scale = _as_number(bounds.get("scale"))
+            min_width = 1 if out.display_theme == "theme2" else 200
             out.bounds = Bounds(
                 x=int(values["x"]),
                 y=int(values["y"]),
-                width=int(_clamp(round(values["width"]), 200, 4000)),
+                width=int(_clamp(round(values["width"]), min_width, 4000)),
                 height=int(_clamp(round(values["height"]), 56, 4000)),
                 scale=round(_clamp(scale if scale is not None else 1.0, 0.6, 3.0), 3),
                 manual_size=bounds.get("manual_size") is True,
