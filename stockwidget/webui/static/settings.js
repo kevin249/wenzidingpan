@@ -95,6 +95,8 @@ let applySequence = 0;
 let names = {};
 let savedTimer = null;
 let searchTimer = null;
+let searchSequence = 0;
+let searchController = null;
 let fontApplyTimer = null;
 let activeTheme = el('display_theme')?.value || 'theme1';
 
@@ -204,6 +206,13 @@ function add(code, name) {
 
 /* ------------------------------------------------------------ 搜索 */
 
+function cancelSearch() {
+  clearTimeout(searchTimer);
+  searchController?.abort();
+  searchController = null;
+  ++searchSequence;
+}
+
 function hideSuggestions() {
   el('suggestions').hidden = true;
   el('suggestions').innerHTML = '';
@@ -223,6 +232,7 @@ function renderSuggestions(results) {
     option.querySelector('.suggestion-name').textContent = item.name || item.code;
     option.querySelector('.suggestion-code').textContent = item.name ? item.code : '';
     option.addEventListener('click', () => {
+      cancelSearch();
       add(item.code, item.name);
       el('stock-search').value = '';
       hideSuggestions();
@@ -233,20 +243,35 @@ function renderSuggestions(results) {
 }
 
 async function search(text) {
+  cancelSearch();
+  const sequence = searchSequence;
   if (!text.trim()) {
     hideSuggestions();
     el('search-hint').textContent = `最多 ${MAX_SYMBOLS} 只，用按钮调整顺序。`;
     return;
   }
+  const controller = new AbortController();
+  searchController = controller;
+  el('search-hint').textContent = '搜索中…';
   try {
-    const response = await fetch(api(`/api/search?q=${encodeURIComponent(text)}`));
+    const response = await fetch(api(`/api/search?q=${encodeURIComponent(text)}`), {
+      signal: controller.signal,
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json();
+    if (sequence !== searchSequence) return;
     renderSuggestions(data.results || []);
     el('search-hint').textContent = data.error
       ? `搜索接口不可用（${data.error}），仍可直接输入 6 位代码添加`
-      : `最多 ${MAX_SYMBOLS} 只，用按钮调整顺序。`;
+      : data.results?.length
+        ? `最多 ${MAX_SYMBOLS} 只，用按钮调整顺序。`
+        : '未找到匹配的 A 股，可换关键词或输入 6 位代码。';
   } catch (error) {
+    if (sequence !== searchSequence || error.name === 'AbortError') return;
+    hideSuggestions();
     el('search-hint').textContent = `搜索失败：${error.message}`;
+  } finally {
+    if (sequence === searchSequence) searchController = null;
   }
 }
 
@@ -526,16 +551,30 @@ for (const id of [
 }
 el('apply').addEventListener('click', () => apply());
 
-el('stock-search').addEventListener('input', (event) => {
-  clearTimeout(searchTimer);
+function scheduleSearch(event) {
+  cancelSearch();
+  hideSuggestions();
   const text = event.target.value;
+  if (event.isComposing) return;
+  if (!text.trim()) {
+    search(text);
+    return;
+  }
   searchTimer = setTimeout(() => search(text), 250);
-});
+}
+el('stock-search').addEventListener('input', scheduleSearch);
+el('stock-search').addEventListener('compositionend', scheduleSearch);
 el('stock-search').addEventListener('keydown', (event) => {
-  if (event.key === 'Escape') hideSuggestions();
+  if (event.key === 'Escape') {
+    cancelSearch();
+    hideSuggestions();
+  }
 });
 document.addEventListener('click', (event) => {
-  if (!event.target.closest('.search')) hideSuggestions();
+  if (!event.target.closest('.search')) {
+    cancelSearch();
+    hideSuggestions();
+  }
 });
 
 /* ------------------------------------------------------------ 启动 */
