@@ -52,6 +52,7 @@ class WidgetApp:
 
         self.store = store or Store()
         self.config = config = self.store.get()
+        self._quitting = False
         self._unread = 0
         self._local_bs_notifier = LocalBsNotifier()
         self.tray: Tray | None = None
@@ -75,6 +76,7 @@ class WidgetApp:
         self.window.bounds_changed.connect(self._save_bounds)
         self.window.bell_cleared.connect(self._clear_unread)
         self.qt.aboutToQuit.connect(self._flush_bounds)
+        self.qt.aboutToQuit.connect(self._stop_workers)
         self.window.grayscale_requested.connect(
             lambda: self._apply_config(self.store.update({"grayscale": not self.store.get().grayscale}))
         )
@@ -193,18 +195,36 @@ class WidgetApp:
         self._install_local_window_shortcut()
 
     def quit(self) -> None:
+        if self._quitting:
+            return
+        self._quitting = True
         self._flush_bounds()
-        if self._global_window_hotkey is not None:
-            self._global_window_hotkey.stop()
-            self._global_window_hotkey.wait(1000)
-        self.poller.stop()
-        self.poller.wait(2000)
-        self.depth_poller.stop()
-        self.depth_poller.wait(18000)
-        self.notification_listener.stop()
-        self.notification_listener.wait(9000)
+        self._stop_workers()
+        self._finish_quit()
+
+    def _workers(self) -> list:
+        return [worker for worker in (
+            self._global_window_hotkey, self.poller, self.depth_poller,
+            self.notification_listener,
+        ) if worker is not None]
+
+    def _stop_workers(self) -> None:
+        # Signal everyone before waiting for any network connection to unwind.
+        for worker in self._workers():
+            worker.stop()
+
+    def _finish_quit(self) -> None:
+        if any(worker.isRunning() for worker in self._workers()):
+            # Keep Qt and its QThread owners alive until the workers really stop.
+            QTimer.singleShot(50, self._finish_quit)
+            return
         self.server.stop()
         self.qt.quit()
+
+    def _wait_for_workers(self) -> None:
+        self._stop_workers()
+        for worker in self._workers():
+            worker.wait()
 
     # ------------------------------------------------------------ 回调
 
@@ -370,7 +390,13 @@ class WidgetApp:
         self.poller.start()
         self.depth_poller.start()
         self.notification_listener.start()
-        return self.qt.exec()
+        try:
+            return self.qt.exec()
+        finally:
+            # External Qt quit paths must also join workers before Python drops
+            # their owners (Qt aborts if a running QThread is destroyed).
+            self._wait_for_workers()
+            self.server.stop()
 
 
 def main() -> int:

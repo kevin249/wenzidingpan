@@ -16,7 +16,10 @@ from PySide6.QtCore import QThread, Signal
 from .config import Config
 from .market_hours import OFF_HOURS_WAKE_SECONDS, is_a_share_active_time
 from .mcp_bs import record_volatility_bs
-from .mcp_notifications import SSE_TIMEOUT, _api_key, _bounded, _tool_payload
+from .mcp_notifications import (
+    REQUEST_TIMEOUT_SECONDS, SSE_TIMEOUT, _api_key, _bounded, _describe_error, _tool_payload,
+)
+from .mcp_runtime import McpConnection
 from .symbols import classify
 
 DEPTH_POLL_SECONDS = 60.0
@@ -322,6 +325,7 @@ class McpDepthPoller(QThread):
         self._wake = threading.Event()
         self._stopping = threading.Event()
         self._lock = threading.Lock()
+        self._connection = McpConnection()
         # 显式刷新请求（启动首帧 / 手动刷新）：非 Debug 下唯一允许主动拉千档的入口。
         self._explicit = True
         self._last_status = ""
@@ -365,7 +369,9 @@ class McpDepthPoller(QThread):
                 self._next_depth_due.clear()
                 self._last_full_depth.clear()
                 self._full_depth_failures.clear()
+                self._explicit = True
             self._wake.set()
+            self._connection.cancel()
 
     def refresh_now(self) -> None:
         """显式刷新：绕过非 Debug 休眠，立刻拉一次千档。"""
@@ -376,6 +382,7 @@ class McpDepthPoller(QThread):
     def stop(self) -> None:
         self._stopping.set()
         self._wake.set()
+        self._connection.cancel()
 
     def _emit_status(self, status: str) -> None:
         if status != self._last_status:
@@ -397,6 +404,7 @@ class McpDepthPoller(QThread):
 
     def run(self) -> None:  # noqa: D102
         while not self._stopping.is_set():
+            self._wake.clear()
             with self._lock:
                 config = self._config
                 explicit = self._explicit
@@ -425,9 +433,11 @@ class McpDepthPoller(QThread):
 
             all_full_depth = False
             try:
-                all_full_depth = asyncio.run(self._fetch_cycle(
-                    config, fetch_bs=fetch_bs, fetch_depth=fetch_depth,
-                    force_depth=explicit,
+                all_full_depth = asyncio.run(self._connection.run(
+                    lambda: self._fetch_cycle(
+                        config, fetch_bs=fetch_bs, fetch_depth=fetch_depth,
+                        force_depth=explicit,
+                    ), self._stopping, self._wake,
                 ))
                 if fetch_bs:
                     self._last_bs_fetch_at = time.monotonic()
@@ -436,13 +446,17 @@ class McpDepthPoller(QThread):
                         _status_text(all_full_depth) if fetch_depth
                         else "已连接 · B/S 同步（千档被动）"
                     )
-            except (KeyboardInterrupt, SystemExit):
-                raise
             except BaseException as exc:  # noqa: BLE001
-                if not self._stopping.is_set():
-                    self._emit_status(
-                        f"MCP 读取失败：{type(exc).__name__}: {str(exc)[:100]}"
-                    )
+                if self._stopping.is_set():
+                    break
+                if isinstance(exc, asyncio.CancelledError) and self._wake.is_set():
+                    continue
+                self._emit_status(f"MCP 读取失败：{_describe_error(exc)} · 5 秒后重试")
+                # Finish the interrupted explicit request even outside trading hours.
+                with self._lock:
+                    self._explicit = self._explicit or fetch_depth
+                self._wake.wait(DEPTH_RETRY_SECONDS)
+                continue
 
             remaining = (
                 self._next_wake_seconds(config) if config.debug_mode
@@ -499,7 +513,9 @@ class McpDepthPoller(QThread):
                 http_client=client,
                 terminate_on_close=False,
             ) as (read_stream, write_stream):
-                async with ClientSession(read_stream, write_stream) as session:
+                async with ClientSession(
+                    read_stream, write_stream, read_timeout_seconds=REQUEST_TIMEOUT_SECONDS,
+                ) as session:
                     await _bounded(session.initialize())
                     for raw_symbol in config.symbols:
                         if self._stopping.is_set() or self._wake.is_set():
