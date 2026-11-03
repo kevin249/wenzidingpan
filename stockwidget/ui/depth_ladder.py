@@ -22,9 +22,8 @@
 2. **两侧的柱都不许越过行的水平中点。** 盘口量条与成交量柱各自留在自己那一半
    里（见 :meth:`DepthLadder._depth_share`）。
 3. **分时的横轴就是两根竖轴之间那一段**（``plot_left`` → ``plot_right``）：
-   左端固定 9:30、右端固定 15:00，午休压缩掉，所以每 30 分钟一条竖虚线，
-   而首末两条恰好压在成交量轴与价格轴上。曲线也铺满这一段，于是竖线与曲线的
-   时刻严格对应。
+   默认左端 9:30、右端 15:00，压缩午休，曲线只画到已有数据的时刻；开启
+   ``chart_fill_width`` 后按数据首末时刻铺满，半小时网格也随时间范围重算。
 
 盘口量条按档位顺序平均分布（不按绝对价差压缩），这条规则同样与展开与否无关，
 所以展开时其它档位不会因为多了一栏图表而跳动。
@@ -32,6 +31,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
@@ -48,10 +48,13 @@ from ..mcp_depth import (
     DEPTH_TEN,
     DepthSnapshot,
 )
+from .price_scale import PriceScale
+from .sizing import SizedWidget
 from .sparkline import ANNOTATION_COLOR
 from .sparkline import BUY_COLOR as BS_BUY_COLOR
 from .sparkline import SELL_COLOR as BS_SELL_COLOR
 from .theme import MUTED, display_color, down_color, make_font, up_color
+from .time_axis import intraday_fraction, intraday_grid_fractions
 
 # 主题2 的配色口径（用户口径 2026-09-23，v3）：分两种模式说话。
 #
@@ -93,10 +96,9 @@ MODE_DAILY = "daily"
 MODE_LABELS = {MODE_INTRADAY: "分时", MODE_DAILY: "日K"}
 MODE_ORDER = (MODE_INTRADAY, MODE_DAILY)
 
-# 当日交易分钟数：9:30–11:30 与 13:00–15:00 各 120 分钟，午休被压缩掉。
-# 所以 11:30 与 13:00 共用同一条竖线，且正好落在时间轴正中。
-SESSION_MINUTES = 240
-GRID_STEP_MINUTES = 30  # 竖虚线间隔：每半小时一条
+_ChartValues = tuple[
+    list[float], list[float], list[float], list[Bar], Callable[[float], float] | None
+]
 
 OUTER_PAD = 4.0
 INNER_PAD = 2.0
@@ -141,7 +143,7 @@ class _Layout:
         return self.kline_right - self.kline_left >= 2.0
 
 
-class DepthLadder(QWidget):
+class DepthLadder(SizedWidget):
     """主题2 的整行主体：价格列 + 千档盘口（展开后追加图表栏）。"""
 
     price_clicked = Signal()
@@ -162,7 +164,9 @@ class DepthLadder(QWidget):
         self._prev_close: float | None = None
         self._kline: Kline | None = None
         self._kline_message = ""
+        self._price_scale = PriceScale()
         self._signals: list[tuple[int, str]] = []
+        self._daily_signals: list[tuple[int, str]] = []
         self._show_signals = True
         self._preferred_width = 168
         self._preferred_height = 104
@@ -176,13 +180,22 @@ class DepthLadder(QWidget):
 
     # ------------------------------------------------------------ 配置
 
-    def apply_config(self, config: Config) -> None:
+    def apply_config(self, config: Config, *, symbol: str = "") -> None:
         self._config = config
         self._update_tooltip()
+        self._symbol = symbol
+        self._chart_rect = QRectF()
         self._preferred_width = self._natural_width()
         self._preferred_height = max(88, round(config.font_size * 7.2))
+        self.set_display_size(config.component_sizes.get("canvas", {}))
         self.updateGeometry()
         self.update()
+
+    def _component_visible(self, component: str) -> bool:
+        # 主题2原有全局走势图开关只控制经典主题；每股K线开关同时控制这里的图表。
+        return self._config.stock_component_visible(
+            getattr(self, "_symbol", ""), component, include_global=component != "chart"
+        )
 
     def _metrics(self) -> tuple[float, float, float]:
         """返回 (外边距, 价格带宽度, 价格带与价格轴之间的间距)。
@@ -200,7 +213,7 @@ class DepthLadder(QWidget):
         return int(outer + price_width + gap + depth + outer + 5)
 
     def sizeHint(self) -> QSize:  # noqa: N802
-        return QSize(max(self._preferred_width, 120), self._preferred_height)
+        return self._display_size_hint(QSize(max(self._preferred_width, 120), self._preferred_height))
 
     # ------------------------------------------------------------ 状态
 
@@ -230,6 +243,7 @@ class DepthLadder(QWidget):
         if mode == self._chart_mode:
             return
         self._chart_mode = mode
+        self._price_scale.reset()
         self.update()
         if notify:
             self.chart_mode_changed.emit(mode)
@@ -324,11 +338,13 @@ class DepthLadder(QWidget):
         resolved = (trend.prev_close if trend and trend.prev_close else None) or prev_close
         state = (
             list(trend.prices) if trend else None,
+            list(trend.minutes) if trend else None,
             list(trend.volumes) if trend else None,
             resolved,
         )
         old = (
             list(self._trend.prices) if self._trend else None,
+            list(self._trend.minutes) if self._trend else None,
             list(self._trend.volumes) if self._trend else None,
             self._prev_close,
         )
@@ -338,21 +354,34 @@ class DepthLadder(QWidget):
             self.update()
 
     def set_kline(self, kline: Kline | None, message: str = "") -> None:
+        if (
+            self._chart_mode == MODE_DAILY
+            and kline is not None
+            and self._kline is not None
+            and (kline.symbol, kline.period, kline.adjust) != (
+                self._kline.symbol, self._kline.period, self._kline.adjust
+            )
+        ):
+            self._price_scale.reset()
         self._kline = kline
         self._kline_message = message
         self.update()
 
     def set_signals(self, signals=None, *, show: bool = True) -> None:
-        """分时曲线上的 B/S 转折标记（索引对应 :meth:`set_intraday` 的价格序列）。
-
-        日K 模式不画——日报的横轴是日期，和分钟索引对不上。
-        """
+        """分时曲线上的 B/S 转折标记，索引对应分时价格序列。"""
         new = list(signals or [])
         if new == self._signals and bool(show) == self._show_signals:
             return
         self._signals = new
         self._show_signals = bool(show)
         self.update()
+
+    def set_daily_signals(self, signals=None) -> None:
+        """日K B/S 标记：索引对应日K bars，而非盘中分钟序列。"""
+        new = list(signals or [])
+        if new != self._daily_signals:
+            self._daily_signals = new
+            self.update()
 
     # ------------------------------------------------------------ 字号
 
@@ -451,30 +480,26 @@ class DepthLadder(QWidget):
         return max(12.0, min(chart_width * 0.30, max(16.0, self._config.font_size * 3.2)))
 
     def _intraday_x(self, layout: _Layout, index: int, count: int) -> float:
-        """分时序列下标 → 横坐标：横轴固定为一个完整交易日。
-
-        分母取 ``max(SESSION_MINUTES, count - 1)``，一举满足两种情形：
-
-        * 整天数据（>=241 点）铺满整条轴，末点落在 15:00 上；
-        * 半天数据按「下标即开盘后的第几分钟」定位，11:30 恰好落在正中，
-          曲线只画到当前时刻，不会把半天数据拉长成一天。
-
-        午休被压缩，所以 11:30 与 13:00 是同一条线。
-        """
-        if count <= 1:
-            return layout.plot_left
-        denominator = max(SESSION_MINUTES, count - 1)
-        fraction = min(max(index, 0), denominator) / denominator
+        """与经典主题共用时间轴；默认完整交易日，可切换为已有数据铺满。"""
+        minutes = self._trend.minutes if self._trend else []
+        fraction = intraday_fraction(
+            index, count, minutes, fill_width=self._config.chart_fill_width
+        )
         return layout.plot_left + layout.plot_span * fraction
 
     def _grid_xs(self, layout: _Layout) -> list[float]:
-        """半小时刻度线的横坐标，含两端，共 ``240/30 + 1 = 9`` 条。"""
+        """当前时间范围内的半小时刻度，含两端；默认全天为 9 条。"""
         if layout.plot_span < 2.0:
             return []
-        steps = max(1, SESSION_MINUTES // GRID_STEP_MINUTES)
+        trend = self._trend
+        fractions = intraday_grid_fractions(
+            len(trend.prices) if trend else 0,
+            trend.minutes if trend else [],
+            fill_width=self._config.chart_fill_width,
+        )
         return [
-            layout.plot_left + layout.plot_span * index / steps
-            for index in range(steps + 1)
+            layout.plot_left + layout.plot_span * fraction
+            for fraction in fractions
         ]
 
     def _price_hit_rect(self) -> QRectF:
@@ -665,14 +690,22 @@ class DepthLadder(QWidget):
         )
         price_height = max(20.0, price_metrics.height() + 2.0)
         percent_height = max(16.0, percent_metrics.height() + 2.0)
+        price_size = self._config.component_sizes.get("price", {})
+        percent_size = self._config.component_sizes.get("percent", {})
+        price_width = min(float(self.width()), price_size.get("width", 0) or width)
+        percent_width = min(float(self.width()), percent_size.get("width", 0) or width)
+        if price_size.get("height", 0):
+            price_height = min(max(0, self.height() / 2.0 - gap), price_size["height"])
+        if percent_size.get("height", 0):
+            percent_height = min(max(0, self.height() / 2.0 - gap), percent_size["height"])
         return (
             QRectF(
-                center_x - width / 2.0,
+                center_x - price_width / 2.0,
                 center_y - gap - price_height,
-                width,
+                price_width,
                 price_height,
             ),
-            QRectF(center_x - width / 2.0, center_y + gap, width, percent_height),
+            QRectF(center_x - percent_width / 2.0, center_y + gap, percent_width, percent_height),
         )
 
     def _draw_price_and_guide(self, painter: QPainter, layout: _Layout) -> None:
@@ -732,7 +765,7 @@ class DepthLadder(QWidget):
         # 借用中间那块文字位——价格列已经不占版面，没有别的落点了。
         self._price_rect = self._price_hit_rect()
 
-        if self._error:
+        if self._error and self._component_visible("price"):
             painter.setPen(self._paint_color(MUTED))
             painter.setFont(
                 make_font(config, pixel_size=max(8, config.stock_percent_font_size))
@@ -740,17 +773,15 @@ class DepthLadder(QWidget):
             painter.drawText(price_rect, align, self._error[:18])
             return
 
-        if not config.show_stock_price:
-            # 设置页关掉「显示股价」时，两块文字都不画，虚线照画。
-            return
+        if self._component_visible("price"):
+            painter.setPen(self._paint_color(self._price_color))
+            painter.setFont(price_font)
+            painter.drawText(price_rect, align, price_text)
 
-        painter.setPen(self._paint_color(self._price_color))
-        painter.setFont(price_font)
-        painter.drawText(price_rect, align, price_text)
-
-        painter.setPen(self._paint_color(self._percent_color))
-        painter.setFont(self._percent_font())
-        painter.drawText(percent_rect, align, percent_text)
+        if self._component_visible("percent"):
+            painter.setPen(self._paint_color(self._percent_color))
+            painter.setFont(self._percent_font())
+            painter.drawText(percent_rect, align, percent_text)
 
     # ------------------------------------------------------------ 绘制：图表
 
@@ -762,9 +793,8 @@ class DepthLadder(QWidget):
         center_y = float(self.height()) / 2.0
         low, high = min(values), max(values)
         center = self._price if self._price and self._price > 0 else (low + high) / 2.0
-        half = max(center - low, high - center)
-        if half <= 0:
-            half = max(abs(center) * 0.005, 0.01)
+        axis_low, axis_high = self._price_scale.bounds(low, high, center=center)
+        half = (axis_high - axis_low) / 2.0
 
         def y_of(value: float) -> float:
             return center_y - (value - center) / (2.0 * half) * inner
@@ -850,8 +880,8 @@ class DepthLadder(QWidget):
     def _draw_time_grid(self, painter: QPainter, layout: _Layout) -> None:
         """分时的半小时竖虚线，纵向与两根竖轴等高。
 
-        首末两条分别压在成交量轴与价格轴上，所以「9:30 对左轴、15:00 对右轴」
-        是几何恒等式，不靠视觉对齐。日K 的横轴是日期，没有半小时可言，不画。
+        首末两条压在两根轴上；默认是 9:30 与 15:00，铺满模式则是数据首末时刻。
+        日K 的横轴是日期，没有半小时可言，不画。
         """
         if self._chart_mode != MODE_INTRADAY:
             return
@@ -929,6 +959,27 @@ class DepthLadder(QWidget):
             height = max(1.0, abs(y_of(bar.open) - y_of(bar.close)))
             painter.fillRect(QRectF(x - body_width / 2.0, top, body_width, height), color)
 
+        # B/S 属于对应交易日，不能拿分钟横坐标直接绘在日期横轴上。
+        # 同一天的 B/S 贴近该日蜡烛的低点/高点，便于区分方向。
+        if self._show_signals and self._daily_signals:
+            painter.save()
+            font = self._popup_font()
+            font.setPixelSize(max(9, min(12, font.pixelSize() if font.pixelSize() > 0 else 10)))
+            painter.setFont(font)
+            for index, kind in self._daily_signals:
+                if not 0 <= index < count or not kind or kind[0] not in {"B", "S"}:
+                    continue
+                buying = kind.startswith("B")
+                color = self._paint_color(BS_BUY_COLOR if buying else BS_SELL_COLOR)
+                x = layout.plot_left + (index + 0.5) * step
+                anchor = y_of(bars[index].low if buying else bars[index].high)
+                label_y = min(float(self.height()) - INNER_PAD - 13.0,
+                              max(INNER_PAD + 1.0, anchor + (5.0 if buying else -18.0)))
+                painter.setPen(QPen(color, 1.3))
+                painter.drawLine(QPointF(x, anchor), QPointF(x, label_y + (1.0 if buying else 12.0)))
+                painter.drawText(QRectF(x - 13.0, label_y, 26.0, 13.0), Qt.AlignCenter, kind)
+            painter.restore()
+
     def _draw_chart_badge(self, painter: QPainter, layout: _Layout) -> None:
         """分时/日K 角标；贴在图表区靠近盘口的一侧，避开外侧的「量」标注。"""
         label = MODE_LABELS.get(self._chart_mode, "")
@@ -961,7 +1012,7 @@ class DepthLadder(QWidget):
             text,
         )
 
-    def _chart_values(self) -> tuple[list[float], list[float], list[float], list[Bar], object]:
+    def _chart_values(self) -> _ChartValues:
         """图表区一次绘制所需的全部数据，供「背景层 / 前景层」两次绘制共用。"""
         prices, volumes, levels, bars = self._chart_series()
         values = list(prices)
@@ -973,15 +1024,19 @@ class DepthLadder(QWidget):
         y_of = self._price_mapper(values) if values else None
         return prices, volumes, levels, bars, y_of
 
-    def _draw_chart_background(self, painter: QPainter, layout: _Layout) -> None:
+    def _draw_chart_background(
+        self, painter: QPainter, layout: _Layout, chart_values: _ChartValues
+    ) -> None:
         """K 线之下的一层：时间网格 + 成交量柱。"""
         self._draw_time_grid(painter, layout)
         if not layout.has_chart_band:
             return
-        _prices, volumes, levels, _bars, y_of = self._chart_values()
+        _prices, volumes, levels, _bars, y_of = chart_values
         self._draw_volume(painter, layout, y_of, levels, volumes)
 
-    def _draw_chart_foreground(self, painter: QPainter, layout: _Layout) -> None:
+    def _draw_chart_foreground(
+        self, painter: QPainter, layout: _Layout, chart_values: _ChartValues
+    ) -> None:
         """K 线之上的一层：曲线/蜡烛压在最上层。
 
         曲线现在横跨两根竖轴，会从盘口量条和成交量柱上方经过；先画它们、后画
@@ -989,7 +1044,7 @@ class DepthLadder(QWidget):
         """
         if not layout.has_chart_band:
             return
-        prices, _volumes, _levels, bars, y_of = self._chart_values()
+        prices, _volumes, _levels, bars, y_of = chart_values
         if y_of is None:
             message = self._kline_message or (
                 "日K 加载中…" if self._chart_mode == MODE_DAILY else "暂无分时数据"
@@ -1008,21 +1063,23 @@ class DepthLadder(QWidget):
         painter.setRenderHint(QPainter.Antialiasing)
         layout = self._layout()
 
-        if self._expanded:
+        if self._expanded and self._component_visible("chart"):
             self._chart_rect = QRectF(
                 layout.chart_left,
                 0.0,
                 max(0.0, layout.chart_right - layout.chart_left),
                 float(self.height()),
             )
-            self._draw_chart_background(painter, layout)
+            # 同一帧只更新一次缩放，成交量与曲线/蜡烛共用完全相同的价格映射。
+            chart_values = self._chart_values()
+            self._draw_chart_background(painter, layout, chart_values)
         else:
             self._chart_rect = QRectF()
 
         self._draw_depth(painter, layout)
 
-        if self._expanded:
-            self._draw_chart_foreground(painter, layout)
+        if self._expanded and self._component_visible("chart"):
+            self._draw_chart_foreground(painter, layout, chart_values)
 
         self._draw_price_and_guide(painter, layout)
 

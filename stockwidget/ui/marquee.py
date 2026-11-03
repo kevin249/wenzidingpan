@@ -63,8 +63,9 @@ class Marquee(QWidget):
         segments: list[Segment] = []
         for quote in quotes:
             first_segment = len(segments)
+            visible = lambda component: config.stock_component_visible(quote.symbol, component)
             color = direction_color(config, quote.change)
-            if config.show_stock_name:
+            if visible("name"):
                 segments.append(
                     Segment(
                         quote.name or quote.symbol,
@@ -74,11 +75,12 @@ class Marquee(QWidget):
                     )
                 )
             if quote.error:
-                segments.append(
-                    Segment(quote.error, MUTED, config.stock_price_font_size, False)
-                )
+                if visible("price"):
+                    segments.append(
+                        Segment(quote.error, MUTED, config.stock_price_font_size, False)
+                    )
             else:
-                if config.show_stock_price:
+                if visible("price"):
                     segments.append(
                         Segment(
                             fmt_price(quote.price),
@@ -87,6 +89,7 @@ class Marquee(QWidget):
                             config.stock_price_bold,
                         )
                     )
+                if visible("percent"):
                     percent_sign = "+" if quote.change_percent and quote.change_percent > 0 else ""
                     percent = (
                         f"{percent_sign}{quote.change_percent:.2f}%"
@@ -101,7 +104,7 @@ class Marquee(QWidget):
                             config.stock_percent_bold,
                         )
                     )
-                if config.show_dark_trade and (text := fmt_money(quote.dark_fund)):
+                if visible("dark") and (text := fmt_money(quote.dark_fund)):
                     dark_color = text_color(
                         config,
                         config.dark_trade_color,
@@ -118,6 +121,7 @@ class Marquee(QWidget):
             if len(segments) > first_segment:
                 segments[first_segment].starts_quote = True
         self._segments = segments
+        self.setFixedHeight(round(max([config.font_size] + [s.font_size for s in segments]) * 1.9))
         self._measure()
 
     def _measure(self) -> None:

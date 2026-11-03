@@ -21,12 +21,15 @@ from PySide6.QtCore import QThread, Signal
 
 from .config import Config
 from .mcp_bs import record_notification
+from .mcp_logger import format_mcp_status, log_mcp_status
+from .mcp_runtime import McpConnection
 
 MCP_API_KEY_ENV = "GUPIAO_MCP_API_KEY"
 RECONNECT_SECONDS = 3
 SSE_TIMEOUT = httpx2.Timeout(30.0, read=300.0)
 POLL_SECONDS = 60
 REQUEST_TIMEOUT_SECONDS = 15.0
+CLEANUP_TIMEOUT_SECONDS = 2.0
 
 
 @dataclass(frozen=True)
@@ -64,7 +67,10 @@ def _describe_error(exc: BaseException, limit: int = 160) -> str:
                 walk(child)
             return
         text = str(node).strip()
-        leaves.append(f"{type(node).__name__}: {text}" if text else type(node).__name__)
+        kind = type(node).__name__
+        if isinstance(node, MCPError):
+            kind += f"(code={node.code})"
+        leaves.append(f"{kind}: {text}" if text else kind)
 
     walk(exc)
     return (" / ".join(dict.fromkeys(leaves)) or type(exc).__name__)[:limit]
@@ -99,13 +105,17 @@ def _resource_payload(result: Any) -> dict[str, Any]:
     return _json_text_payload(getattr(result, "contents", ()))
 
 
-async def _bounded(coro: Any, cancel_event: asyncio.Event | None = None) -> Any:
+async def _bounded(
+    coro: Any, cancel_event: asyncio.Event | None = None, *,
+    timeout_seconds: float | None = None,
+) -> Any:
     request_task = asyncio.ensure_future(coro)
     cancel_task = asyncio.ensure_future(cancel_event.wait()) if cancel_event is not None else None
     tasks = [request_task] if cancel_task is None else [request_task, cancel_task]
     try:
         done, _pending = await asyncio.wait(
-            tasks, timeout=REQUEST_TIMEOUT_SECONDS, return_when=asyncio.FIRST_COMPLETED
+            tasks, timeout=REQUEST_TIMEOUT_SECONDS if timeout_seconds is None else timeout_seconds,
+            return_when=asyncio.FIRST_COMPLETED,
         )
     finally:
         for task in tasks:
@@ -155,8 +165,7 @@ class McpNotificationListener(QThread):
         self._wake = threading.Event()
         self._stopping = threading.Event()
         self._lock = threading.Lock()
-        self._loop: asyncio.AbstractEventLoop | None = None
-        self._cancel_event: asyncio.Event | None = None
+        self._connection = McpConnection()
         self._last_status = ""
         self._baseline_ready = False
         self._last_sequence: int | None = None
@@ -189,15 +198,14 @@ class McpNotificationListener(QThread):
         self._cancel_connection()
 
     def _cancel_connection(self) -> None:
-        with self._lock:
-            loop, cancel_event = self._loop, self._cancel_event
-        if loop is not None and cancel_event is not None:
-            loop.call_soon_threadsafe(cancel_event.set)
+        self._connection.cancel()
 
-    def _emit_status(self, status: str) -> None:
+    def _emit_status(self, status: str, *, level: str = "INFO") -> None:
+        # 每次自检/失败都留日志；界面仍按原始状态去重，时间戳不参与比较。
+        log_mcp_status(level, status)
         if status != self._last_status:
             self._last_status = status
-            self.status_changed.emit(status)
+            self.status_changed.emit(format_mcp_status(status))
 
     def _passive_only(self) -> bool:
         """兼容配置语义：非 Debug 以推送为主，但仍保留低频 sequence 自检。"""
@@ -207,6 +215,7 @@ class McpNotificationListener(QThread):
 
     def run(self) -> None:  # noqa: D102
         while not self._stopping.is_set():
+            self._wake.clear()
             with self._lock:
                 config = self._config
             if not config.mcp_notifications_enabled:
@@ -215,14 +224,17 @@ class McpNotificationListener(QThread):
                 self._wake.clear()
                 continue
             try:
-                asyncio.run(self._listen(config))
-            except (KeyboardInterrupt, SystemExit):
-                raise
+                asyncio.run(self._connection.run(
+                    lambda: self._listen(config), self._stopping, self._wake,
+                ))
             except BaseException as exc:  # noqa: BLE001
                 if self._stopping.is_set():
                     break
-                self._emit_status(f"连接失败：{_describe_error(exc)}")
+                if not (isinstance(exc, asyncio.CancelledError) and self._wake.is_set()):
+                    level = "WARN" if isinstance(exc, (TimeoutError, httpx2.TimeoutException)) else "ERROR"
+                    self._emit_status(f"连接失败：{_describe_error(exc)}", level=level)
             if not self._stopping.is_set():
+                log_mcp_status("WARN", f"准备重连 · {RECONNECT_SECONDS} 秒后")
                 self._wake.wait(RECONNECT_SECONDS)
                 self._wake.clear()
 
@@ -231,16 +243,7 @@ class McpNotificationListener(QThread):
         if not key:
             raise RuntimeError(f"未配置 MCP API Key（设置页或环境变量 {MCP_API_KEY_ENV}）")
         cancel_event = asyncio.Event()
-        self._set_async_state(cancel_event)
-        try:
-            await self._run_session(config, key, cancel_event)
-        finally:
-            self._set_async_state(None)
-
-    def _set_async_state(self, cancel_event: asyncio.Event | None) -> None:
-        with self._lock:
-            self._loop = asyncio.get_running_loop() if cancel_event is not None else None
-            self._cancel_event = cancel_event
+        await self._run_session(config, key, cancel_event)
 
     async def _run_session(self, config: Config, key: str, cancel_event: asyncio.Event) -> None:
         headers = {"Authorization": f"Bearer {key}"}
@@ -263,6 +266,7 @@ class McpNotificationListener(QThread):
                     read_stream,
                     write_stream,
                     message_handler=handle_message,
+                    read_timeout_seconds=REQUEST_TIMEOUT_SECONDS,
                 ) as session:
                     modern = await self._negotiate_protocol(session, cancel_event)
                     info = _tool_payload(
@@ -295,10 +299,9 @@ class McpNotificationListener(QThread):
         self, session: ClientSession, uri: str, cancel_event: asyncio.Event
     ) -> None:
         """2026-07-28：subscriptions/listen 建流，ack 后取基线，之后推送触发重读。"""
-        subscription_cm = listen(session, resource_subscriptions=[uri])
-        sub = await _bounded(subscription_cm.__aenter__(), cancel_event)
-        watcher: asyncio.Task[Any] | None = None
-        try:
+        # The SDK bounds the acknowledgment using the session read timeout.
+        # Keep enter/consume/exit in one task; these are connection scopes, not RPCs.
+        async with listen(session, resource_subscriptions=[uri]) as sub:
             honored = tuple(getattr(sub.honored, "resource_subscriptions", None) or ())
             if uri not in honored:
                 raise RuntimeError("MCP 服务端未确认通知资源订阅")
@@ -306,22 +309,19 @@ class McpNotificationListener(QThread):
             self._emit_delivery_status(missing, "2026 listen")
             updates: asyncio.Queue[str] = asyncio.Queue(maxsize=1)
             watcher = asyncio.create_task(self._watch_modern_subscription(sub, updates))
-            await self._consume(
-                updates,
-                session,
-                uri,
-                cancel_event,
-                subscription_task=watcher,
-                mode="2026 listen",
-            )
-        finally:
-            if watcher is not None and not watcher.done():
-                watcher.cancel()
+            try:
+                await self._consume(
+                    updates,
+                    session,
+                    uri,
+                    cancel_event,
+                    subscription_task=watcher,
+                    mode="2026 listen",
+                )
+            finally:
+                if not watcher.done():
+                    watcher.cancel()
                 await asyncio.gather(watcher, return_exceptions=True)
-            # cancel_event 此时通常已经置位；清理握手不能再绑定它，否则 _bounded 会
-            # 立即取消 __aexit__，留下服务端 listen 订阅直到超时。
-            with suppress(Exception, asyncio.CancelledError):
-                await _bounded(subscription_cm.__aexit__(None, None, None), None)
 
     async def _watch_modern_subscription(self, sub: Any, updates: asyncio.Queue[str]) -> None:
         async for event in sub:
@@ -350,10 +350,13 @@ class McpNotificationListener(QThread):
                 mode="legacy subscribe",
             )
         finally:
-            with suppress(Exception):
+            with suppress(Exception, asyncio.CancelledError):
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore", MCPDeprecationWarning)
-                    await _bounded(session.unsubscribe_resource(uri), cancel_event)
+                    await _bounded(
+                        session.unsubscribe_resource(uri),
+                        timeout_seconds=CLEANUP_TIMEOUT_SECONDS,
+                    )
 
     async def _establish_baseline(
         self, session: ClientSession, uri: str, cancel_event: asyncio.Event | None = None
@@ -400,17 +403,19 @@ class McpNotificationListener(QThread):
             waiters: set[asyncio.Task[Any]] = {event_task, cancel_task}
             if subscription_task is not None:
                 waiters.add(subscription_task)
-            done, _pending = await asyncio.wait(
-                waiters,
-                timeout=POLL_SECONDS,
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-
-            # subscription_task 是整个 listen 流的生命线，超时自检时不能取消它。
-            for task in (event_task, cancel_task):
-                if task not in done:
-                    task.cancel()
-            await asyncio.gather(event_task, cancel_task, return_exceptions=True)
+            try:
+                done, _pending = await asyncio.wait(
+                    waiters,
+                    timeout=POLL_SECONDS,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+            finally:
+                # subscription_task belongs to the outer listen scope. Only
+                # clean up this iteration's waiters, including on cancellation.
+                for task in (event_task, cancel_task):
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(event_task, cancel_task, return_exceptions=True)
 
             if cancel_task in done:
                 return
@@ -434,7 +439,7 @@ class McpNotificationListener(QThread):
 
     def _emit_delivery_status(self, missing: int, mode: str = "实时订阅") -> None:
         if missing > 0:
-            self._emit_status(f"已连接 · {mode} · 警告：MCP 消息缺失 {missing} 条")
+            self._emit_status(f"已连接 · {mode} · 警告：MCP 消息缺失 {missing} 条", level="WARN")
             return
         self._emit_status(f"已连接 · {mode}")
 

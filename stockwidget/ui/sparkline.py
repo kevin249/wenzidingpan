@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from collections import deque
+from datetime import datetime
 import time
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt
@@ -14,10 +15,14 @@ from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QWidget
 
 from ..config import DEFAULT_GRAYSCALE_LEVEL
+from ..local_bs import SAMPLE_LEN
+from ..market_hours import SHANGHAI_TZ
 from ..mcp_depth import DEPTH_FIVE, DEPTH_FULL, DEPTH_TEN, DepthSnapshot
+from .price_scale import PriceScale
+from .sizing import SizedWidget
 from .theme import display_color
+from .time_axis import intraday_fraction
 
-SAMPLE_LEN = 40  # 回退模式下保留的采样点数
 FILL_ALPHA = 38  # 面积填充的透明度，压得比曲线淡很多
 BASELINE_ALPHA = 110
 BUY_COLOR = QColor(240, 79, 90)
@@ -30,11 +35,14 @@ ANNOTATION_COLOR = QColor(185, 190, 202)  # 「成交量 / 十档」这类小字
 DEPTH_STALE_SECONDS = 120
 
 
-class Sparkline(QWidget):
+class Sparkline(SizedWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._samples: deque[float] = deque(maxlen=SAMPLE_LEN)
+        self._sample_minutes: deque[str] = deque(maxlen=SAMPLE_LEN)
         self._series: list[float] = []  # 当日分时，空则用采样点
+        self._minutes: list[str] = []
+        self._fill_width = False
         self._volumes: list[float] = []
         self._show_volume_profile = False
         self._configured_profile_width = 0
@@ -52,6 +60,8 @@ class Sparkline(QWidget):
         self._annotation_font = QFont()
         self._annotation_font.setPixelSize(9)
         self._depth: DepthSnapshot | None = None
+        self._show_depth = True
+        self._price_scale = PriceScale()
         self.setAttribute(Qt.WA_TransparentForMouseEvents)
 
     # ------------------------------------------------------------ 尺寸
@@ -67,7 +77,7 @@ class Sparkline(QWidget):
             self.updateGeometry()
 
     def sizeHint(self) -> QSize:  # noqa: N802 - Qt 命名
-        return QSize(self.minimumWidth(), self._preferred_height)
+        return self._display_size_hint(QSize(self.minimumWidth(), self._preferred_height))
 
     # ------------------------------------------------------------ 数据
 
@@ -75,12 +85,21 @@ class Sparkline(QWidget):
         """记一个轮询采样点，只在没有分时数据时才会被画出来。"""
         if value is not None:
             self._samples.append(value)
+            self._sample_minutes.append(datetime.now(SHANGHAI_TZ).strftime("%H:%M"))
             if not self._series:
                 self.update()
 
-    def set_series(self, prices: list[float]) -> None:
-        if prices != self._series:
+    def set_series(self, prices: list[float], minutes: list[str] | None = None) -> None:
+        resolved_minutes = list(minutes or [])
+        if prices != self._series or resolved_minutes != self._minutes:
             self._series = list(prices)
+            self._minutes = resolved_minutes
+            self.update()
+
+    def set_fill_width(self, enabled: bool) -> None:
+        """关闭时右端固定 15:00；开启时按已有数据的时间范围铺满。"""
+        if enabled != self._fill_width:
+            self._fill_width = enabled
             self.update()
 
     def set_volume_profile(self, volumes: list[float], *, enabled: bool = True) -> None:
@@ -108,6 +127,12 @@ class Sparkline(QWidget):
     def set_depth(self, snapshot: DepthSnapshot | None) -> None:
         if snapshot != self._depth:
             self._depth = snapshot
+            self.update()
+
+    def set_show_depth(self, enabled: bool) -> None:
+        """只切换挂单叠加层，保留曲线、尺寸和最近收到的深度数据。"""
+        if self._show_depth != enabled:
+            self._show_depth = enabled
             self.update()
 
     def set_color(self, color: QColor) -> None:
@@ -179,9 +204,13 @@ class Sparkline(QWidget):
             grayscale_level=grayscale_level,
         )
 
-    def clear(self) -> None:
+    def clear(self, *, preserve_scale: bool = False) -> None:
+        if not preserve_scale:
+            self._price_scale.reset()
         self._samples.clear()
+        self._sample_minutes.clear()
         self._series = []
+        self._minutes = []
         self._volumes = []
         self._show_volume_profile = False
         self._signals = []
@@ -323,7 +352,8 @@ class Sparkline(QWidget):
             low, high = min(low, self._prev_close), max(high, self._prev_close)
         if self._show_open_line and self._open_price is not None:
             low, high = min(low, self._open_price), max(high, self._open_price)
-        span = (high - low) or max(abs(high) * 0.01, 0.01)
+        low, high = self._price_scale.bounds(low, high)
+        span = high - low
 
         def y_of(value: float) -> float:
             return (height - 2) - (value - low) / span * (height - 4)
@@ -336,8 +366,13 @@ class Sparkline(QWidget):
             else float(width - 1)
         )
 
+        minutes = self._minutes if self._series else list(self._sample_minutes)
+
         def x_of(index: int) -> float:
-            return chart_left + index / (len(points) - 1) * (chart_right - chart_left)
+            fraction = intraday_fraction(
+                index, len(points), minutes, fill_width=self._fill_width
+            )
+            return chart_left + fraction * (chart_right - chart_left)
 
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
@@ -374,7 +409,8 @@ class Sparkline(QWidget):
         # 主题2展开图：左侧历史成交量分布，右侧实时挂单分布，二者等宽；K线居中。
         if self._show_volume_profile:
             self._draw_traded_volume(painter, height, y_of, profile_width)
-        self._draw_depth(painter, width, height, y_of, profile_width or self._side_profile_width(width))
+        if self._show_depth:
+            self._draw_depth(painter, width, height, y_of, profile_width or self._side_profile_width(width))
 
         # 昨收基准线
         if self._prev_close is not None:

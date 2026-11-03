@@ -165,10 +165,15 @@ class ResizeGrip(QWidget):
         self._origin: QPoint | None = None
         self._start_size = QSize()
         self._hovered = False
+        self._always_visible = False
+
+    def set_always_visible(self, visible: bool) -> None:
+        self._always_visible = bool(visible)
+        self.update()
 
     def paintEvent(self, event) -> None:  # noqa: N802 - Qt 命名
         # 平时完全透明；只有鼠标进入右下角热区（或正在拖）才显示缩放纹理。
-        if not (self._hovered or self._origin is not None):
+        if not (self._always_visible or self._hovered or self._origin is not None):
             return
         painter = QPainter(self)
         painter.setPen(QPen(MUTED, 1.1))
@@ -198,7 +203,8 @@ class ResizeGrip(QWidget):
         delta = event.globalPosition().toPoint() - self._origin
         self.dragged.emit(
             QSize(
-                max(180, self._start_size.width() + delta.x()),
+                # The window applies the theme-specific width limit.
+                max(1, self._start_size.width() + delta.x()),
                 max(80, self._start_size.height() + delta.y()),
             )
         )
@@ -287,6 +293,7 @@ class TickerWindow(QWidget):
     settings_requested = Signal()
     quit_requested = Signal()
     bounds_changed = Signal(object)
+    layout_metrics_changed = Signal(object)
     grayscale_requested = Signal()
     title_buttons_requested = Signal()
     bell_cleared = Signal()
@@ -310,8 +317,6 @@ class TickerWindow(QWidget):
         self._manual_size = False
         self._drag_start_size = QSize()
         self._drag_start_scale = 1.0
-        self._drag_reference_height = 0
-        self._restore_scale_from_height = False
         # 手动外框下藏起标题栏时真正减掉的高度，开回来时原样加回去；同时记下
         # 当时的 sizeHint（藏着期间改了字号按它等比换算）和减完后的外框高度
         # （外框被任何路径改过，这份记账即作废）。
@@ -411,6 +416,13 @@ class TickerWindow(QWidget):
         self._scale_timer.setInterval(80)
         self._scale_timer.timeout.connect(self._apply_scale)
 
+        self._metrics_timer = QTimer(self)
+        self._metrics_timer.setSingleShot(True)
+        self._metrics_timer.setInterval(100)
+        self._metrics_timer.timeout.connect(
+            lambda: self.layout_metrics_changed.emit(self.layout_metrics())
+        )
+
         self.apply_config(config)
 
     # ------------------------------------------------------------ 外观
@@ -440,6 +452,10 @@ class TickerWindow(QWidget):
             chart_height=(
                 scaled(self._config.chart_height, 4, 1200) if self._config.chart_height else 0
             ),
+            component_sizes={
+                region: {axis: scaled(value, 1, 24576) if value else 0 for axis, value in size.items()}
+                for region, size in self._config.component_sizes.items()
+            },
         )
 
     def apply_config(self, config: Config) -> None:
@@ -454,7 +470,6 @@ class TickerWindow(QWidget):
             else:
                 self._scale = _clamp(config.bounds.scale, 0.6, 3.0)
                 self._manual_size = config.bounds.manual_size
-            self._restore_scale_from_height = False
             # 标题栏显隐的补偿记账只能属于原主题；跨主题复用会把新主题高度加减错。
             self._hidden_title_height = 0
             self._hidden_title_hint = 0
@@ -462,6 +477,7 @@ class TickerWindow(QWidget):
 
         self._config = config
         chart_height_changed = previous.chart_height != config.chart_height
+        component_sizes_changed = previous.component_sizes != config.component_sizes
 
         flags = Qt.FramelessWindowHint | Qt.Tool
         if config.always_on_top:
@@ -529,7 +545,8 @@ class TickerWindow(QWidget):
         )
         self.empty_label.setVisible(not single and not self._rows)
         # 多行模式始终保留右下角透明热区；鼠标穿透时它也必须一起禁用。
-        self.grip.setVisible(not single and not config.click_through)
+        self.grip.setVisible(not config.click_through and (not single or config.show_title_buttons))
+        self.grip.set_always_visible(config.show_title_buttons)
         self._position_grip()
 
         # 穿透时整窗不可交互，只留左上角把手能拖。
@@ -552,7 +569,11 @@ class TickerWindow(QWidget):
             self._compensate_title_bar_height(
                 showing=config.show_title_buttons, title_before=title_before
             )
-        self._resize_to_grid(ensure_chart_height=chart_height_changed)
+        self._resize_to_grid(
+            ensure_chart_height=chart_height_changed,
+            ensure_component_size=component_sizes_changed,
+        )
+        self._schedule_layout_metrics()
 
     # ------------------------------------------------------------ 右键菜单
 
@@ -604,6 +625,12 @@ class TickerWindow(QWidget):
         quotes = snapshot.quotes
         if self._config.layout == "single" and self._config.display_theme != "theme2":
             self.marquee.set_quotes(quotes)
+        elif snapshot.updated_symbols is not None:
+            changed = set(snapshot.updated_symbols)
+            scaled = self.scaled_config()
+            for quote in quotes:
+                if quote.symbol in changed and (row := self._rows.get(quote.symbol)) is not None:
+                    row.update_quote(quote, scaled, snapshot.trends.get(quote.symbol))
         else:
             self._sync_rows(quotes, snapshot.trends)
 
@@ -620,6 +647,16 @@ class TickerWindow(QWidget):
     def clear_mcp_notifications(self) -> None:
         """把窗口上的未读数清掉；用户从托盘那边确认时走这里。"""
         self.title_bar.clear_bell()
+
+    def refresh_bs_signals(self, symbol: str) -> None:
+        """B/S 工具数据更新时，仅刷新匹配股票的绘图标记。"""
+        target = classify(symbol)
+        if target is None:
+            return
+        for raw, row in self._rows.items():
+            parsed = classify(raw)
+            if parsed is not None and parsed.code == target.code:
+                row.refresh_bs_signals()
 
     def _sync_rows(self, quotes, trends: dict | None = None) -> None:
         trends = trends or {}
@@ -659,7 +696,6 @@ class TickerWindow(QWidget):
         self.scroll.setVisible(not single and bool(self._rows))
         self.empty_label.setVisible(not single and not self._rows)
         self._resize_to_grid()
-        self._sync_restored_scale_from_height()
 
     def _grid_size(self, count: int) -> tuple[int, int]:
         """主题2固定一列；主题1仍按设置行数铺网格。"""
@@ -760,17 +796,8 @@ class TickerWindow(QWidget):
     ) -> None:
         """手动外框下，标题栏显隐要连着外框一起加减那一条高度。
 
-        标题栏是外框自带的 chrome，不是用户拖出来的内容高度。外框不动的话，
-        藏起来等于白送内容区一条高度：当场看不出问题，但下次拖右下角时，绝对
-        缩放基准（``_absolute_scale_reference``）已经少了这条 chrome，连只拖宽度
-        都会照着歪掉的基准把字号顶大一截（实测 +25%，字号 19→24）。
-
-        这里按标题栏在布局里真实占到的高度同步外框，内容区就一个像素都不动。
-        基准仍会差一点点——它是按各部件的 sizeHint 估的，和被压扁后的实际高度
-        对不齐——于是之后只拖宽度还会有约 5% 的偏移（最多一档字号）。要把这点
-        也抹平就得改动共用的缩放模型，不在本改动范围内，这里先保内容不跳。
-        自动尺寸不必管——``_resize_to_grid``
-        本来就会重算。
+        按标题栏在布局里真实占到的高度同步外框，保证切换按钮时内容区不变。
+        自动尺寸由 ``_resize_to_grid`` 重算，不需要补偿。
         """
         if not self._manual_size or (
             self._config.layout == "single" and self._config.display_theme != "theme2"
@@ -822,7 +849,9 @@ class TickerWindow(QWidget):
         title = self.title_bar.sizeHint().height() if self._config.show_title_buttons else 0
         return title + 2
 
-    def _resize_to_grid(self, *, ensure_chart_height: bool = False) -> None:
+    def _resize_to_grid(
+        self, *, ensure_chart_height: bool = False, ensure_component_size: bool = False
+    ) -> None:
         """高度按网格行数算，宽度按列数摊开——1 行就是全部横向铺满。"""
         chrome = self._chrome_height()
         if self._config.display_theme == "theme2":
@@ -832,9 +861,7 @@ class TickerWindow(QWidget):
             self.setMaximumHeight(16777215)
             if not self._rows:
                 return
-            sample = next(iter(self._rows.values()))
-            rows = len(self._rows)
-            total_height = chrome + sample.sizeHint().height() * rows + 8
+            total_height = chrome + sum(row.sizeHint().height() for row in self._rows.values()) + 8
             width = self._theme2_target_width()
             screen = self.screen()
             if screen is not None:
@@ -849,6 +876,8 @@ class TickerWindow(QWidget):
                 )
             if not self._manual_size:
                 self.resize(width, total_height)
+            elif ensure_component_size:
+                self.resize(max(self.width(), width), max(self.height(), total_height))
             # 用户拖过右下角后，行情刷新/配置重排只适配内容，不再把外框弹回自然尺寸。
             self._keep_on_screen()
             return
@@ -867,9 +896,15 @@ class TickerWindow(QWidget):
                 self._keep_on_screen()
             return
 
-        sample = next(iter(self._rows.values()))
         rows, columns = self._grid_size(len(self._rows))
-        height = chrome + sample.sizeHint().height() * rows + 8
+        # 每只股票的可见组件可能不同，逐网格行取最高卡片，再累加自然高度。
+        row_heights = [0] * rows
+        for card in self._rows.values():
+            index = self.rows_layout.indexOf(card)
+            if index >= 0:
+                grid_row = self.rows_layout.getItemPosition(index)[0]
+                row_heights[grid_row] = max(row_heights[grid_row], card.sizeHint().height())
+        height = chrome + sum(row_heights) + 8
 
         # 宽度直接问网格要：自己按 sizeHint×列数 估会漏掉边距和滚动条，
         # 差那十几像素就会把最右一列的价格裁掉。
@@ -883,6 +918,8 @@ class TickerWindow(QWidget):
             width = min(width, screen.availableGeometry().width())
         if not self._manual_size:
             self.resize(width, height)
+        elif ensure_component_size:
+            self.resize(max(self.width(), width), max(self.height(), height))
         elif ensure_chart_height and height > self.height():
             # 用户拖过右下角后，普通配置刷新应继续尊重手动外框；但 K 线高度
             # 是明确的像素目标。旧外框放不下时必须补足高度，否则布局只能把
@@ -897,8 +934,21 @@ class TickerWindow(QWidget):
         而窗口宽度又是照着退回后的 sizeHint 算的——两边互相迁就就再也回不去了。
         """
         scaled = self.scaled_config()
+        row_width = scaled.component_sizes.get("row", {}).get("width", 0)
+        if row_width:
+            return row_width
+        if self._config.display_theme != "theme2" and any(
+            size.get("width", 0) for region, size in scaled.component_sizes.items() if region != "canvas"
+        ):
+            return max((row.sizeHint().width() for row in self._rows.values()),
+                       default=round(scaled.font_size * 13)) + 4
         if self._config.display_theme == "theme2":
             return max(148, round(scaled.font_size * 12.5))
+        if self._config.row_style == "top_bottom":
+            return max(
+                (row.classic_header_width() for row in self._rows.values()),
+                default=round(scaled.font_size * 22),
+            ) + 4
         if self._config.row_style != "sides":
             return round(scaled.font_size * 13)
         side_font = max(scaled.stock_name_font_size, scaled.stock_price_font_size)
@@ -910,15 +960,12 @@ class TickerWindow(QWidget):
         if bounds is None:
             self._scale = 1.0
             self._manual_size = False
-            self._restore_scale_from_height = False
             self.resize(300, 260)
             self._apply_scale()
             return
         self._scale = _clamp(bounds.scale, 0.6, 3.0)
         self._manual_size = bounds.manual_size
-        self._restore_scale_from_height = (
-            bounds.manual_size and bounds.height >= 160 and bounds.scale < 0.9
-        )
+        # 高窗口可以配小字号或较高的股票卡片，不能从外框高度反推并覆盖保存的比例。
         if not available:
             self.resize(bounds.width, bounds.height)
             self.move(bounds.x, bounds.y)
@@ -967,6 +1014,8 @@ class TickerWindow(QWidget):
 
     def eventFilter(self, watched, event) -> bool:  # noqa: N802 - Qt 命名
         event_type = event.type()
+        if event_type in (QEvent.Resize, QEvent.LayoutRequest, QEvent.Show, QEvent.Hide):
+            self._schedule_layout_metrics()
         mouse_event = event_type in (
             QEvent.MouseButtonPress,
             QEvent.MouseMove,
@@ -1029,10 +1078,9 @@ class TickerWindow(QWidget):
         self._move_drag_active = False
 
     def _on_grip_drag_started(self, size: QSize) -> None:
-        """记录本次手势，并以当前列宽下的基准高度校准内容缩放。"""
+        """记录本次手势的外框与比例，配置重排后的实际尺寸就是新基准。"""
         self._drag_start_size = QSize(size)
         self._drag_start_scale = self._scale
-        self._drag_reference_height = self._absolute_scale_reference(size.width())
         self._manual_size = True
 
     def _on_grip_dragged(self, size: QSize) -> None:
@@ -1045,85 +1093,80 @@ class TickerWindow(QWidget):
             # 主题2拖宽/拖高只改变版面与每行可用空间，绝不联动字号/字体缩放。
             return
         start_height = max(1, self._drag_start_size.height())
-        # 主题1字体由高度决定；宽度只负责给走势图更多或更少的横向空间。
-        # 有行情行时使用绝对基准，避免历史上的错误 scale 一直累积。
-        if self._drag_reference_height > 0:
-            scale = _clamp(size.height() / self._drag_reference_height, 0.6, 3.0)
-        else:
-            scale = _clamp(
-                self._drag_start_scale * size.height() / start_height,
-                0.6,
-                3.0,
-            )
-        if abs(scale - self._scale) > 0.02:
+        # 只按本次高度变化缩放。自然高度随字号、组件宽高、换行变化，不能拿它
+        # 反推比例，否则只改宽度也会放大文字，往返调整还会丢掉原来的字号。
+        scale = _clamp(self._drag_start_scale * size.height() / start_height, 0.6, 3.0)
+        if abs(scale - self._scale) > 1e-9:
             self._scale = scale
             self._scale_timer.start()
 
     def _on_grip_drag_finished(self) -> None:
+        if self._scale_timer.isActive():
+            self._scale_timer.stop()
+            self._apply_scale()
         self._drag_start_size = QSize()
-        self._drag_reference_height = 0
 
-    def _absolute_scale_reference(self, frame_width: int) -> int:
-        """能不能拿「1.0 倍时的自然高度」当缩放基准；不能就返回 0 改用相对比例。
-
-        自然高度高过屏幕时，窗口已经被 _keep_on_screen 压回屏幕内，谁也到不了
-        那个高度。再拿它作分母，用户只拖宽度也会被算成缩小——图和字一起变小。
-        """
-        reference = self._base_frame_height(frame_width)
-        screen = self.screen()
-        if screen is not None and reference > screen.availableGeometry().height():
-            return 0
-        return reference
-
-    def _base_frame_height(self, frame_width: int) -> int:
-        """计算当前列宽下、缩放为 1 时窗口内容所需的自然高度。"""
-        if not self._rows:
-            return 0
-
-        base = self._config
-        chrome = 2
-        if base.show_title_buttons:
-            title_probe = TitleBar()
-            title_probe.apply_config(base)
-            chrome += title_probe.sizeHint().height()
-
-        if base.layout == "single" and base.display_theme != "theme2":
-            marquee_probe = Marquee()
-            marquee_probe.apply_config(base)
-            return chrome + marquee_probe.height() + 4
-
-        rows, columns = self._grid_size(len(self._rows))
-        cell_width = max(1, (frame_width - 2) // columns)
-        row_probe = QuoteRow("__scale_probe__")
-        row_probe.name_label.setText("示例股票")
-        row_probe.price_label.setText("9999.99")
-        row_probe.percent_label.setText("+99.99%")
-        row_probe.dark_value.setText("+99.99亿")
-        row_probe.resize(cell_width, 100)
-        row_probe.apply_config(base)
-
-        return chrome + row_probe.sizeHint().height() * rows + 8
-
-    def _sync_restored_scale_from_height(self) -> None:
-        """旧配置可能保存了错误比例；首批行情出现后按实际窗口高度修正。"""
-        if not self._restore_scale_from_height or not self._rows:
+    def resize_from_settings(self, dimensions: dict) -> None:
+        """数字输入与右下角拖拽走同一条缩放路径，位置不变，0 保持当前轴。"""
+        if dimensions.get("reset_scale") is True:
+            self._scale_timer.stop()
+            self._scale = 1.0
+            self._apply_scale()
+            self.flush_bounds()
+            self._schedule_layout_metrics()
+        if not dimensions.get("width", 0) and not dimensions.get("height", 0):
             return
-        self._restore_scale_from_height = False
-        # 同样只在自然高度落在屏幕内时才敢按高度反推，否则修出来的比例只会更小。
-        reference_height = self._absolute_scale_reference(self.width())
-        if reference_height <= 0:
-            return
-        self._scale = _clamp(self.height() / reference_height, 0.6, 3.0)
+        self._on_grip_drag_started(self.size())
+        self._on_grip_dragged(QSize(
+            dimensions.get("width", 0) or self.width(),
+            dimensions.get("height", 0) or self.height(),
+        ))
+        self._scale_timer.stop()
         self._apply_scale()
+        self._on_grip_drag_finished()
+        self.flush_bounds()
+        self._schedule_layout_metrics()
+
+    def _schedule_layout_metrics(self) -> None:
+        timer = getattr(self, "_metrics_timer", None)
+        if timer is not None:
+            timer.start()
+
+    def layout_metrics(self) -> dict:
+        """仅在 GUI 线程测量；设置服务读取发布后的纯数据快照。"""
+        def measure(widget) -> dict:
+            return {"width": widget.width(), "height": widget.height(), "visible": widget.isVisible()}
+
+        regions = {"window": measure(self)}
+        if self._rows:
+            row = next(iter(self._rows.values()))
+            theme2 = self._config.display_theme == "theme2"
+            for region, widget in (
+                ("row", row),
+                ("name", row.theme2_name_label if theme2 else row.name_label),
+                ("dark", row.theme2_dark_label if theme2 else row.dark_box),
+                ("chart", row.sparkline), ("canvas", row.theme2_depth),
+            ):
+                regions[region] = measure(widget)
+            if theme2:
+                price, percent = row.theme2_depth._price_blocks(row.theme2_depth._layout())
+                for key, rect in (("price", price), ("percent", percent)):
+                    regions[key] = {"width": round(rect.width()), "height": round(rect.height()), "visible": True}
+            else:
+                regions["price"] = measure(row.price_label)
+                regions["percent"] = measure(row.percent_label)
+        return {"theme": self._config.display_theme, "scale": self._scale, "regions": regions}
 
     def _bounded_drag_size(self, size: QSize) -> QSize:
+        # Theme 2 is a compressible canvas; its natural width is only a preference.
+        minimum_width = 1 if self._config.display_theme == "theme2" else 180
         screen = self.screen()
         if screen is None:
-            return QSize(max(180, size.width()), max(80, size.height()))
+            return QSize(max(minimum_width, size.width()), max(80, size.height()))
         geo = screen.availableGeometry()
         max_width = max(1, geo.right() - max(self.x(), geo.left()) + 1)
         max_height = max(1, geo.bottom() - max(self.y(), geo.top()) + 1)
-        min_width = min(180, max_width)
+        min_width = min(minimum_width, max_width)
         min_height = min(80, max_height)
         return QSize(
             round(_clamp(size.width(), min_width, max_width)),

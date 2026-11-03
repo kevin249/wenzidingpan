@@ -7,11 +7,13 @@ from __future__ import annotations
 
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from datetime import date, datetime
 
 import requests
 
 from . import mcp_bs
+from .market_hours import SHANGHAI_TZ
 from .providers.base import USER_AGENT, describe_error
 from .symbols import Symbol, classify
 
@@ -45,6 +47,17 @@ def _number(value: object) -> float | None:
     return result if result == result and abs(result) != float("inf") else None
 
 
+def _trade_date(value: object) -> str:
+    text = str(value or "").strip()
+    # Python 3.10 的 date.fromisoformat 还不接受 YYYYMMDD。
+    if len(text) == 8 and text.isdigit():
+        text = f"{text[:4]}-{text[4:6]}-{text[6:]}"
+    try:
+        return date.fromisoformat(text).isoformat()
+    except ValueError:
+        return ""
+
+
 @dataclass
 class Trend:
     """一只股票的当日分时曲线。"""
@@ -56,6 +69,12 @@ class Trend:
     high_price: float | None = None
     low_price: float | None = None
     error: str | None = None
+    # 与 prices 严格对齐，保留真实分钟，不能用数组下标代替行情时间。
+    minutes: list[str] = field(default_factory=list)
+    trade_date: str = ""
+    source: str = ""
+    fetched_at: float = 0.0  # 最近一次成功获取该曲线的时间
+    stale: bool = False  # 接口失败时暂用当天最后一份有效曲线
 
     def __bool__(self) -> bool:
         return len(self.prices) >= 2
@@ -65,7 +84,15 @@ def _secid(symbol: Symbol) -> str:
     return f"{1 if symbol.market == 'sh' else 0}.{symbol.code}"
 
 
-def _local_bs_points(prices: list[float], reversal_percent: float = 0.005) -> list[tuple[int, str]]:
+@dataclass(frozen=True)
+class LocalBsSignal:
+    index: int
+    side: str
+    confirmed_index: int
+
+
+def local_bs_signals(prices: list[float], reversal_percent: float = 0.005) -> list[LocalBsSignal]:
+    """与绘图共用的反转扫描，同时保留转折点和首次确认点。"""
     if len(prices) < 3:
         return []
     direction = 0
@@ -73,7 +100,7 @@ def _local_bs_points(prices: list[float], reversal_percent: float = 0.005) -> li
     extreme = prices[0]
     low = high = prices[0]
     low_index = high_index = 0
-    signals: list[tuple[int, str]] = []
+    signals: list[LocalBsSignal] = []
     for index, price in enumerate(prices[1:], 1):
         if direction == 0:
             if price < low:
@@ -81,35 +108,41 @@ def _local_bs_points(prices: list[float], reversal_percent: float = 0.005) -> li
             if price > high:
                 high, high_index = price, index
             if low and (price - low) / low >= reversal_percent:
-                signals.append((low_index, "B"))
+                signals.append(LocalBsSignal(low_index, "B", index))
                 direction, extreme, extreme_index = 1, price, index
             elif high and (high - price) / high >= reversal_percent:
-                signals.append((high_index, "S"))
+                signals.append(LocalBsSignal(high_index, "S", index))
                 direction, extreme, extreme_index = -1, price, index
         elif direction > 0:
             if price >= extreme:
                 extreme, extreme_index = price, index
             elif extreme and (extreme - price) / extreme >= reversal_percent:
-                signals.append((extreme_index, "S"))
+                signals.append(LocalBsSignal(extreme_index, "S", index))
                 direction = -1
                 extreme, extreme_index = price, index
         else:
             if price <= extreme:
                 extreme, extreme_index = price, index
             elif extreme and (price - extreme) / extreme >= reversal_percent:
-                signals.append((extreme_index, "B"))
+                signals.append(LocalBsSignal(extreme_index, "B", index))
                 direction = 1
                 extreme, extreme_index = price, index
     return signals
 
 
-def calculate_bs_points(prices: list[float], reversal_percent: float = 0.005) -> list[tuple[int, str]]:
+def _local_bs_points(prices: list[float], reversal_percent: float = 0.005) -> list[tuple[int, str]]:
+    return [(signal.index, signal.side) for signal in local_bs_signals(prices, reversal_percent)]
+
+
+def calculate_bs_points(
+    prices: list[float], reversal_percent: float = 0.005, *, symbol: str = ""
+) -> list[tuple[int, str]]:
     """按设置选择 B/S 来源。
 
-    普通 list（含单元测试和采样回退）继续使用本地算法；只有联网分时返回的
-    :class:`PriceSeries` 带股票代码，MCP 模式才从当天 MCP 信号映射到曲线。
+    界面可显式传股票代码，联网分时也可通过 :class:`PriceSeries` 携带代码。
+    无股票上下文的普通 list 保持本地计算，供算法测试和独立调用使用。
     """
-    symbol = getattr(prices, "symbol", "")
+    symbol = symbol or getattr(prices, "symbol", "")
     if symbol and mcp_bs.get_source() == mcp_bs.SOURCE_MCP:
         return mcp_bs.bs_points(symbol, prices)
     return _local_bs_points(prices, reversal_percent)
@@ -122,6 +155,8 @@ def parse_eastmoney(payload: object) -> Trend:
 
     prices: list[float] = []
     volumes: list[float] = []
+    minutes: list[str] = []
+    trade_date = ""
     open_price: float | None = None
     high_price: float | None = None
     low_price: float | None = None
@@ -142,6 +177,9 @@ def parse_eastmoney(payload: object) -> Trend:
             if low is not None and low > 0:
                 low_price = low if low_price is None else min(low_price, low)
             prices.append(close)
+            minutes.append(minute)
+            stamp = parts[0].strip().split(" ")[0]
+            trade_date = _trade_date(stamp) or trade_date
             volume = _number(parts[5]) if len(parts) > 5 else None
             volumes.append(volume if volume is not None and volume > 0 else 0.0)
 
@@ -152,16 +190,22 @@ def parse_eastmoney(payload: object) -> Trend:
         open_price=open_price,
         high_price=high_price if high_price is not None else (max(prices) if prices else None),
         low_price=low_price if low_price is not None else (min(prices) if prices else None),
+        minutes=minutes,
+        trade_date=trade_date,
+        source="eastmoney",
     )
 
 
 def parse_tencent(payload: object, key: str) -> Trend:
     if not isinstance(payload, dict):
         return Trend(error="返回格式异常")
-    block = (((payload.get("data") or {}).get(key) or {}).get("data") or {}).get("data") or []
+    data = (((payload.get("data") or {}).get(key) or {}).get("data") or {})
+    block = data.get("data") or []
+    trade_date = _trade_date(data.get("date"))
 
     prices: list[float] = []
     volumes: list[float] = []
+    minutes: list[str] = []
     prev_volume = 0.0
     for line in block:
         parts = str(line or "").split(" ")
@@ -171,6 +215,7 @@ def parse_tencent(payload: object, key: str) -> Trend:
         price = _number(parts[1])
         if price is not None and price > 0 and _is_trading_minute(minute):
             prices.append(price)
+            minutes.append(minute)
             cumulative = _number(parts[2]) if len(parts) > 2 else None
             if cumulative is not None and cumulative > 0:
                 volume = max(cumulative - prev_volume, 0.0)
@@ -185,15 +230,25 @@ def parse_tencent(payload: object, key: str) -> Trend:
         open_price=prices[0] if prices else None,
         high_price=max(prices) if prices else None,
         low_price=min(prices) if prices else None,
+        minutes=minutes,
+        trade_date=trade_date,
+        source="tencent",
     )
 
 
 class IntradayClient:
     """带 TTL 缓存的分时数据查询，多个界面元素共用同一份结果。"""
 
-    def __init__(self, session: requests.Session | None = None) -> None:
+    def __init__(
+        self,
+        session: requests.Session | None = None,
+        *,
+        cache_ttl_seconds: float = CACHE_TTL_SECONDS,
+    ) -> None:
         self.session = session or requests.Session()
+        self.cache_ttl_seconds = cache_ttl_seconds
         self._cache: dict[str, tuple[float, Trend]] = {}
+        self._last_good: dict[str, tuple[float, Trend]] = {}
         self._lock = threading.Lock()
 
     def _fetch_eastmoney(self, symbol: Symbol) -> Trend:
@@ -244,18 +299,35 @@ class IntradayClient:
         if symbol is None:
             return Trend(error="代码格式不正确")
 
-        now = time.time() if now is None else now
+        wall_clock = now is None
+        now = time.time() if wall_clock else now
         with self._lock:
             cached = self._cache.get(symbol.key)
-            if cached and now - cached[0] < CACHE_TTL_SECONDS:
+            if cached and now < cached[0] + self.cache_ttl_seconds:
                 return cached[1]
 
         trend = self._load(symbol)
-        trend.prices = PriceSeries(trend.prices, symbol.code)
+        if wall_clock:
+            now = time.time()  # Record receipt, rather than the request start.
         with self._lock:
+            if trend:
+                trend.fetched_at = now
+                self._last_good[symbol.key] = (now, trend)
+            elif previous := self._last_good.get(symbol.key):
+                stamp, good = previous
+                same_day = (datetime.fromtimestamp(now, SHANGHAI_TZ).date()
+                            == datetime.fromtimestamp(stamp, SHANGHAI_TZ).date())
+                same_session = not (trend.trade_date and good.trade_date
+                                    and trend.trade_date != good.trade_date)
+                if same_day and same_session:
+                    trend = replace(good, stale=True, error=trend.error or "分时数据暂不可用")
+                else:
+                    self._last_good.pop(symbol.key, None)
+            trend.prices = PriceSeries(trend.prices, symbol.code)
             self._cache[symbol.key] = (now, trend)
         return trend
 
     def reset_cache(self) -> None:
         with self._lock:
+            # 强制重新请求仍保留最近成功帧；这次请求失败时图表不闪为空白。
             self._cache.clear()

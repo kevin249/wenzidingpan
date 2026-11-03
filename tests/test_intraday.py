@@ -12,6 +12,7 @@ from stockwidget.intraday import (
     IntradayClient,
     Trend,
     calculate_bs_points,
+    local_bs_signals,
     parse_eastmoney,
     parse_tencent,
 )
@@ -29,6 +30,9 @@ def test_eastmoney_takes_close_price_and_prev_close():
         ])
     )
     assert trend.prices == [10.10, 10.30]  # 取的是收盘价（第 3 个字段）
+    assert trend.minutes == ["09:30", "09:31"]
+    assert trend.trade_date == "2026-08-24"
+    assert trend.source == "eastmoney"
     assert trend.volumes == [100.0, 120.0]
     assert trend.prev_close == 10.0
     assert trend.open_price == 10.0
@@ -69,6 +73,7 @@ def test_eastmoney_skips_malformed_and_zero_rows():
         ])
     )
     assert trend.prices == [10.40]
+    assert trend.minutes == ["09:33"]
 
 
 def test_eastmoney_rejects_bad_payload():
@@ -92,8 +97,15 @@ def test_bs_points_ignore_noise_and_unconfirmed_last_wave():
     assert calculate_bs_points([10.00, 10.01, 9.99, 10.02]) == []
 
 
+def test_bs_confirmation_indices_match_chart_pivots_and_threshold_crossing():
+    prices = [10.00, 10.06, 10.12, 10.05, 9.98, 10.04]
+    signals = local_bs_signals(prices)
+    assert [(s.index, s.side) for s in signals] == calculate_bs_points(prices)
+    assert [(s.index, s.confirmed_index) for s in signals] == [(0, 1), (2, 3), (4, 5)]
+
+
 def test_tencent_fallback_parses_minutes():
-    payload = {"data": {"sh600000": {"data": {"data": [
+    payload = {"data": {"sh600000": {"data": {"date": "20261023", "data": [
         "0930 10.10 100 1000",
         "0931 10.30 220 2200",
         "1201 9.90 1 1",  # 午休，应被滤掉
@@ -101,6 +113,9 @@ def test_tencent_fallback_parses_minutes():
     trend = parse_tencent(payload, "sh600000")
     assert trend.prices == [10.10, 10.30]
     assert trend.volumes == [100.0, 120.0]
+    assert trend.minutes == ["09:30", "09:31"]
+    assert trend.trade_date == "2026-10-23"
+    assert trend.source == "tencent"
 
 
 def test_tencent_rejects_bad_payload():
@@ -133,6 +148,21 @@ def test_client_caches_within_ttl():
     assert session.calls == 2
 
 
+def test_fetch_timestamp_and_cache_age_start_at_response_receipt(monkeypatch):
+    from stockwidget import intraday
+
+    clock = iter([1000.0, 1000.4, 1001.0])
+    monkeypatch.setattr(intraday.time, "time", lambda: next(clock))
+    client = IntradayClient()
+    calls = []
+    monkeypatch.setattr(client, "_load", lambda symbol:
+                        calls.append(symbol) or Trend(prices=[10.0, 10.1]))
+    result = client.fetch("600000")
+    assert result.fetched_at == 1000.4
+    assert client.fetch("600000") is result
+    assert len(calls) == 1
+
+
 def test_client_reports_error_instead_of_raising():
     trend = IntradayClient(session=_FailingSession(requests.Timeout())).fetch("600000")
     assert trend.error == "请求超时"
@@ -142,6 +172,46 @@ def test_client_reports_error_instead_of_raising():
 def test_client_rejects_invalid_symbol_without_network():
     session = _FailingSession(AssertionError("不该发起请求"))
     assert IntradayClient(session=session).fetch("不是代码").error == "代码格式不正确"
+
+
+def test_failed_or_empty_refresh_keeps_last_good_curve_and_recovers(monkeypatch):
+    client = IntradayClient()
+    good = Trend(prices=[10.0, 10.2], minutes=["09:30", "09:31"], trade_date="2026-10-26")
+    recovered = Trend(prices=[10.0, 10.2, 10.3], trade_date="2026-10-26")
+    responses = iter([good, Trend(error="请求超时"), Trend(), recovered])
+    monkeypatch.setattr(client, "_load", lambda symbol: next(responses))
+    fresh = client.fetch("600000", now=1000.0)
+    for now in (1002.0, 1004.0):
+        stale = client.fetch("600000", now=now)
+        assert stale.prices == fresh.prices
+        assert stale.minutes == fresh.minutes
+        assert stale.stale and stale.error
+        assert stale.fetched_at == 1000.0
+        assert not fresh.stale and fresh.error is None
+    latest = client.fetch("600000", now=1006.0)
+    assert latest.prices == [10.0, 10.2, 10.3]
+    assert not latest.stale and latest.error is None
+    assert latest.fetched_at == 1006.0
+
+
+def test_forced_refresh_keeps_fallback_but_day_and_session_changes_expire_it(monkeypatch):
+    client = IntradayClient()
+    responses = iter([
+        Trend(prices=[10.0, 10.2], trade_date="2026-10-26"),
+        Trend(error="请求超时"),
+        Trend(error="请求超时"),
+        Trend(prices=[10.1, 10.3], trade_date="2026-10-27"),
+        Trend(prices=[10.4], trade_date="2026-10-28"),
+    ])
+    monkeypatch.setattr(client, "_load", lambda symbol: next(responses))
+    client.fetch("600000", now=1000.0)
+    client.reset_cache()
+    assert client.fetch("600000", now=1000.1).stale
+    assert not client.fetch("600000", now=1000.0 + 86400).prices
+    client.fetch("600000", now=1002.0 + 86400)
+    next_session = client.fetch("600000", now=1004.0 + 86400)
+    assert next_session.prices == [10.4]
+    assert not next_session.stale
 
 
 # --------------------------------------------------------------- 测试替身

@@ -16,6 +16,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from .providers import DEFAULT_PROVIDER
+from .symbols import classify
 
 APP_DIR_NAME = "stock-ticker-widget"
 CONFIG_FILE_NAME = "config.json"
@@ -26,9 +27,18 @@ DISPLAY_THEMES = ("theme1", "theme2")
 # stockwidget/kline.py 直接读它，两边不会再各写一份。
 KLINE_SOURCES = ("auto", "eastmoney", "tencent", "sina")
 THEME2_SIDES = ("right", "left")
-# sides = 左中右（左右各两行文字），stacked = 上中下（上下各一行文字）
-ROW_STYLES = ("sides", "stacked")
+# sides = 左中右，stacked = 上中下，top_bottom = 信息在上、K 线在下
+ROW_STYLES = ("sides", "stacked", "top_bottom")
 COLOR_SCHEMES = ("cn", "us")
+COMPONENT_REGIONS = (
+    ("row", "股票卡片"),
+    ("name", "股票名称"),
+    ("price", "股价"),
+    ("percent", "涨跌幅"),
+    ("dark", "暗盘"),
+    ("chart", "K 线（经典主题）"),
+    ("canvas", "千档与 K 线画布（主题 2）"),
+)
 
 # 只把“显示/窗口外观”按主题隔离。数据源、自选、刷新频率、Debug、
 # MCP/托盘提醒仍是全局共享配置，切主题不会复制或分叉这些运行状态。
@@ -41,6 +51,7 @@ THEME_SCOPED_FIELDS = (
     "always_on_top",
     "show_title_buttons",
     "show_sparkline",
+    "show_chart_depth",
     "show_sparkline_fill",
     "show_bs_points",
     "show_open_line",
@@ -50,6 +61,7 @@ THEME_SCOPED_FIELDS = (
     "grayscale",
     "grayscale_level",
     "intraday_chart",
+    "chart_fill_width",
     "show_dark_trade",
     "compact",
     "theme2_side",
@@ -60,6 +72,7 @@ THEME_SCOPED_FIELDS = (
     "row_style",
     "visible_rows",
     "chart_height",
+    "component_sizes",
     "font_family",
     "font_size",
     "stock_name_font_size",
@@ -82,6 +95,7 @@ FONT_FAMILY_RE = re.compile(r"^[\w \-,'\"一-鿿]{0,120}$")
 HEX_COLOR_RE = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
 
 MAX_SYMBOLS = 50
+STOCK_COMPONENTS = ("name", "price", "percent", "dark", "chart")
 
 # 整窗透明度下限。留一丝可见度而不是 0：关掉鼠标穿透时，全隐的窗口照样拦鼠标，
 # 桌面上就多出一块看不见又点不穿的死区。想彻底看不见请配合「鼠标穿透」使用。
@@ -139,7 +153,11 @@ class Config:
     # K 线数据源：与行情快照的 provider 相互独立，但同样只走东财/腾讯/新浪公开接口。
     kline_source: str = KLINE_SOURCES[0]
     symbols: list[str] = field(default_factory=lambda: ["600519", "000001", "300750", "601318"])
-    refresh_seconds: int = 5
+    # 自选显示开关按归一化代码保存；未设置的项目全开，与自选列表一起跨主题共享。
+    stock_visibility: dict[str, dict[str, bool]] = field(default_factory=dict)
+    refresh_seconds: float = 5.0
+    # Chart polling is independent of quote polling, with 0.1-second precision.
+    chart_refresh_seconds: float = 1.0
     # Debug 模式绕过交易时段限制，便于收盘后调试实时行情 / K线 / MCP深度。
     debug_mode: bool = False
     color_scheme: str = "cn"  # cn = 红涨绿跌，us = 绿涨红跌
@@ -152,6 +170,7 @@ class Config:
     # 窗口只剩行情内容。改配置、刷新和退出仍可从托盘菜单和设置页进行。
     show_title_buttons: bool = True
     show_sparkline: bool = True
+    show_chart_depth: bool = True  # 经典主题：在走势图内叠加千档挂单分布
     show_sparkline_fill: bool = False
     show_bs_points: bool = True
     show_open_line: bool = True
@@ -164,6 +183,7 @@ class Config:
     grayscale_level: int = DEFAULT_GRAYSCALE_LEVEL
     # 走势图画当日分时曲线（联网取分钟数据）；关掉则只画组件运行期间的采样点
     intraday_chart: bool = True
+    chart_fill_width: bool = False  # 默认完整交易日横轴；开启后已有分时数据铺满宽度
     show_dark_trade: bool = True
     compact: bool = False
     display_theme: str = "theme1"  # theme1 = 经典网格，theme2 = 千档竖列
@@ -174,9 +194,11 @@ class Config:
     layout: str = "multi"  # multi = 多行列表，single = 单行滚动
     # sides = 左中右：左侧名称/暗盘两行，右侧现价/涨跌幅两行，走势图在中间；
     # stacked = 上中下：名称与现价同一行，暗盘与涨跌幅同一行，走势图永远在中间。
+    # top_bottom = 上下：上面一行依次为名称、现价、涨跌幅、暗盘，下面为走势图。
     row_style: str = "sides"
     visible_rows: int = 4
     chart_height: int = 0  # K 线（走势图）高度，0 表示按字号自动推算
+    component_sizes: dict[str, dict[str, int]] = field(default_factory=dict)
     font_family: str = ""  # 留空表示跟随系统字体
     font_size: int = 13  # 按钮与间距的基础字号
     stock_name_font_size: int = 12
@@ -213,6 +235,23 @@ class Config:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+    def stock_component_visible(
+        self, symbol: str, component: str, *, include_global: bool = True
+    ) -> bool:
+        parsed = classify(symbol)
+        key = parsed.code if parsed is not None else symbol
+        enabled = self.stock_visibility.get(key, {}).get(component, True)
+        if not include_global:
+            return enabled
+        master = {
+            "name": self.show_stock_name,
+            "price": self.show_stock_price,
+            "percent": self.show_stock_price,
+            "dark": self.show_dark_trade and not self.compact,
+            "chart": self.show_sparkline,
+        }
+        return enabled and master.get(component, True)
 
 
 def _theme_profile_from_config(config: Config) -> dict[str, Any]:
@@ -251,9 +290,31 @@ def sanitize(raw: Any, *, _include_theme_profiles: bool = True) -> Config:
         if seen:
             out.symbols = seen[:MAX_SYMBOLS]
 
+    visibility = raw.get("stock_visibility")
+    if isinstance(visibility, dict):
+        watched = {
+            parsed.code if (parsed := classify(symbol)) else symbol
+            for symbol in out.symbols
+        }
+        for symbol, values in visibility.items():
+            if not isinstance(symbol, str) or not isinstance(values, dict):
+                continue
+            parsed = classify(symbol)
+            key = parsed.code if parsed else symbol
+            if key not in watched:
+                continue
+            flags = {part: values[part] for part in STOCK_COMPONENTS
+                     if isinstance(values.get(part), bool)}
+            if flags:
+                out.stock_visibility[key] = flags
+
     refresh = _as_number(raw.get("refresh_seconds"))
     if refresh is not None:
-        out.refresh_seconds = int(_clamp(round(refresh), 1, 3600))
+        out.refresh_seconds = round(_clamp(refresh, 0.1, 3600), 1)
+
+    chart_refresh = _as_number(raw.get("chart_refresh_seconds"))
+    if chart_refresh is not None:
+        out.chart_refresh_seconds = round(_clamp(chart_refresh, 0.1, 3600), 1)
 
     if raw.get("color_scheme") in COLOR_SCHEMES:
         out.color_scheme = raw["color_scheme"]
@@ -291,6 +352,23 @@ def sanitize(raw: Any, *, _include_theme_profiles: bool = True) -> Config:
     depth_width = _as_number(raw.get("theme2_depth_width"))
     if depth_width is not None:
         out.theme2_depth_width = int(_clamp(round(depth_width), 40, 600))
+
+    component_sizes = raw.get("component_sizes")
+    if isinstance(component_sizes, dict):
+        for region, _label in COMPONENT_REGIONS:
+            values = component_sizes.get(region)
+            if not isinstance(values, dict):
+                continue
+            size = {}
+            for axis in ("width", "height"):
+                # chart.height 继续使用兼容旧配置的 chart_height 字段。
+                if region == "chart" and axis == "height":
+                    continue
+                value = _as_number(values.get(axis))
+                if value is not None:
+                    size[axis] = int(_clamp(round(value), 0, 8192))
+            if size and any(size.values()):
+                out.component_sizes[region] = size
 
     grayscale_level = _as_number(raw.get("grayscale_level"))
     if grayscale_level is not None:
@@ -367,6 +445,7 @@ def sanitize(raw: Any, *, _include_theme_profiles: bool = True) -> Config:
         "always_on_top",
         "show_title_buttons",
         "show_sparkline",
+        "show_chart_depth",
         "show_sparkline_fill",
         "show_bs_points",
         "show_open_line",
@@ -375,6 +454,7 @@ def sanitize(raw: Any, *, _include_theme_profiles: bool = True) -> Config:
         "show_stock_price",
         "grayscale",
         "intraday_chart",
+        "chart_fill_width",
         "show_dark_trade",
         "compact",
         "theme2_always_expanded",
@@ -397,10 +477,11 @@ def sanitize(raw: Any, *, _include_theme_profiles: bool = True) -> Config:
         values = {k: _as_number(bounds.get(k)) for k in ("x", "y", "width", "height")}
         if all(v is not None for v in values.values()):
             scale = _as_number(bounds.get("scale"))
+            min_width = 1 if out.display_theme == "theme2" else 200
             out.bounds = Bounds(
                 x=int(values["x"]),
                 y=int(values["y"]),
-                width=int(_clamp(round(values["width"]), 200, 4000)),
+                width=int(_clamp(round(values["width"]), min_width, 4000)),
                 height=int(_clamp(round(values["height"]), 56, 4000)),
                 scale=round(_clamp(scale if scale is not None else 1.0, 0.6, 3.0), 3),
                 manual_size=bounds.get("manual_size") is True,

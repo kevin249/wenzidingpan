@@ -1,9 +1,12 @@
 """网格里的一格行情。
 
-主题1有两种版式，中间永远是当日分时图：
+主题1有三种版式：
 
 * 左中右（``row_style="sides"``）：左边名称压暗盘资金，右边现价压涨跌幅，左右各两行；
 * 上中下（``row_style="stacked"``）：上面名称与现价同一行，下面暗盘与涨跌幅同一行。
+* 上下（``row_style="top_bottom"``）：上面依次为名称、现价、涨跌幅、暗盘，下面是分时图。
+
+上中下与上下的文字行保持自然高度，与走势图之间不留间距。
 
 选左中右时，格子窄到三列放不下才会临时退回上中下，避免文字被裁掉。
 
@@ -18,6 +21,8 @@
 """
 
 from __future__ import annotations
+
+from datetime import datetime
 
 from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtGui import QFontMetrics
@@ -34,12 +39,14 @@ from .. import mcp_bs
 from ..config import Config
 from ..intraday import Trend, calculate_bs_points
 from ..kline import PERIOD_DAY
+from ..market_hours import SHANGHAI_TZ
 from ..mcp_depth import DepthSnapshot
 from ..providers.base import Quote
 from ..symbols import classify
 from . import kline_loader
 from .depth_ladder import MODE_DAILY, OUTER_PAD, DepthLadder
 from .sparkline import Sparkline
+from .sizing import SizedLabel, SizedWidget
 from .theme import (
     BLACK,
     MUTED,
@@ -59,18 +66,18 @@ def _color_style(color) -> str:
     return f"color: rgba({color.red()},{color.green()},{color.blue()},{color.alpha()});"
 
 
-class _ElidedLabel(QLabel):
+class _ElidedLabel(SizedLabel):
     """主题2 顶部信息条专用：放不下时按省略号截断，而不是把整行顶宽。
 
     QLabel 默认的 ``minimumSizeHint`` 就是整段文字的宽度。主题2 的信息条一层层
     算下来会比外框还宽（默认 415px 外框里要放 450px 以上的文字），而水平滚动条
     是关掉的——结果就是右侧内容被直接裁掉、拖窄窗口也没用。这里把最小宽度压到
-    几个字符，再由 ``elidedText`` 自己截断，任何宽度下都不会溢出。
+    0，再由 ``elidedText`` 自己截断，窄窗口下不会把行和画布撑出视口。
     """
 
-    def __init__(self, min_chars: int = 4, parent: QWidget | None = None) -> None:
+    def __init__(self, min_chars: int = 0, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._min_chars = max(1, int(min_chars))
+        self._min_chars = max(0, int(min_chars))
         self._full_text = ""
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
 
@@ -95,7 +102,7 @@ class _ElidedLabel(QLabel):
     def sizeHint(self) -> QSize:  # noqa: N802
         metrics = QFontMetrics(self.font())
         # 想要整段文字的宽度，布局有地方就给全；没地方则由 minimumSizeHint 兜底。
-        return QSize(metrics.horizontalAdvance(self._full_text), metrics.height())
+        return self._display_size_hint(QSize(metrics.horizontalAdvance(self._full_text), metrics.height()))
 
     def minimumSizeHint(self) -> QSize:  # noqa: N802
         metrics = QFontMetrics(self.font())
@@ -106,7 +113,7 @@ class _ElidedLabel(QLabel):
         self._refresh_elide()
 
 
-class QuoteRow(QWidget):
+class QuoteRow(SizedWidget):
     theme2_expansion_changed = Signal(str, bool)
     # 点价格＝请求「整张自选列表一起展开 / 收起」。行自己不决定展开态：展开是
     # 全列表级动作，而且要求「鼠标移开不收起、点任意屏幕位置才收起」，这两件事
@@ -118,12 +125,13 @@ class QuoteRow(QWidget):
         self.symbol = symbol
         self._last_quote: Quote | None = None
         self._last_trend: Trend | None = None
+        self._chart_day = None
         self._last_depth: DepthSnapshot | None = None
         self._theme2_expanded = False
 
-        self.name_label = QLabel()
-        self.price_label = QLabel()
-        self.percent_label = QLabel()
+        self.name_label = SizedLabel()
+        self.price_label = SizedLabel()
+        self.percent_label = SizedLabel()
         self.dark_label = QLabel("暗")
         self.dark_value = QLabel()
         self.sparkline = Sparkline()
@@ -139,7 +147,7 @@ class QuoteRow(QWidget):
         self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
         self.setMinimumSize(0, 0)
 
-        self.dark_box = QWidget()
+        self.dark_box = SizedWidget()
         dark_layout = QHBoxLayout(self.dark_box)
         dark_layout.setContentsMargins(0, 0, 0, 0)
         dark_layout.setSpacing(5)
@@ -209,6 +217,9 @@ class QuoteRow(QWidget):
 
     # ------------------------------------------------------------ 外观
 
+    def _visible(self, component: str) -> bool:
+        return self._config.stock_component_visible(self.symbol, component)
+
     def apply_config(self, config: Config) -> None:
         previous = self._config
         if (
@@ -221,12 +232,16 @@ class QuoteRow(QWidget):
             # 强制重建，不能复用旧 layout_state。
             self._layout_state = None
         self._config = config
-        compact = config.compact
+        if previous.intraday_chart != config.intraday_chart:
+            self._last_trend = None
+            self.sparkline.set_series([])
         # 紧凑模式只省掉暗盘和页脚，走势图照画——只是压扁一点。
-        self.sparkline.setVisible(config.show_sparkline)
-        self.name_label.setVisible(config.show_stock_name)
-        self.price_label.setVisible(config.show_stock_price)
-        self.percent_label.setVisible(config.show_stock_price)
+        self.sparkline.setVisible(self._visible("chart"))
+        self.sparkline.set_fill_width(config.chart_fill_width)
+        self.sparkline.set_show_depth(config.show_chart_depth)
+        self.name_label.setVisible(self._visible("name"))
+        self.price_label.setVisible(self._visible("price"))
+        self.percent_label.setVisible(self._visible("percent"))
         self.sparkline.set_annotation_options(
             show_signals=config.show_bs_points,
             show_open_line=config.show_open_line,
@@ -238,15 +253,34 @@ class QuoteRow(QWidget):
         self.sparkline.set_annotation_font(
             make_font(config, pixel_size=config.chart_label_font_size)
         )
-        self.theme2_depth.apply_config(config)
+        self.theme2_depth.apply_config(config, symbol=self.symbol)
+        self._apply_component_sizes()
         self._apply_theme2_metrics(config)
         self._update_layout_mode()
+        self._apply_component_sizes()
         if self._last_quote is not None:
             self.update_quote(self._last_quote, config, self._last_trend)
+        if self._theme2_expanded:
+            self._request_theme2_kline()
 
     def resizeEvent(self, event) -> None:  # noqa: N802 - Qt 命名
         super().resizeEvent(event)
         self._update_layout_mode()
+        self._apply_component_sizes()
+
+    def _apply_component_sizes(self) -> None:
+        sizes = self._config.component_sizes
+        self.set_display_size(sizes.get("row", {}))
+        for region, widget in (
+            ("name", self.name_label), ("price", self.price_label),
+            ("percent", self.percent_label), ("dark", self.dark_box),
+            ("name", self.theme2_name_label), ("dark", self.theme2_dark_label),
+        ):
+            widget.set_display_size(sizes.get(region, {}))
+        self.sparkline.set_display_size({
+            "width": sizes.get("chart", {}).get("width", 0),
+            "height": self._config.chart_height,
+        } if self._visible("chart") else {})
 
     def _apply_theme2_metrics(self, config: Config) -> None:
         """主题2只调顶部信息条与画布的字体/间距，不再靠撑宽详情区腾地方。
@@ -333,11 +367,11 @@ class QuoteRow(QWidget):
         """
         config = self._config
         expanded = self._theme2_expanded
-        self.theme2_name_label.setVisible(expanded and config.show_stock_name)
-        self.theme2_code_label.setVisible(expanded and config.show_stock_name)
+        self.theme2_name_label.setVisible(expanded and self._visible("name"))
+        self.theme2_code_label.setVisible(expanded and self._visible("name"))
         self.theme2_high_low_label.setVisible(expanded and config.show_high_low)
         self.theme2_dark_label.setVisible(
-            expanded and config.show_dark_trade and not config.compact
+            expanded and self._visible("dark")
         )
 
     def _request_theme2_expand(self) -> None:
@@ -350,12 +384,35 @@ class QuoteRow(QWidget):
 
     def theme2_natural_width(self) -> int:
         """自动/启动布局用的自然宽度：画布自然宽 + 左右边距，展开不再追加。"""
+        requested = self._config.component_sizes.get("row", {}).get("width", 0)
+        if requested:
+            return requested
         margins = self._layout.contentsMargins()
         return self.theme2_depth.sizeHint().width() + margins.left() + margins.right()
 
+    def classic_header_width(self) -> int:
+        """上下版式的自动列宽：给同一行四项信息留足自然宽度。"""
+        config = self._config
+        # 自动列宽不依赖当前窄格子的间距，避免按压窄后的 sizeHint 反复缩小。
+        padding = max(4, round(config.font_size * 0.65))
+        gap = max(4, round(config.font_size * 0.6))
+        widths = [
+            label.sizeHint().width()
+            for label in (self.name_label, self.price_label, self.percent_label)
+            if not label.isHidden()
+        ]
+        if not self.dark_box.isHidden():
+            widths.append(
+                config.component_sizes.get("dark", {}).get("width", 0)
+                or (self.dark_label.sizeHint().width() + self.dark_value.sizeHint().width()
+                    + max(2, gap // 2))
+            )
+        return sum(widths) + max(0, len(widths) - 1) * gap + padding * 2
+
     def _request_theme2_kline(self) -> None:
         """日K 只在「已展开且切到日K」时才拉，避免白白发请求。"""
-        if not self._theme2_expanded or self.theme2_depth.chart_mode != MODE_DAILY:
+        if (not self._theme2_expanded or self.theme2_depth.chart_mode != MODE_DAILY
+                or not self._config.stock_component_visible(self.symbol, "chart", include_global=False)):
             return
         kline = self.theme2_depth.kline
         if kline is not None and kline.bars:
@@ -374,6 +431,7 @@ class QuoteRow(QWidget):
         if kline is None or not kline.bars:
             message = (getattr(kline, "error", "") or "") or "日K 暂无数据"
         self.theme2_depth.set_kline(kline, message)
+        self.refresh_bs_signals()
 
     def set_theme2_expanded(self, expanded: bool, *, notify: bool = True) -> None:
         """展开/收起只改画布内部的分区，外框宽高一个像素都不动。
@@ -395,6 +453,10 @@ class QuoteRow(QWidget):
     def _update_layout_mode(self) -> None:
         """按所选版式摆放文字；各类字体保持用户设置的比例。"""
         config = self._config
+        # 切换主题/版式后旧网格仍保留空行，先解除旧的拉伸权重。
+        for row in range(self._layout.rowCount()):
+            self._layout.setRowStretch(row, 0)
+        self._layout.setAlignment(Qt.AlignmentFlag(0))
         if config.display_theme == "theme2":
             # 顶部信息条（价格上方）恒占一行，画布吃满剩余高度；展开与否只改
             # 画布内部的分区，行内布局本身不变，所以外框不会跟着跳。
@@ -423,7 +485,7 @@ class QuoteRow(QWidget):
             self._layout.setContentsMargins(padding, padding, padding, padding)
             self._layout.setHorizontalSpacing(0)
             self._layout.setVerticalSpacing(max(1, round(config.font_size * 0.12)))
-            for column in range(3):
+            for column in range(self._layout.columnCount()):
                 self._layout.setColumnStretch(column, 0)
             self._layout.setColumnStretch(0, 1)
             self._layout.setRowStretch(0, 0)
@@ -444,10 +506,14 @@ class QuoteRow(QWidget):
         self.theme2_depth.hide()
         self._layout.setRowStretch(0, 0)
         self._layout.setRowStretch(1, 0)
-        self.name_label.setVisible(config.show_stock_name)
-        self.price_label.setVisible(config.show_stock_price)
-        self.percent_label.setVisible(config.show_stock_price)
-        self.sparkline.setVisible(config.show_sparkline)
+        self.name_label.setVisible(self._visible("name"))
+        self.price_label.setVisible(self._visible("price"))
+        self.percent_label.setVisible(self._visible("percent"))
+        self.sparkline.setVisible(self._visible("chart"))
+        self.dark_box.setVisible(
+            self._visible("dark") and (self._last_quote is None
+            or (not self._last_quote.error and fmt_money(self._last_quote.dark_fund) is not None))
+        )
         self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
         # Theme 2 为纵向盘口设过最小行高；经典主题必须彻底解除，否则上中下布局
         # 会被残留的 Theme 2 行高约束干扰。
@@ -490,21 +556,32 @@ class QuoteRow(QWidget):
                 pixel_size=config.dark_trade_font_size,
             )
         )
-        show_chart = config.show_sparkline
+        show_chart = self._visible("chart")
         # 用户设了 K 线高度就锁死走势图；留 0 时仍按字号推算并可随格子拉伸。
         fixed_chart = config.chart_height > 0
         compact_padding = max(2, round(config.font_size * 0.35))
         compact_gap = max(2, round(config.font_size * 0.25))
-        # 用户选上中下就一直上中下；选左中右时，只有窄到三列排不开才临时退回来。
-        prefer_stacked = config.row_style == "stacked"
+        # 显式选择纵向版式就保持它；左中右只有窄到三列排不开才临时退回上中下。
+        top_bottom = config.row_style == "top_bottom"
+        prefer_stacked = config.row_style in ("stacked", "top_bottom")
         stacked = prefer_stacked or narrow
+        # 文字不能随格子长高，否则文字在高单元格里居中，看起来图表上下各空一大截。
+        # 左中右仍保持原来的两侧居中排列；纵向版式只让自动高度的图表吃剩余空间。
+        for widget in (
+            self.name_label, self.price_label, self.percent_label, self.dark_box
+        ):
+            policy = widget.sizePolicy()
+            policy.setVerticalPolicy(QSizePolicy.Fixed if stacked else QSizePolicy.Preferred)
+            widget.setSizePolicy(policy)
+        if stacked and (fixed_chart or not show_chart):
+            self._layout.setAlignment(Qt.AlignTop)
         # 上中下要求上下两行各自同行，所以显式选它时不再往下拆行。
         stacked_sides = (
             not prefer_stacked
             and narrow
             and self.width() < 180
-            and config.show_stock_name
-            and config.show_stock_price
+            and self._visible("name")
+            and self._visible("price")
             and self.name_label.minimumSizeHint().width()
             + self.price_label.minimumSizeHint().width()
             + compact_padding * 2
@@ -516,7 +593,7 @@ class QuoteRow(QWidget):
             and narrow
             and self.width() < 180
             and not self.dark_box.isHidden()
-            and config.show_stock_price
+            and self._visible("percent")
             and self.dark_label.minimumSizeHint().width()
             + self.dark_value.minimumSizeHint().width()
             + self._dark_layout.spacing()
@@ -525,9 +602,20 @@ class QuoteRow(QWidget):
             + compact_gap
             > self.width() - max(8, compact_gap * 2)
         )
-        layout_state = (stacked, show_chart, stacked_sides, stacked_secondary, fixed_chart)
-        # 固定高度的走势图在格子里垂直居中；自动高度则铺满，交给布局拉伸。
-        chart_align = Qt.AlignVCenter if fixed_chart else Qt.AlignmentFlag(0)
+        fixed_width = config.component_sizes.get("chart", {}).get("width", 0) > 0
+        text_widgets = (self.name_label, self.price_label, self.percent_label, self.dark_box)
+
+        def in_layout(widget):
+            # 暗盘尚无数据时保留旧有格位；明确关闭暗盘才移除该项。
+            return self._visible("dark") if widget is self.dark_box else not widget.isHidden()
+
+        text_visibility = tuple(in_layout(widget) for widget in text_widgets)
+        layout_state = (top_bottom, stacked, show_chart, stacked_sides, stacked_secondary,
+                        fixed_chart, fixed_width, text_visibility)
+        # 左中右的固定图表仍居中；纵向版式紧贴文字，自动图表吃满剩余高度。
+        chart_align = Qt.AlignVCenter if fixed_chart and not stacked else Qt.AlignmentFlag(0)
+        if fixed_width:
+            chart_align |= Qt.AlignLeft
         if layout_state != self._layout_state:
             for widget in (
                 self.name_label,
@@ -537,52 +625,67 @@ class QuoteRow(QWidget):
                 self.sparkline,
             ):
                 self._layout.removeWidget(widget)
-            if stacked:
-                if stacked_sides:
-                    self._layout.addWidget(self.name_label, 0, 0, 1, 2)
-                    self._layout.addWidget(self.price_label, 1, 0, 1, 2)
-                    chart_row = 2
-                else:
-                    self._layout.addWidget(self.name_label, 0, 0)
-                    self._layout.addWidget(self.price_label, 0, 1)
-                    chart_row = 1
+            for column in range(self._layout.columnCount()):
+                self._layout.setColumnStretch(column, 0)
+            if top_bottom:
+                visible = [widget for widget in text_widgets if in_layout(widget)]
+                for column, widget in enumerate(visible):
+                    self._layout.addWidget(widget, 0, column)
                 if show_chart:
-                    self._layout.addWidget(self.sparkline, chart_row, 0, 1, 2, chart_align)
-                    details_row = chart_row + 1
-                else:
-                    details_row = chart_row
-                if stacked_secondary:
-                    self._layout.addWidget(
-                        self.dark_box, details_row, 0, 1, 2, Qt.AlignLeft | Qt.AlignVCenter
-                    )
-                    self._layout.addWidget(self.percent_label, details_row + 1, 0, 1, 2)
-                else:
-                    self._layout.addWidget(
-                        self.dark_box, details_row, 0, Qt.AlignLeft | Qt.AlignVCenter
-                    )
-                    self._layout.addWidget(self.percent_label, details_row, 1)
+                    self._layout.addWidget(self.sparkline, int(bool(visible)), 0,
+                                           1, max(1, len(visible)), chart_align)
+                # 信息按顺序紧排，多余宽度留在暗盘之后，图表仍铺满整行。
+                self._layout.setColumnStretch(max(0, len(visible) - 1), 1)
+            elif stacked:
+                next_row = 0
+
+                def add_text_row(widgets, split):
+                    nonlocal next_row
+                    visible = [widget for widget in widgets if in_layout(widget)]
+                    for column, widget in enumerate(visible):
+                        if split:
+                            self._layout.addWidget(widget, next_row, 0, 1, 2)
+                            next_row += 1
+                        else:
+                            self._layout.addWidget(widget, next_row, column, 1,
+                                                   2 if len(visible) == 1 else 1)
+                    if visible and not split:
+                        next_row += 1
+
+                add_text_row((self.name_label, self.price_label), stacked_sides)
+                if show_chart:
+                    self._layout.addWidget(self.sparkline, next_row, 0, 1, 2, chart_align)
+                    next_row += 1
+                add_text_row((self.dark_box, self.percent_label), stacked_secondary)
                 self._layout.setColumnStretch(0, 1)
                 # 右列按现价/涨跌幅的自然宽度分配，避免等分后文字被裁切。
                 self._layout.setColumnStretch(1, 0 if not stacked_sides else 1)
                 self._layout.setColumnStretch(2, 0)
             else:
-                self._layout.addWidget(self.name_label, 0, 0)
-                self._layout.addWidget(self.dark_box, 1, 0, Qt.AlignLeft | Qt.AlignVCenter)
+                top_visible = not self.name_label.isHidden() or not self.price_label.isHidden()
+                bottom_visible = in_layout(self.dark_box) or not self.percent_label.isHidden()
+                bottom_row = int(top_visible)
+                right_column = int(not self.name_label.isHidden() or in_layout(self.dark_box))
+                if not self.name_label.isHidden():
+                    self._layout.addWidget(self.name_label, 0, 0)
+                if in_layout(self.dark_box):
+                    self._layout.addWidget(self.dark_box, bottom_row, 0, Qt.AlignLeft | Qt.AlignVCenter)
                 if show_chart:
-                    self._layout.addWidget(self.sparkline, 0, 1, 2, 1, chart_align)
-                    self._layout.addWidget(self.price_label, 0, 2)
-                    self._layout.addWidget(self.percent_label, 1, 2)
-                    self._layout.setColumnStretch(0, 0)
-                    self._layout.setColumnStretch(1, 1)
-                    self._layout.setColumnStretch(2, 0)
-                else:
-                    self._layout.addWidget(self.price_label, 0, 1)
-                    self._layout.addWidget(self.percent_label, 1, 1)
-                    # 多余宽度放在内容右侧，中间不再保留走势图空位。
-                    self._layout.setColumnStretch(0, 0)
-                    self._layout.setColumnStretch(1, 0)
-                    self._layout.setColumnStretch(2, 1)
+                    self._layout.addWidget(self.sparkline, 0, right_column,
+                                           max(1, int(top_visible) + int(bottom_visible)), 1, chart_align)
+                    self._layout.setColumnStretch(right_column, 1)
+                    right_column += 1
+                if not self.price_label.isHidden():
+                    self._layout.addWidget(self.price_label, 0, right_column)
+                if not self.percent_label.isHidden():
+                    self._layout.addWidget(self.percent_label, bottom_row, right_column)
+                if not show_chart:
+                    # 多余宽度放在内容右侧，不保留已关闭组件的空列。
+                    self._layout.setColumnStretch(right_column + 1, 1)
             self._layout_state = layout_state
+        if stacked and show_chart and not fixed_chart:
+            chart_row = self._layout.getItemPosition(self._layout.indexOf(self.sparkline))[0]
+            self._layout.setRowStretch(chart_row, 1)
         self._narrow = narrow
 
         compact = config.compact
@@ -601,10 +704,10 @@ class QuoteRow(QWidget):
             chart_height = config.chart_height
         self._layout.setContentsMargins(padding, padding, padding, padding)
         self._layout.setHorizontalSpacing(gap)
-        self._layout.setVerticalSpacing(1)
+        self._layout.setVerticalSpacing(0 if stacked else 1)
         self._dark_layout.setSpacing(max(2, gap // 2))
-        self.sparkline.setMinimumWidth(chart_width if config.show_sparkline else 0)
-        if not config.show_sparkline:
+        self.sparkline.setMinimumWidth(chart_width if show_chart else 0)
+        if not show_chart:
             self.sparkline.set_preferred_height(0)
             self.sparkline.setMinimumHeight(0)
             self.sparkline.setMaximumHeight(MAX_WIDGET_SIZE)
@@ -620,8 +723,34 @@ class QuoteRow(QWidget):
     # ------------------------------------------------------------ 数据
 
     def update_quote(self, quote: Quote, config: Config, trend: Trend | None = None) -> None:
+        today = datetime.now(SHANGHAI_TZ).date()
+        if self._chart_day is not None and self._chart_day != today:
+            # 跨日不能把昨天的曲线当作今天的故障保留帧。
+            self._last_trend = None
+            self.sparkline.clear()
+            self._chart_day = today
+        if not config.intraday_chart:
+            trend = None
+        elif quote.error and not trend:
+            trend = self._last_trend
+        if trend and trend.fetched_at and datetime.fromtimestamp(trend.fetched_at, SHANGHAI_TZ).date() != today:
+            trend = None
+        if (trend and self._last_trend and trend.trade_date and self._last_trend.trade_date
+                and trend.trade_date != self._last_trend.trade_date):
+            self.sparkline.clear()
         self._last_quote = quote
         self._last_trend = trend
+        if trend or (not quote.error and quote.price is not None):
+            self._chart_day = today
+        if trend and trend.stale:
+            stamp = datetime.fromtimestamp(trend.fetched_at, SHANGHAI_TZ).strftime("%H:%M:%S")
+            self.sparkline.setToolTip(f"分时刷新失败（{trend.error}），保留 {stamp} 的图表，等待下次更新")
+        elif quote.error:
+            self.sparkline.setToolTip(f"报价更新失败（{quote.error}），保留最后有效图表")
+        else:
+            self.sparkline.setToolTip("")
+        # 曲线对鼠标透明，悬停事件由股票卡片接收。
+        self.setToolTip(self.sparkline.toolTip())
         color = direction_color(config, quote.change)
         self._update_theme2_data(quote, config, trend, color)
         self.name_label.setText(quote.name or quote.symbol)
@@ -633,8 +762,12 @@ class QuoteRow(QWidget):
             self.price_label.setText(quote.error)
             self.price_label.setStyleSheet(_color_style(MUTED))
             self.percent_label.setText("")
-            self.sparkline.clear()
+            # 报价错误只更新错误文字，不把已经画出的曲线清空后重画。
+            if trend:
+                self._update_sparkline_data(quote, config, trend, color)
             self._set_dark(None, config)
+            self._update_layout_mode()
+            self._apply_component_sizes()
             return
 
         self.price_label.setText(fmt_price(quote.price))
@@ -651,28 +784,32 @@ class QuoteRow(QWidget):
             _color_style(text_color(config, config.stock_percent_color, color))
         )
 
-        self.sparkline.set_color(color)
-        self.sparkline.push_sample(quote.price)
-        self.sparkline.set_series(trend.prices if trend else [])
+        self._update_sparkline_data(quote, config, trend, color)
+        self._set_dark(quote.dark_fund, config)
+        # 文本写入后 minimumSizeHint 才准确；必要时切到更窄的堆叠布局。
+        self._update_layout_mode()
+        self._apply_component_sizes()
+
+    def _update_sparkline_data(self, quote: Quote, config: Config, trend: Trend | None, color) -> None:
+        if not quote.error:
+            self.sparkline.set_color(color)
+            self.sparkline.push_sample(quote.price)
+        self.sparkline.set_series(trend.prices if trend else [], trend.minutes if trend else [])
         # 分时接口给了昨收就用它的，否则用行情里的——虚线基准不能缺。
-        self.sparkline.set_prev_close(
-            (trend.prev_close if trend and trend.prev_close else None) or quote.prev_close
-        )
+        prev_close = (trend.prev_close if trend and trend.prev_close else None) or quote.prev_close
+        if prev_close is not None or not quote.error:
+            self.sparkline.set_prev_close(prev_close)
         prices = trend.prices if trend else self.sparkline.points
         self.sparkline.set_annotations(
             trend.open_price if trend else (prices[0] if prices else None),
-            calculate_bs_points(prices),
-            show_signals=config.show_bs_points,
+            calculate_bs_points(prices, symbol=quote.symbol),
+            show_signals=config.show_bs_points and not quote.error,
             show_open_line=config.show_open_line,
             show_high_low=config.show_high_low,
             show_fill=config.show_sparkline_fill,
             grayscale=config.grayscale,
             grayscale_level=config.grayscale_level,
         )
-
-        self._set_dark(quote.dark_fund, config)
-        # 文本写入后 minimumSizeHint 才准确；必要时切到更窄的堆叠布局。
-        self._update_layout_mode()
 
     def _update_theme2_data(self, quote: Quote, config: Config, trend: Trend | None, color) -> None:
         symbol = classify(quote.symbol)
@@ -730,15 +867,50 @@ class QuoteRow(QWidget):
             percent_color=text_color(config, config.stock_percent_color, color),
         )
         prev_close = (trend.prev_close if trend and trend.prev_close else None) or quote.prev_close
-        self.theme2_depth.set_intraday(trend if not quote.error else None, prev_close)
+        self.theme2_depth.set_intraday(trend, prev_close)
 
         # B/S 标记跟着分时曲线走；行情出错或没数据时清空，避免留下上一只的点。
         signals = (
-            mcp_bs.bs_points(quote.symbol, prices)
+            calculate_bs_points(prices, symbol=quote.symbol)
             if prices and config.show_bs_points and not quote.error
             else []
         )
         self.theme2_depth.set_signals(signals, show=config.show_bs_points)
+        bars = self.theme2_depth.kline.bars if self.theme2_depth.kline else []
+        self.theme2_depth.set_daily_signals(
+            mcp_bs.daily_bs_points(quote.symbol, bars)
+            if bars and config.show_bs_points and not quote.error else []
+        )
+
+    def refresh_bs_signals(self) -> None:
+        """MCP B/S 缓存更新后只重绘标记，不额外请求行情或重排窗口。"""
+        quote = self._last_quote
+        if quote is None:
+            return
+        config = self._config
+        trend = self._last_trend
+        enabled = bool(config.show_bs_points and not quote.error)
+        prices = trend.prices if trend else []
+        self.theme2_depth.set_signals(
+            calculate_bs_points(prices, symbol=quote.symbol) if enabled and prices else [],
+            show=config.show_bs_points,
+        )
+        bars = self.theme2_depth.kline.bars if self.theme2_depth.kline else []
+        self.theme2_depth.set_daily_signals(
+            mcp_bs.daily_bs_points(quote.symbol, bars) if enabled and bars else []
+        )
+        if enabled and config.show_sparkline:
+            spark_prices = trend.prices if trend else self.sparkline.points
+            self.sparkline.set_annotations(
+                trend.open_price if trend else (spark_prices[0] if spark_prices else None),
+                calculate_bs_points(spark_prices, symbol=quote.symbol),
+                show_signals=config.show_bs_points,
+                show_open_line=config.show_open_line,
+                show_high_low=config.show_high_low,
+                show_fill=config.show_sparkline_fill,
+                grayscale=config.grayscale,
+                grayscale_level=config.grayscale_level,
+            )
 
     def update_depth(self, snapshot: DepthSnapshot | None) -> None:
         self._last_depth = snapshot
@@ -746,7 +918,7 @@ class QuoteRow(QWidget):
         self.theme2_depth.set_depth(snapshot)
 
     def _set_dark(self, dark_fund: float | None, config: Config) -> None:
-        text = fmt_money(dark_fund) if config.show_dark_trade and not config.compact else None
+        text = fmt_money(dark_fund) if self._visible("dark") else None
         dark_color = text_color(
             config,
             config.dark_trade_color,

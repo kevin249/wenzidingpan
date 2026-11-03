@@ -683,7 +683,7 @@ def test_width_only_drag_keeps_scale_when_content_is_screen_compressed(app):
     window.show()
     app.processEvents()
     screen = window.screen().availableGeometry()
-    assert window._base_frame_height(window.width()) > screen.height()  # 确实超屏
+    assert sum(row.sizeHint().height() for row in window._rows.values()) > screen.height()
 
     height = window.height()
     window._on_grip_drag_started(window.size())
@@ -729,6 +729,7 @@ def test_sparkline_fill_is_disabled_by_default_and_can_be_enabled(app):
 
 def test_sparkline_fill_switch_changes_area_below_curve(app):
     sparkline = Sparkline()
+    sparkline.set_fill_width(True)  # 两点铺满，才能在图中央比较面积填充开关。
     sparkline.resize(120, 60)
     sparkline.set_series([10.0, 20.0])
 
@@ -882,7 +883,7 @@ def test_grip_uses_height_for_content_scale(app):
     window.close()
 
 
-def test_restored_large_frame_repairs_stale_small_label_scale(app):
+def test_restored_large_frame_preserves_explicit_small_label_scale(app):
     from stockwidget.config import Bounds
     from stockwidget.providers.base import Quote
 
@@ -902,10 +903,10 @@ def test_restored_large_frame_repairs_stale_small_label_scale(app):
     )
     app.processEvents()
 
-    assert window._scale > 1.0
-    assert all(row.name_label.font().pixelSize() > 9 for row in window._rows.values())
-    assert all(row.price_label.font().pixelSize() > 9 for row in window._rows.values())
-    assert all(row.percent_label.font().pixelSize() > 7 for row in window._rows.values())
+    assert window._scale == pytest.approx(0.696)
+    assert all(row.name_label.font().pixelSize() == 8 for row in window._rows.values())
+    assert all(row.price_label.font().pixelSize() == 10 for row in window._rows.values())
+    assert all(row.percent_label.font().pixelSize() == 8 for row in window._rows.values())
     window.close()
 
 
@@ -1236,12 +1237,7 @@ def test_hidden_title_buttons_keep_window_draggable_and_point_to_tray(app):
 
 
 def test_toggling_title_buttons_keeps_manual_frame_content_and_scale(app):
-    """手动尺寸下切换标题栏，不能把缩放基准搞歪。
-
-    标题栏是 chrome：外框不跟着加减那一条，内容区就凭空多／少一截高度，
-    而绝对缩放基准（_absolute_scale_reference）已经按新的 chrome 算了——
-    下一次哪怕只拖宽度，也会照着歪掉的基准把字号顶大一截。
-    """
+    """手动尺寸下切换标题栏应保持内容高度，之后只调宽度也不能改变字号。"""
     from stockwidget.providers.base import Quote
 
     window = TickerWindow(Config(visible_rows=2))
@@ -1293,13 +1289,12 @@ def test_toggling_title_buttons_keeps_manual_frame_content_and_scale(app):
     assert hidden[0] < settled[0]
     assert hidden[1] == settled[1]  # 内容区始终不变，少掉的只有 chrome
 
-    # 藏起来之后只拖宽度、高度不动，缩放就该基本留在原地：修之前这里会照着
-    # 少了一条 chrome 的基准算，scale 直接涨 25%，字号 19→24。
+    # 藏起来之后只拖宽度、高度不动，缩放和字号必须原样保留。
     window.apply_config(Config(visible_rows=2, show_title_buttons=False))
     app.processEvents()
     drag(QSize(window.width() + 120, window.height()))
-    assert window._scale == pytest.approx(scale, rel=0.08)
-    assert abs(window.scaled_config().stock_price_font_size - font) <= 1
+    assert window._scale == pytest.approx(scale)
+    assert window.scaled_config().stock_price_font_size == font
     window.close()
 
 
@@ -1701,6 +1696,7 @@ def test_theme2_canvas_receives_mcp_bs_points(app, monkeypatch):
         return [(1, "B"), (2, "S")]
 
     monkeypatch.setattr(mcp_bs, "bs_points", fake_bs_points)
+    monkeypatch.setattr(mcp_bs, "get_source", lambda: "mcp")
 
     config = Config(display_theme="theme2", show_bs_points=True)
     row = QuoteRow("600519")
@@ -1714,7 +1710,7 @@ def test_theme2_canvas_receives_mcp_bs_points(app, monkeypatch):
     row.update_quote(quote, config, trend)
 
     # 主题2 的 K 线画在行内，B/S 仍要按当天 MCP 信号映射到分时索引上。
-    assert requested == [("600519", trend.prices)]
+    assert requested == [("600519", trend.prices)] * 2
     assert row.theme2_depth._signals == [(1, "B"), (2, "S")]
     assert row.theme2_depth._show_signals is True
 
@@ -1723,11 +1719,55 @@ def test_theme2_canvas_receives_mcp_bs_points(app, monkeypatch):
     row.close()
 
 
+def test_both_themes_follow_local_source_on_snapshot_and_signal_refresh(app, monkeypatch):
+    from stockwidget import mcp_bs
+    from stockwidget.providers.base import Quote
+
+    monkeypatch.setattr(mcp_bs, "get_source", lambda: "local")
+    monkeypatch.setattr(mcp_bs, "bs_points", lambda *args: pytest.fail("local source called MCP"))
+    config = Config(display_theme="theme2", show_bs_points=True)
+    row = QuoteRow("603986")
+    row.apply_config(config)
+    row.update_quote(
+        Quote.from_prices("603986", "兆易创新", 10.04, 10.0),
+        config,
+        Trend(prices=[10.0, 10.06, 10.12, 10.05, 9.98, 10.04]),
+    )
+    expected = [(0, "B"), (2, "S"), (4, "B")]
+    assert row.theme2_depth._signals == row.sparkline._signals == expected
+    row.refresh_bs_signals()
+    assert row.theme2_depth._signals == row.sparkline._signals == expected
+    row.close()
+
+
+def test_quote_errors_and_short_trend_recovery_preserve_sparkline_scale(app):
+    from stockwidget.providers.base import Quote
+
+    config = Config(show_bs_points=False)
+    row = QuoteRow("600519")
+    row.apply_config(config)
+    quote = Quote.from_prices("600519", "测试股票", 100.0, 100.0)
+    row.update_quote(quote, config, Trend(prices=[99.0, 101.0], prev_close=100.0))
+    row.sparkline.resize(400, 100)
+    row.sparkline.grab()
+    baseline = row.sparkline._price_scale._bounds
+    assert baseline is not None
+    for _ in range(10):
+        previous_points = list(row.sparkline.points)
+        row.update_quote(Quote.failed("600519", "临时取数失败"), config)
+        assert row.sparkline.points == previous_points
+        row.update_quote(quote, config, Trend(prices=[99.99, 100.01], prev_close=100.0))
+        row.sparkline.grab()
+        assert row.sparkline._price_scale._bounds == baseline
+    row.close()
+
+
 def test_theme2_bs_markers_are_cleared_when_the_quote_fails(app, monkeypatch):
     from stockwidget import mcp_bs
     from stockwidget.providers.base import Quote
 
     monkeypatch.setattr(mcp_bs, "bs_points", lambda symbol, prices, now=None: [(0, "B")])
+    monkeypatch.setattr(mcp_bs, "get_source", lambda: "mcp")
 
     config = Config(display_theme="theme2", show_bs_points=True)
     row = QuoteRow("600519")

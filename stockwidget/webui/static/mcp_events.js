@@ -18,7 +18,7 @@
           <option value="local">本地计算</option>
           <option value="mcp">MCP 订阅</option>
         </select>
-        <p class="hint">选择 MCP 时，只显示 MCP 通道收到的当日 B/S 信号；本地反转算法不再参与。</p>
+        <p class="hint">本地计算针对分时反转点：开启 B/S 标记后，新信号会输出转折时间、确认时间与确认价；短数据恢复、重复刷新及历史补齐不重报。日K 的 MCP 标记是另一组信号。选择 MCP 时，分时只显示 MCP 的当日 B/S 信号。</p>
       </div>
       <div class="field">
         <label for="mcp-event-sort">当日 MCP 信息排序</label>
@@ -42,7 +42,6 @@
   function stockLabel(item) {
     const code = item.stock_code || '';
     const name = item.stock_name || '';
-    if (name && code) return `${name} ${code}`;
     return name || code || '-';
   }
 
@@ -104,8 +103,8 @@
         const values = [
           (item.created_at_local || '').slice(11, 19) || '-',
           stockLabel(item),
-          item.side ? `${item.side} · ${item.event_type || ''}` : (item.event_type || '-'),
-          item.title || item.body || '-',
+          item.display_type || item.event_type || '-',
+          item.display_content || item.body || item.title || '-',
         ];
         for (const value of values) {
           const cell = document.createElement('td');
@@ -113,6 +112,7 @@
           cell.style.padding = '6px 8px';
           cell.style.borderTop = '1px solid rgba(127,127,127,.22)';
           cell.style.verticalAlign = 'top';
+          cell.style.whiteSpace = 'pre-line';
           row.append(cell);
         }
         body.append(row);

@@ -239,6 +239,60 @@ def _text_runs(rows: list[int]) -> list[list[int]]:
     return runs
 
 
+def test_price_mapper_does_not_stretch_between_flat_and_one_tick(app):
+    widget = _widget()
+    baseline = widget._price_mapper([100.0, 100.0])(99.99)
+    for high in [100.01, 100.0] * 30:
+        mapper = widget._price_mapper([100.0, high])
+        assert mapper(99.99) == pytest.approx(baseline)
+        assert mapper(100.0) == pytest.approx(widget.height() / 2.0)
+
+
+def test_price_mapper_mode_switch_refits_and_depth_does_not_change_scale(app):
+    widget = _widget()
+    initial = widget._price_mapper([99.0, 101.0])(101.0)
+    expanded = widget._price_mapper([99.0, 101.11])(101.0)
+    assert expanded != pytest.approx(initial)
+    widget.set_depth(_depth())
+    assert widget._price_mapper([99.0, 101.0])(101.0) == pytest.approx(expanded)
+    widget.set_chart_mode(MODE_DAILY)
+    assert widget._price_mapper([99.0, 101.0])(101.0) == pytest.approx(initial)
+
+
+def test_chart_layers_share_one_price_mapping_per_frame(app, monkeypatch):
+    widget = _widget()
+    widget.set_intraday(_session_trend())
+    widget.set_expanded(True)
+    mappings = []
+    original = widget._price_mapper
+
+    def record_mapping(values):
+        mapper = original(values)
+        mappings.append(mapper)
+        return mapper
+
+    monkeypatch.setattr(widget, "_price_mapper", record_mapping)
+    _render(widget)
+    assert len(mappings) == 1
+
+
+@pytest.mark.parametrize("mode", [MODE_INTRADAY, MODE_DAILY])
+def test_live_chart_quote_movement_and_short_data_keep_scale(app, mode):
+    widget = _widget()
+    widget.set_chart_mode(mode)
+    widget.set_kline(_kline())
+    widget.set_intraday(_session_trend())
+    widget.set_quote(107.0, 7.0, QColor(220, 224, 234))
+    mapper = widget._chart_values()[-1]
+    baseline = mapper(101.0) - mapper(100.0)
+    for price in [100.0, 107.0] * 15:
+        widget.set_quote(price, None, QColor(220, 224, 234))
+        widget.set_intraday(Trend(prices=[99.99, 100.01], prev_close=100.0))
+        mapper = widget._chart_values()[-1]
+        assert mapper(101.0) - mapper(100.0) == pytest.approx(baseline)
+        assert mapper(price) == pytest.approx(widget.height() / 2.0)
+
+
 def _trend() -> Trend:
     prices = [100 + (index % 7 - 3) * 0.4 for index in range(30)]
     return Trend(
@@ -1168,3 +1222,32 @@ def test_theme2_depth_error_activates_on_third_consecutive_thousand_miss(app):
     )
     assert widget._depth_error_active() is False
     assert widget.toolTip().startswith("盘口：千档")
+
+
+def test_theme2_daily_bs_labels_are_drawn_on_date_aligned_candles(app):
+    widget = _widget()
+    kline = _kline()
+    widget.set_kline(kline)
+    widget.set_chart_mode(MODE_DAILY)
+    widget.set_expanded(True)
+    baseline = _render(widget)
+
+    widget.set_daily_signals([(len(kline.bars) - 1, "B1"),
+                              (len(kline.bars) - 2, "S")])
+    marked = _render(widget)
+    layout = widget._layout()
+    changed = sum(
+        baseline.pixelColor(x, y) != marked.pixelColor(x, y)
+        for x in range(max(0, int(layout.plot_left)), min(widget.width(), int(layout.plot_right)))
+        for y in range(widget.height())
+    )
+    assert changed > 0, "日 K 切换后 B/S 标记应改变蜡烛附近的绘制像素"
+
+    widget.set_signals([], show=False)
+    hidden = _render(widget)
+    assert all(
+        baseline.pixelColor(x, y) == hidden.pixelColor(x, y)
+        for x in range(max(0, int(layout.plot_left)), min(widget.width(), int(layout.plot_right)))
+        for y in range(widget.height())
+    ), "关闭显示 B/S 时，日 K 也必须隐藏信号"
+    widget.close()

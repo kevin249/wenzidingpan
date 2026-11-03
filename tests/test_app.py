@@ -85,13 +85,50 @@ class _FakeTray:
 
 
 class _FakePoller:
-    """只记推送触发的刷新次数：非 Debug 模式下这是界面数据更新的主要来源。"""
+    """只记推送触发的即时刷新次数。"""
 
     def __init__(self) -> None:
         self.refreshes = 0
 
     def refresh_now(self) -> None:
         self.refreshes += 1
+
+
+def test_quit_keeps_qt_alive_until_all_workers_finish(monkeypatch):
+    events = []
+    callbacks = []
+
+    class Worker:
+        def __init__(self, name, running):
+            self.name = name
+            self.running = running
+
+        def stop(self):
+            events.append(f"stop:{self.name}")
+
+        def isRunning(self):
+            return self.running
+
+    workers = [Worker("quotes", False), Worker("depth", True), Worker("reminders", True)]
+    app = object.__new__(app_module.WidgetApp)
+    app._quitting = False
+    app._global_window_hotkey = None
+    app.poller, app.depth_poller, app.notification_listener = workers
+    app._flush_bounds = lambda: events.append("flush")
+    app.server = SimpleNamespace(stop=lambda: events.append("server-stop"))
+    app.qt = SimpleNamespace(quit=lambda: events.append("qt-quit"))
+    monkeypatch.setattr(app_module.QTimer, "singleShot", lambda ms, callback: callbacks.append(callback))
+
+    app.quit()
+    app.quit()  # Repeated close requests must not start another shutdown.
+    assert events == ["flush", "stop:quotes", "stop:depth", "stop:reminders"]
+    assert len(callbacks) == 1
+    workers[1].running = False
+    callbacks.pop(0)()
+    assert "qt-quit" not in events
+    workers[2].running = False
+    callbacks.pop(0)()
+    assert events[-2:] == ["server-stop", "qt-quit"]
 
 
 @pytest.fixture()
@@ -131,7 +168,7 @@ def test_all_four_channels_fire_by_default(dispatch):
 
 
 def test_push_triggers_a_market_refresh(dispatch):
-    """推送到达要顺带刷新行情与分时：非 Debug 不做定时轮询，界面靠这条通路更新。"""
+    """推送到达仍要顺带即时刷新行情与分时。"""
     assert dispatch(Config(), times=3).refresh == 3
 
 
@@ -398,3 +435,38 @@ def test_theme_switch_saves_old_geometry_and_restores_target_profile(tmp_path):
         777,
         333,
     )
+
+
+def test_mcp_bs_update_targets_chart_without_refreshing_quotes():
+    class Window:
+        def __init__(self):
+            self.updated = []
+        def refresh_bs_signals(self, symbol):
+            self.updated.append(symbol)
+
+    window = Window()
+    stub = SimpleNamespace(window=window)
+    app_module.WidgetApp._on_bs_updated(stub, "603986")
+    assert window.updated == ["603986"]
+
+
+@pytest.mark.parametrize("source, show, expected", [("local", True, 1), ("mcp", True, 0), ("local", False, 0)])
+def test_snapshot_prints_only_new_enabled_local_bs(monkeypatch, capsys, source, show, expected):
+    from stockwidget.intraday import Trend
+    from stockwidget.local_bs import LocalBsNotifier
+    from stockwidget.poller import Snapshot
+    from stockwidget.providers.base import Quote
+
+    monkeypatch.setattr(app_module.mcp_bs, "get_source", lambda: source)
+    updates = []
+    stub = SimpleNamespace(
+        config=Config(show_bs_points=show),
+        window=SimpleNamespace(update_snapshot=lambda *args: updates.append(args)),
+        _local_bs_notifier=LocalBsNotifier(),
+    )
+    quote = Quote.from_prices("603986", "兆易创新", 10.1, 10.0)
+    for prices in ([10.0, 10.01], [10.0, 10.01, 10.1], [10.0, 10.01, 10.1]):
+        snapshot = Snapshot(provider_id="mock", quotes=[quote], trends={quote.symbol: Trend(prices=prices)})
+        app_module.WidgetApp._on_snapshot(stub, snapshot)
+    assert len(updates) == 3
+    assert capsys.readouterr().out.count("[本地B/S]") == expected

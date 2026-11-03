@@ -636,6 +636,7 @@ def test_negotiate_protocol_falls_back_when_legacy_server_returns_invalid_params
 
 def test_modern_subscription_cleanup_ignores_already_set_cancel_event(monkeypatch):
     exited = []
+    owners = []
 
     class Subscription:
         honored = SimpleNamespace(resource_subscriptions=("gupiao://notifications/alice",))
@@ -648,9 +649,11 @@ def test_modern_subscription_cleanup_ignores_already_set_cancel_event(monkeypatc
 
     class ContextManager:
         async def __aenter__(self):
+            owners.append(asyncio.current_task())
             return Subscription()
 
         async def __aexit__(self, exc_type, exc, tb):
+            assert asyncio.current_task() is owners[0]
             exited.append(True)
 
     async def fake_establish(self, session, uri, cancel_event=None):
@@ -673,3 +676,50 @@ def test_modern_subscription_cleanup_ignores_already_set_cancel_event(monkeypatc
 
     asyncio.run(scenario())
     assert exited == [True]
+
+
+def test_consume_cancellation_does_not_leave_waiter_tasks_alive():
+    async def scenario():
+        baseline = asyncio.all_tasks()
+        listener = McpNotificationListener(Config())
+        task = asyncio.create_task(listener._consume(
+            asyncio.Queue(), SimpleNamespace(), "uri://x", asyncio.Event(),
+        ))
+        await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert asyncio.all_tasks() == baseline
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=1))
+
+
+def test_legacy_cleanup_timeout_does_not_hide_original_disconnect(monkeypatch):
+    monkeypatch.setattr(mcp_notifications, "CLEANUP_TIMEOUT_SECONDS", 0.01)
+    cancelled = []
+
+    class Session:
+        async def subscribe_resource(self, uri):
+            return None
+
+        async def unsubscribe_resource(self, uri):
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.append(True)
+
+    async def scenario():
+        listener = McpNotificationListener(Config())
+        async def baseline(*args):
+            return 0
+        async def consume(*args, **kwargs):
+            raise ConnectionError("original disconnect")
+        listener._establish_baseline = baseline
+        listener._consume = consume
+        with pytest.raises(ConnectionError, match="original disconnect"):
+            await listener._run_legacy_subscription(
+                Session(), "uri://x", asyncio.Queue(), asyncio.Event(),
+            )
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=1))
+    assert cancelled == [True]

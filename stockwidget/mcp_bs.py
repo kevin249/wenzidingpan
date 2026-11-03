@@ -12,6 +12,7 @@ MCP 通知监听线程、Qt 行情线程和 Flask 设置线程都会访问这里
 from __future__ import annotations
 
 import json
+import math
 import re
 import threading
 from collections import deque
@@ -210,7 +211,9 @@ def record_volatility_bs(payload: Any) -> None:
         return
     code = _normalize_code(payload.get("code") or payload.get("symbol"))
     trade_date = str(payload.get("trade_date") or "").strip()
-    if not code or not trade_date:
+    # unavailable 是网关尚未生成/暂时无法读取的结果，不能覆盖已有的
+    # 有效快照，更不能阻止通知缓存的 B/S 回退。
+    if not code or not trade_date or payload.get("available") is not True:
         return
     markers = [
         dict(item)
@@ -228,6 +231,81 @@ def record_volatility_bs(payload: Any) -> None:
         _VOLATILITY_BS[code] = snapshot
 
 
+def _event_presentation(row: dict[str, Any]) -> dict[str, str]:
+    """Prepare list cells without exposing payloads or changing chart labels."""
+    if row.get("event_type") != BS_EVENT_TYPE:
+        return {"display_type": str(row.get("event_type") or "-"),
+                "display_content": str(row.get("body") or row.get("title") or "-")}
+    payload = row.get("payload") or {}
+    side = str(row.get("side") or "")
+    text = f"{row.get('title', '')}\n{row.get('body', '')}"
+    signal = str(payload.get("signal") or payload.get("label") or "").upper()
+    if not re.fullmatch(r"[BS][1-4]?", signal):
+        match = re.search(r"\b([BS][1-4]?)\b", text, re.I)
+        signal = match.group(1).upper() if match else side
+    # Explicit upstream presentation wins over internal strength (level).
+    if isinstance(payload.get("l2_confirmed"), bool) and side:
+        signal = side if payload["l2_confirmed"] else side + "1"
+
+    def number(key: str, spec: str = ".2f") -> str:
+        value = payload.get(key)
+        if value is None or isinstance(value, bool):
+            return ""
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return ""
+        return format(parsed, spec) if math.isfinite(parsed) else ""
+
+    price = number("price", ".3f")
+    if price and float(price) <= 0:
+        price = ""
+    if not price:
+        match = re.search(r"价格\s*[：:]\s*(\d+(?:\.\d+)?)", text)
+        price = match.group(1) if match and float(match.group(1)) > 0 else ""
+    display_type = f"{signal or '-'} · {price or '价格未提供'}"
+    lines: list[str] = []
+    labels: set[str] = set()
+
+    def add(label: str, value: str) -> None:
+        if value:
+            lines.append(f"{label}：{value}")
+            labels.add(label)
+
+    add("评分", number("factor_score", "g"))
+    quantity = number("position_q")
+    add("建议仓位", quantity + "Q" if quantity else "")
+    for key, label, spec in (
+        ("distance_atr", "D/ATR", "+.3f"), ("atr", "ATR(14)", ".4f"),
+        ("atr_move_ratio", "5分钟波动/ATR", ".2f"),
+        ("first_derivative", "V", "+.4f"), ("second_derivative", "A", "+.4f"),
+        ("volume_ratio", "量比", ".2f"), ("macd_hist_delta", "MACD柱变化", "+.4f"),
+    ):
+        add(label, number(key, spec))
+    flags = payload.get("factor_flags")
+    if isinstance(flags, dict):
+        add("确认因子", "、".join(str(k) for k, v in flags.items() if v) or "无")
+    for key, label in (("position_qty", "持仓"), ("available_qty", "可卖")):
+        add(label, number(key, "g"))
+
+    # Keep body-only diagnostics, but remove identity and fields already shown.
+    for line in str(row.get("body") or "").splitlines():
+        line = line.strip()
+        label = re.split(r"[：:]", line, maxsplit=1)[0]
+        if label in {"时间", "信号", "价格", "股票", "代码", "名称", "说明"}:
+            continue
+        if label in labels or ("/" in label and all(part in labels for part in label.split("/"))):
+            continue
+        for identity in (row.get("stock_name"), row.get("stock_code")):
+            if identity:
+                line = line.replace(str(identity), "")
+        line = line.strip(" ·:：，,;；-—")
+        if line and line not in lines:
+            lines.append(line)
+    return {"display_type": display_type,
+            "display_content": "\n".join(lines) or "未提供评分或详细指标"}
+
+
 def today_records(now: datetime | None = None) -> list[dict[str, Any]]:
     """返回上海交易日口径的当日 MCP 事件，新事件在前。"""
     local_now = (now or datetime.now(SHANGHAI_TZ)).astimezone(SHANGHAI_TZ)
@@ -239,6 +317,7 @@ def today_records(now: datetime | None = None) -> list[dict[str, Any]]:
         created = _parse_datetime(row.get("created_at")) or _parse_datetime(row.get("received_at"))
         if created is not None and created.date() == day:
             item = {key: value for key, value in row.items() if key != "payload"}
+            item.update(_event_presentation(row))
             item["created_at_local"] = created.strftime("%Y-%m-%d %H:%M:%S")
             rows.append(item)
     rows.sort(key=lambda item: item.get("created_at_local") or "", reverse=True)
@@ -375,6 +454,53 @@ def bs_points(symbol: str, prices: list[float], now: datetime | None = None) -> 
         _append_point(result, seen, prices, signal_at, _display_signal(payload, side), payload.get("price"))
     result.sort(key=lambda item: item[0])
     return result
+
+
+
+def daily_bs_points(symbol: str, bars: list[Any]) -> list[tuple[int, str]]:
+    """把已接收的 MCP B/S 标记按交易日期对齐到日 K 蜡烛。
+
+    当前 MCP 深度同步只读取当天的 markers，不臆造尚未请求的历史日期信号。
+    返回的索引对应 bars 而不是分时分钟索引。
+    """
+    code = _normalize_code(symbol)
+    if not code or not bars:
+        return []
+    dates = {
+        str(getattr(bar, "time", "") or "")[:10]: index
+        for index, bar in enumerate(bars)
+    }
+    with _LOCK:
+        active = dict(_VOLATILITY_BS.get(code) or {})
+        events = list(_EVENTS)
+
+    points: set[tuple[int, str]] = set()
+    if active:
+        trade_date = str(active.get("trade_date") or "")
+        for marker in active.get("markers") or []:
+            if not isinstance(marker, dict):
+                continue
+            bar_index = dates.get(str(marker.get("trade_date") or trade_date)[:10])
+            if bar_index is None:
+                continue
+            side = _side(marker, str(marker.get("label") or ""), "")
+            if side in {"B", "S"}:
+                points.add((bar_index, _display_signal(marker, side)))
+        return sorted(points)
+
+    for row in events:
+        if row.get("event_type") != BS_EVENT_TYPE or row.get("stock_code") != code:
+            continue
+        signal_at = _parse_datetime(_signal_time(row))
+        if signal_at is None:
+            continue
+        bar_index = dates.get(signal_at.date().isoformat())
+        side = str(row.get("side") or "").upper()
+        if bar_index is None or side not in {"B", "S"}:
+            continue
+        payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+        points.add((bar_index, _display_signal(payload, side)))
+    return sorted(points)
 
 
 def reset_for_tests() -> None:

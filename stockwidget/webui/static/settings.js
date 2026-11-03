@@ -12,6 +12,7 @@ const CHECKBOXES = [
   'theme2_always_expanded',
   'show_dark_trade',
   'show_sparkline',
+  'show_chart_depth',
   'show_sparkline_fill',
   'show_bs_points',
   'show_open_line',
@@ -20,6 +21,7 @@ const CHECKBOXES = [
   'show_stock_price',
   'grayscale',
   'intraday_chart',
+  'chart_fill_width',
   'compact',
   'stock_name_bold',
   'stock_price_bold',
@@ -47,6 +49,7 @@ const NUMBERS = [
   'theme2_depth_width',
   ...FONT_SIZES,
   'refresh_seconds',
+  'chart_refresh_seconds',
   'opacity',
   'background_alpha',
   'grayscale_level',
@@ -77,13 +80,24 @@ const FONT_COLOR_FALLBACKS = {
   dark_trade_color: '#000000',
 };
 const MAX_SYMBOLS = 50;
+const STOCK_COMPONENTS = [
+  ['name', '股票名称'], ['price', '股价'], ['percent', '涨跌幅'],
+  ['dark', '暗盘'], ['chart', 'K线'],
+];
+const SIZE_REGIONS = ['row', 'name', 'price', 'percent', 'dark', 'chart', 'canvas'];
+const sizeInput = (region, axis) => el(region === 'chart' && axis === 'height' ? 'chart_height' : `size-${region}-${axis}`);
 
 let providers = [];
 let symbols = [];
+let stockVisibility = {};
+let saveQueue = Promise.resolve();
+let applySequence = 0;
 /** 代码 -> 名称，来自搜索结果或 /api/watchlist，缺了就只显示代码 */
 let names = {};
 let savedTimer = null;
 let searchTimer = null;
+let searchSequence = 0;
+let searchController = null;
 let fontApplyTimer = null;
 let activeTheme = el('display_theme')?.value || 'theme1';
 
@@ -119,9 +133,33 @@ function renderWatchlist() {
       button('✕', '移除', () => remove(index), false, 'danger')
     );
 
-    item.append(label, sub, actions);
+    const heading = document.createElement('div');
+    heading.className = 'watchlist-heading';
+    heading.append(label, sub, actions);
+    const toggles = document.createElement('div');
+    toggles.className = 'watchlist-toggles';
+    toggles.setAttribute('role', 'group');
+    toggles.setAttribute('aria-label', `${names[code] || code} 显示项目`);
+    const key = visibilityKey(code);
+    for (const [part, text] of STOCK_COMPONENTS) {
+      const enabled = stockVisibility[key]?.[part] !== false;
+      const toggle = button(text, `${enabled ? '关闭' : '显示'}${text}`, () => {
+        stockVisibility[key] = { ...stockVisibility[key], [part]: !enabled };
+        renderWatchlist();
+        apply('显示设置已应用');
+      }, false, 'watchlist-toggle');
+      toggle.setAttribute('aria-pressed', String(enabled));
+      toggle.setAttribute('aria-label', `${names[code] || code} ${text}`);
+      toggles.append(toggle);
+    }
+    item.append(heading, toggles);
     list.append(item);
   });
+}
+
+function visibilityKey(code) {
+  const match = code.replace(/\s/g, '').match(/^(?:(?:sh|sz|bj))?(\d{6})(?:\.(?:sh|sz|bj))?$/i);
+  return match ? match[1] : code;
 }
 
 function button(text, title, onClick, disabled = false, extra = '') {
@@ -144,7 +182,10 @@ function move(index, delta) {
 }
 
 function remove(index) {
-  symbols.splice(index, 1);
+  const [code] = symbols.splice(index, 1);
+  if (!symbols.some((symbol) => visibilityKey(symbol) === visibilityKey(code))) {
+    delete stockVisibility[visibilityKey(code)];
+  }
   renderWatchlist();
   apply('已应用');
 }
@@ -166,6 +207,13 @@ function add(code, name) {
 
 /* ------------------------------------------------------------ 搜索 */
 
+function cancelSearch() {
+  clearTimeout(searchTimer);
+  searchController?.abort();
+  searchController = null;
+  ++searchSequence;
+}
+
 function hideSuggestions() {
   el('suggestions').hidden = true;
   el('suggestions').innerHTML = '';
@@ -185,6 +233,7 @@ function renderSuggestions(results) {
     option.querySelector('.suggestion-name').textContent = item.name || item.code;
     option.querySelector('.suggestion-code').textContent = item.name ? item.code : '';
     option.addEventListener('click', () => {
+      cancelSearch();
       add(item.code, item.name);
       el('stock-search').value = '';
       hideSuggestions();
@@ -195,27 +244,47 @@ function renderSuggestions(results) {
 }
 
 async function search(text) {
+  cancelSearch();
+  const sequence = searchSequence;
   if (!text.trim()) {
     hideSuggestions();
     el('search-hint').textContent = `最多 ${MAX_SYMBOLS} 只，用按钮调整顺序。`;
     return;
   }
+  const controller = new AbortController();
+  searchController = controller;
+  el('search-hint').textContent = '搜索中…';
   try {
-    const response = await fetch(api(`/api/search?q=${encodeURIComponent(text)}`));
+    const response = await fetch(api(`/api/search?q=${encodeURIComponent(text)}`), {
+      signal: controller.signal,
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json();
+    if (sequence !== searchSequence) return;
     renderSuggestions(data.results || []);
     el('search-hint').textContent = data.error
       ? `搜索接口不可用（${data.error}），仍可直接输入 6 位代码添加`
-      : `最多 ${MAX_SYMBOLS} 只，用按钮调整顺序。`;
+      : data.results?.length
+        ? `最多 ${MAX_SYMBOLS} 只，用按钮调整顺序。`
+        : '未找到匹配的 A 股，可换关键词或输入 6 位代码。';
   } catch (error) {
+    if (sequence !== searchSequence || error.name === 'AbortError') return;
+    hideSuggestions();
     el('search-hint').textContent = `搜索失败：${error.message}`;
+  } finally {
+    if (sequence === searchSequence) searchController = null;
   }
 }
 
 /* ------------------------------------------------------------ 表单 */
 
 function collect() {
-  const patch = { symbols };
+  const patch = { symbols, stock_visibility: stockVisibility };
+  patch.component_sizes = {};
+  for (const region of SIZE_REGIONS) {
+    patch.component_sizes[region] = { width: Number(sizeInput(region, 'width').value) };
+    if (region !== 'chart') patch.component_sizes[region].height = Number(sizeInput(region, 'height').value);
+  }
   for (const id of TEXTS) patch[id] = el(id).value;
   for (const id of NUMBERS) patch[id] = Number(el(id).value);
   for (const id of CHECKBOXES) patch[id] = el(id).checked;
@@ -228,9 +297,16 @@ function collect() {
 function fill(config) {
   activeTheme = config.display_theme;
   symbols = [...config.symbols];
+  stockVisibility = structuredClone(config.stock_visibility || {});
   for (const id of TEXTS) el(id).value = config[id];
   for (const id of NUMBERS) el(id).value = config[id];
   for (const id of CHECKBOXES) el(id).checked = config[id];
+  for (const region of SIZE_REGIONS) {
+    for (const axis of ['width', 'height']) {
+      if (region === 'chart' && axis === 'height') continue;
+      sizeInput(region, axis).value = config.component_sizes?.[region]?.[axis] || 0;
+    }
+  }
   for (const id of FONT_COLORS) {
     const automatic = config[id] === 'auto';
     el(`${id}_auto`).checked = automatic;
@@ -258,6 +334,7 @@ function refreshHints() {
   const theme2 = el('display_theme').value === 'theme2';
   const mirrorLeft = el('theme2_side').value === 'left';
   const single = !theme2 && el('layout').value === 'single';
+  el('show_chart_depth').disabled = theme2 || single;
   el('theme2_side').disabled = !theme2;
   el('theme2_depth_width').disabled = !theme2;
   el('theme2_popup_font_size').disabled = !theme2;
@@ -268,6 +345,11 @@ function refreshHints() {
   for (const id of ['visible_rows', 'row_style', 'chart_height']) {
     el(id).disabled = single || theme2;
   }
+  for (const region of SIZE_REGIONS) {
+    for (const axis of ['width', 'height']) {
+      sizeInput(region, axis).disabled = single || (region === 'chart' && theme2) || (region === 'canvas' && !theme2);
+    }
+  }
   el('layout-hint').textContent = theme2
     ? '主题 2 固定为一列纵向排列；显示模式、网格行数与行内样式不参与排版。'
     : single
@@ -276,15 +358,17 @@ function refreshHints() {
 
   el('display-theme-hint').textContent = theme2
     ? mirrorLeft
-      ? '主题 2 靠左：股价列贴最左，当前价虚线横贯整行；千档从股价轴向右长，最右是成交量轴。名称、代码、高低价和图表可以点击展开，也可开启「主题 2 始终展开」持续显示。顶栏字号与颜色跟主题 1 用同一套设置（股票名称 / 现价 / 涨跌幅 / 暗盘 / 高低价），股票代码与图注用「主题 2 代码与图注字号」。盘口柱长只由下面的宽度决定——点击展开 K 线时柱长一个像素都不变，且两侧的柱都不越过行的水平中点。展开后 K 线横轴固定为一个完整交易日（9:30→15:00，午休压缩），每半小时一条竖虚线，首末两条正好压在两根竖轴上。'
-      : '主题 2 靠右：股价列贴最右，当前价虚线横贯整行；千档从股价轴向左长，最左是成交量轴。名称、代码、高低价和图表可以点击展开，也可开启「主题 2 始终展开」持续显示。顶栏字号与颜色跟主题 1 用同一套设置（股票名称 / 现价 / 涨跌幅 / 暗盘 / 高低价），股票代码与图注用「主题 2 代码与图注字号」。盘口柱长只由下面的宽度决定——点击展开 K 线时柱长一个像素都不变，且两侧的柱都不越过行的水平中点。展开后 K 线横轴固定为一个完整交易日（9:30→15:00，午休压缩），每半小时一条竖虚线，首末两条正好压在两根竖轴上。'
+      ? '主题 2 靠左：股价列贴最左，当前价虚线横贯整行；千档从股价轴向右长，最右是成交量轴。名称、代码、高低价和图表可以点击展开，也可开启「主题 2 始终展开」持续显示。顶栏字号与颜色跟主题 1 用同一套设置（股票名称 / 现价 / 涨跌幅 / 暗盘 / 高低价），股票代码与图注用「主题 2 代码与图注字号」。盘口柱长只由下面的宽度决定——点击展开 K 线时柱长一个像素都不变，且两侧的柱都不越过行的水平中点。分时横轴默认固定为完整交易日（9:30→15:00，午休压缩）；打开「K 线按已有数据铺满宽度」后按数据首末时刻展开。半小时竖线随当前时间范围定位，首末两条压在两根竖轴上。'
+      : '主题 2 靠右：股价列贴最右，当前价虚线横贯整行；千档从股价轴向左长，最左是成交量轴。名称、代码、高低价和图表可以点击展开，也可开启「主题 2 始终展开」持续显示。顶栏字号与颜色跟主题 1 用同一套设置（股票名称 / 现价 / 涨跌幅 / 暗盘 / 高低价），股票代码与图注用「主题 2 代码与图注字号」。盘口柱长只由下面的宽度决定——点击展开 K 线时柱长一个像素都不变，且两侧的柱都不越过行的水平中点。分时横轴默认固定为完整交易日（9:30→15:00，午休压缩）；打开「K 线按已有数据铺满宽度」后按数据首末时刻展开。半小时竖线随当前时间范围定位，首末两条压在两根竖轴上。'
     : '主题 1：保持原有经典网格/单行滚动显示。主题 1/2 的显示参数和窗口尺寸分别保存，切换互不覆盖。';
 
   el('row_style-hint').textContent = theme2
     ? '主题 2 不使用行内样式。'
-    : el('row_style').value === 'stacked'
-      ? '上中下：上面一行是名称与现价，下面一行是暗盘与涨跌幅，中间永远是 K 线。'
-      : '左中右：左边名称压暗盘、右边现价压涨跌幅，左右各两行，中间永远是 K 线；格子窄到排不下时会自动改用上中下。';
+    : el('row_style').value === 'top_bottom'
+      ? '上下：上面一行依次显示股票名称、现价、涨跌幅、暗盘，下面紧贴 K 线。'
+      : el('row_style').value === 'stacked'
+        ? '上中下：上面一行是名称与现价，下面一行是暗盘与涨跌幅，中间紧贴 K 线，上下不留间距。'
+        : '左中右：左边名称压暗盘、右边现价压涨跌幅，左右各两行，中间永远是 K 线；格子窄到排不下时会自动改用上中下。';
 }
 
 function note(text) {
@@ -294,23 +378,33 @@ function note(text) {
 }
 
 async function postConfig(patch) {
-  const response = await fetch(api('/api/config'), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(patch),
+  // 点击多个开关时按顺序保存快照，避免较早的响应把刚点的新状态覆盖。
+  const body = JSON.stringify(patch);
+  const pending = saveQueue.then(async () => {
+    const response = await fetch(api('/api/config'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return (await response.json()).config;
   });
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  return (await response.json()).config;
+  saveQueue = pending.catch(() => {});
+  return pending;
 }
 
 async function apply(label = '已保存') {
+  const sequence = ++applySequence;
   try {
     // 只有 switchTheme() 可以改变主题。其它控件即使和下拉框事件撞在一起，
     // 也强制写回当前 activeTheme，避免旧主题整页值误覆盖目标 profile。
     const patch = collect();
     patch.display_theme = activeTheme;
     // 服务端会做最终校验，用返回值回填，页面始终反映真实生效的配置。
-    fill(await postConfig(patch));
+    const config = await postConfig(patch);
+    if (sequence !== applySequence) return;
+    fill(config);
+    await applyWindowSize();
     note(label);
   } catch (error) {
     note(`保存失败：${error.message}`);
@@ -343,6 +437,69 @@ async function switchTheme() {
 }
 
 /* ------------------------------------------------------------ 事件 */
+
+async function applyWindowSize() {
+  const axes = ['width', 'height'];
+  if (!axes.some((axis) => el(`window_${axis}`).dataset.dirty)) return;
+  const dimensions = Object.fromEntries(axes.map((axis) => [axis,
+    el(`window_${axis}`).dataset.dirty ? Number(el(`window_${axis}`).value) : 0]));
+  const response = await fetch(api('/api/window-size'), {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(dimensions),
+  });
+  if (!response.ok) throw new Error(`调整窗口失败（HTTP ${response.status}）`);
+  for (const axis of axes) delete el(`window_${axis}`).dataset.dirty;
+}
+
+let readingMetrics = false;
+el('reset-window-scale').addEventListener('click', async () => {
+  try {
+    const response = await fetch(api('/api/window-size'), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reset_scale: true }),
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    await refreshLayoutMetrics();
+    note('已恢复 100% 缩放');
+  } catch (error) {
+    note(`恢复缩放失败：${error.message}`);
+  }
+});
+
+async function refreshLayoutMetrics() {
+  if (readingMetrics || document.hidden) return;
+  readingMetrics = true;
+  try {
+    const response = await fetch(api('/api/layout-metrics'));
+    if (!response.ok) return;
+    const metrics = await response.json();
+    if (metrics.theme !== activeTheme) return;
+    for (const region of ['window', ...SIZE_REGIONS]) {
+      const size = metrics.regions?.[region];
+      el(`size-current-${region}`).textContent = size
+        ? (size.visible ? `${size.width} × ${size.height}` : '隐藏') : '暂无股票数据';
+    }
+    const windowSize = metrics.regions?.window;
+    if (windowSize) {
+      for (const axis of ['width', 'height']) {
+        const input = el(`window_${axis}`);
+        if (document.activeElement !== input && !input.dataset.dirty) input.value = windowSize[axis];
+      }
+    }
+    el('size-scale-hint').textContent = `当前缩放：${Number(metrics.scale || 1).toFixed(2)} 倍；右下角拖拽后实际尺寸会自动更新。`;
+  } catch (_) { /* 桌面暂时离线时保留最后一次尺寸。 */ }
+  finally { readingMetrics = false; }
+}
+
+for (const region of SIZE_REGIONS) {
+  for (const axis of ['width', 'height']) {
+    if (region === 'chart' && axis === 'height') continue;
+    sizeInput(region, axis).addEventListener('blur', () => apply('尺寸已应用'));
+  }
+}
+for (const axis of ['width', 'height']) {
+  el(`window_${axis}`).addEventListener('input', (event) => { event.target.dataset.dirty = '1'; });
+  el(`window_${axis}`).addEventListener('blur', () => apply('尺寸已应用'));
+}
 
 // 开关和下拉改完即时生效；字号短延迟自动保存，避免改完直接退出时丢失。
 for (const id of [...CHECKBOXES, 'provider', 'kline_source', 'theme2_side', 'layout', 'row_style', 'color_scheme', 'background_color']) {
@@ -388,6 +545,7 @@ for (const id of [
   'theme2_depth_width',
   'font_family',
   'refresh_seconds',
+  'chart_refresh_seconds',
   'mcp_url',
   'mcp_api_key',
 ]) {
@@ -395,16 +553,30 @@ for (const id of [
 }
 el('apply').addEventListener('click', () => apply());
 
-el('stock-search').addEventListener('input', (event) => {
-  clearTimeout(searchTimer);
+function scheduleSearch(event) {
+  cancelSearch();
+  hideSuggestions();
   const text = event.target.value;
+  if (event.isComposing) return;
+  if (!text.trim()) {
+    search(text);
+    return;
+  }
   searchTimer = setTimeout(() => search(text), 250);
-});
+}
+el('stock-search').addEventListener('input', scheduleSearch);
+el('stock-search').addEventListener('compositionend', scheduleSearch);
 el('stock-search').addEventListener('keydown', (event) => {
-  if (event.key === 'Escape') hideSuggestions();
+  if (event.key === 'Escape') {
+    cancelSearch();
+    hideSuggestions();
+  }
 });
 document.addEventListener('click', (event) => {
-  if (!event.target.closest('.search')) hideSuggestions();
+  if (!event.target.closest('.search')) {
+    cancelSearch();
+    hideSuggestions();
+  }
 });
 
 /* ------------------------------------------------------------ 启动 */
@@ -414,6 +586,8 @@ document.addEventListener('click', (event) => {
   const data = await response.json();
   providers = data.providers;
   fill(data.config);
+  refreshLayoutMetrics();
+  setInterval(refreshLayoutMetrics, 1000);
 
   // 名称是额外信息，拿不到也不影响列表可用
   try {

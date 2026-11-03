@@ -9,9 +9,10 @@ from PySide6.QtCore import QEvent, QObject, QTimer, QUrl, Qt, Signal
 from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import QApplication, QSystemTrayIcon
 
-from . import desktop, kline, providers
+from . import desktop, kline, mcp_bs, providers
 from .config import Config, Store
 from .hotkey import DEFAULT_WINDOW_TOGGLE_HOTKEY, WindowsGlobalHotkey
+from .local_bs import LocalBsNotifier
 from .mcp_depth import DepthSnapshot, McpDepthPoller
 from .mcp_notifications import McpNotification, McpNotificationListener
 from .poller import Poller, Snapshot
@@ -25,6 +26,7 @@ class ConfigBridge(QObject):
     """WebUI 跑在另一个线程，配置变更通过信号回到界面线程。"""
 
     changed = Signal(object)
+    resize_requested = Signal(object)
 
 
 class WindowActivationFilter(QObject):
@@ -50,7 +52,9 @@ class WidgetApp:
 
         self.store = store or Store()
         self.config = config = self.store.get()
+        self._quitting = False
         self._unread = 0
+        self._local_bs_notifier = LocalBsNotifier()
         self.tray: Tray | None = None
 
         self.window = TickerWindow(config)
@@ -72,6 +76,7 @@ class WidgetApp:
         self.window.bounds_changed.connect(self._save_bounds)
         self.window.bell_cleared.connect(self._clear_unread)
         self.qt.aboutToQuit.connect(self._flush_bounds)
+        self.qt.aboutToQuit.connect(self._stop_workers)
         self.window.grayscale_requested.connect(
             lambda: self._apply_config(self.store.update({"grayscale": not self.store.get().grayscale}))
         )
@@ -85,12 +90,19 @@ class WidgetApp:
 
         self.bridge = ConfigBridge()
         self.bridge.changed.connect(self._apply_config, Qt.QueuedConnection)
-        self.server = SettingsServer(self.store, on_change=self.bridge.changed.emit)
+        self.bridge.resize_requested.connect(self.window.resize_from_settings, Qt.QueuedConnection)
+        self.server = SettingsServer(
+            self.store, on_change=self.bridge.changed.emit,
+            on_resize=self.bridge.resize_requested.emit,
+        )
+        self.window.layout_metrics_changed.connect(self.server.publish_layout_metrics)
+        self.server.publish_layout_metrics(self.window.layout_metrics())
 
         self.poller = Poller(config)
-        self.poller.snapshot_ready.connect(self._on_snapshot, Qt.QueuedConnection)
+        self.poller.snapshot_ready.connect(self._on_poll_ready, Qt.QueuedConnection)
         self.depth_poller = McpDepthPoller(config)
         self.depth_poller.depth_ready.connect(self._on_depth_snapshot, Qt.QueuedConnection)
+        self.depth_poller.bs_ready.connect(self._on_bs_updated, Qt.QueuedConnection)
         self.depth_poller.status_changed.connect(self._on_depth_status, Qt.QueuedConnection)
         self.notification_listener = McpNotificationListener(config)
         self.notification_listener.notification_ready.connect(
@@ -183,18 +195,36 @@ class WidgetApp:
         self._install_local_window_shortcut()
 
     def quit(self) -> None:
+        if self._quitting:
+            return
+        self._quitting = True
         self._flush_bounds()
-        if self._global_window_hotkey is not None:
-            self._global_window_hotkey.stop()
-            self._global_window_hotkey.wait(1000)
-        self.poller.stop()
-        self.poller.wait(2000)
-        self.depth_poller.stop()
-        self.depth_poller.wait(18000)
-        self.notification_listener.stop()
-        self.notification_listener.wait(9000)
+        self._stop_workers()
+        self._finish_quit()
+
+    def _workers(self) -> list:
+        return [worker for worker in (
+            self._global_window_hotkey, self.poller, self.depth_poller,
+            self.notification_listener,
+        ) if worker is not None]
+
+    def _stop_workers(self) -> None:
+        # Signal everyone before waiting for any network connection to unwind.
+        for worker in self._workers():
+            worker.stop()
+
+    def _finish_quit(self) -> None:
+        if any(worker.isRunning() for worker in self._workers()):
+            # Keep Qt and its QThread owners alive until the workers really stop.
+            QTimer.singleShot(50, self._finish_quit)
+            return
         self.server.stop()
         self.qt.quit()
+
+    def _wait_for_workers(self) -> None:
+        self._stop_workers()
+        for worker in self._workers():
+            worker.wait()
 
     # ------------------------------------------------------------ 回调
 
@@ -271,27 +301,51 @@ class WidgetApp:
     def _flush_bounds(self) -> None:
         self.window.flush_bounds()
 
+    def _on_poll_ready(self) -> None:
+        snapshot = self.poller.take_snapshot()
+        if snapshot is not None:
+            self._on_snapshot(snapshot)
+
     def _on_snapshot(self, snapshot: Snapshot) -> None:
         listing = {p["id"]: p["label"] for p in providers.listing()}
         label = listing.get(snapshot.provider_id, snapshot.provider_id)
         if snapshot.effective_provider:
             label = f"自动 · {listing.get(snapshot.effective_provider, snapshot.effective_provider)}"
         self.window.update_snapshot(snapshot, label)
+        quotes = snapshot.quotes
+        if snapshot.updated_symbols is not None:
+            changed = set(snapshot.updated_symbols)
+            quotes = [quote for quote in quotes if quote.symbol in changed]
+        for message in self._local_bs_notifier.collect(
+            quotes,
+            snapshot.trends,
+            enabled=self.config.show_bs_points and mcp_bs.get_source() == mcp_bs.SOURCE_LOCAL,
+            at=snapshot.at,
+        ):
+            print(message, flush=True)
 
     def _on_depth_snapshot(self, snapshot: DepthSnapshot) -> None:
         self.window.update_depth(snapshot)
+
+    def _on_bs_updated(self, symbol: str) -> None:
+        """由 MCP 线程通知图形线程刷新 B/S，不等行情轮询。"""
+        self.window.refresh_bs_signals(symbol)
 
     def _on_depth_status(self, status: str) -> None:
         if status != "已关闭":
             print(f"[MCP千档] {status}", flush=True)
 
     def _on_mcp_status(self, status: str) -> None:
-        if status != "已关闭":
+        timestamp, separator, message = status.partition("] ")
+        if status.startswith("[") and separator:
+            if message != "已关闭":
+                print(f"{timestamp}] [MCP提醒] {message}", flush=True)
+        elif status != "已关闭":
             print(f"[MCP提醒] {status}", flush=True)
 
     def _on_mcp_notification(self, notification: McpNotification) -> None:
         # 事件驱动：MCP 推送到达即拉一次行情与分时，保证异动发生时价格已经同步，
-        # 这也是非 Debug 模式下界面更新的主要来源。千档不在此列——它本身来自 MCP，
+        # 行情也会独立按设置间隔轮询。千档不在此列——它本身来自 MCP，
         # 推送密集时再叠加深度请求只会放大服务端开销。
         self.poller.refresh_now()
         timestamp = notification.created_at or "时间未知"
@@ -336,7 +390,13 @@ class WidgetApp:
         self.poller.start()
         self.depth_poller.start()
         self.notification_listener.start()
-        return self.qt.exec()
+        try:
+            return self.qt.exec()
+        finally:
+            # External Qt quit paths must also join workers before Python drops
+            # their owners (Qt aborts if a running QThread is destroyed).
+            self._wait_for_workers()
+            self.server.stop()
 
 
 def main() -> int:

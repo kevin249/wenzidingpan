@@ -47,6 +47,7 @@
           </div>
           <p class="hint" id="search-hint">最多 50 只，可拖不动就用按钮调整顺序。</p>
           <ul class="watchlist" id="watchlist"></ul>
+          <p class="hint">每只股票可独立开关股票名称、股价、涨跌幅、暗盘、K线，默认全部开启；关闭后其余内容自动收拢。蓝色为开启，划线为关闭，仍受下方全局显示开关控制。</p>
         </div>
       </section>
 
@@ -57,7 +58,7 @@
                         {% if config.debug_mode %}checked{% endif %} />
             Debug 模式：全天主动刷新行情、K线、千档和 B/S</label>
         </div>
-        <p class="hint">默认关闭。关闭时不做定时轮询，只被动接收 MCP 推送 —— 推送到达即刷新一次行情与分时；仅在 A 股活跃窗口（上海时区，周一至周五 09:15–11:30、13:00–15:00）保留每 5 分钟的兜底心跳，用于发现推送通道静默失效。打开程序、手动刷新和修改自选股等取数设置时仍会无条件请求一次。Debug 模式用于收盘后联调。</p>
+        <p class="hint">默认关闭。关闭时，行情在 A 股活跃窗口（上海时区，周一至周五 09:15–11:30、13:00–15:00）按下方设置的刷新间隔独立更新，不依赖 MCP 连接；千档和 B/S 的调度不变。MCP 推送到达仍会立即刷新行情与分时。打开程序、手动刷新和修改自选股等取数设置时仍会无条件请求一次。Debug 模式用于收盘后联调。</p>
       </section>
 
       <section class="card">
@@ -117,17 +118,50 @@
             <select id="row_style" name="row_style">
               <option value="sides" {% if config.row_style == 'sides' %}selected{% endif %}>左中右</option>
               <option value="stacked" {% if config.row_style == 'stacked' %}selected{% endif %}>上中下</option>
+              <option value="top_bottom" {% if config.row_style == 'top_bottom' %}selected{% endif %}>上下</option>
             </select>
-          </div>
-          <div class="field">
-            <label for="chart_height">K 线高度（px）</label>
-            <input id="chart_height" name="chart_height" type="number" min="0" max="400" step="1"
-                   value="{{ config.chart_height }}" />
           </div>
         </div>
         <p class="hint" id="row_style-hint"></p>
         <p class="hint">K 线高度填 0 表示按字号自动推算；填了具体像素就固定成该高度，并随窗口拖拽等比缩放。
           行数多到窗口放不下时，走势图会自动压扁，保证每只股票都还在可视区里。</p>
+
+        <h3>显示区域宽高</h3>
+        <p class="hint">单位为 px；窗口填 0 保持该方向的当前尺寸，其余区域填 0 自动适配。
+          当前实际宽高取第一张股票卡片并自动更新；未显示的区域会标记为隐藏。
+          区域尺寸按当前主题保存，经典主题随右下角拖拽缩放，空间不足时自动压缩。</p>
+        <div class="dimensions-wrap">
+          <table class="dimensions-table">
+            <thead><tr><th scope="col">显示区域</th><th scope="col">宽度</th><th scope="col">高度</th><th scope="col">当前实际宽 × 高</th></tr></thead>
+            <tbody>
+              <tr>
+                <th scope="row">整个窗口</th>
+                <td><input id="window_width" type="number" min="0" max="8192" value="0" aria-label="窗口宽度" /></td>
+                <td><input id="window_height" type="number" min="0" max="8192" value="0" aria-label="窗口高度" /></td>
+                <td><output id="size-current-window">等待桌面窗口</output></td>
+              </tr>
+              {% for region, label in component_regions %}
+              <tr>
+                <th scope="row">{{ label }}</th>
+                {% for axis, axis_label in [('width', '宽度'), ('height', '高度')] %}
+                {% if region == 'chart' and axis == 'height' %}
+                <td><input id="chart_height" name="chart_height" type="number" min="0" max="400" step="1"
+                           value="{{ config.chart_height }}" aria-label="K 线高度（px）" /></td>
+                {% else %}
+                <td><input id="size-{{ region }}-{{ axis }}" type="number" min="0" max="8192" step="1"
+                           value="{{ config.component_sizes.get(region, {}).get(axis, 0) }}" aria-label="{{ label }}{{ axis_label }}" /></td>
+                {% endif %}
+                {% endfor %}
+                <td><output id="size-current-{{ region }}">等待桌面窗口</output></td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        <p class="hint" id="size-scale-hint"></p>
+        <button type="button" id="reset-window-scale">恢复 100% 缩放</button>
+        <p class="hint">恢复设置中的字号和区域尺寸，保留窗口位置与各项设置。
+          仅调整窗口宽度不会改变字号；调整高度时按本次变化比例缩放。</p>
 
         <div class="grid">
           <div class="field">
@@ -235,9 +269,16 @@
 
         <div class="grid">
           <div class="field">
-            <label for="refresh_seconds">刷新间隔（秒）</label>
-            <input id="refresh_seconds" name="refresh_seconds" type="number" min="1" max="3600"
-                   step="1" value="{{ config.refresh_seconds }}" />
+            <label for="refresh_seconds">行情刷新间隔（秒）</label>
+            <input id="refresh_seconds" name="refresh_seconds" type="number" min="0.1" max="3600"
+                   step="0.1" value="{{ config.refresh_seconds }}" />
+            <p class="hint">控制股价数字的更新，最小 0.1 秒；与分时图刷新间隔分别设置。</p>
+          </div>
+          <div class="field">
+            <label for="chart_refresh_seconds">K 线刷新间隔（秒）</label>
+            <input id="chart_refresh_seconds" name="chart_refresh_seconds" type="number" min="0.1" max="3600"
+                   step="0.1" value="{{ config.chart_refresh_seconds }}" />
+            <p class="hint">分时图独立刷新，最小 0.1 秒；实际更新速度取决于接口响应和数据源更新频率。</p>
           </div>
           <div class="field">
             <label for="color_scheme">涨跌配色</label>
@@ -283,6 +324,10 @@
                         {% if config.show_dark_trade %}checked{% endif %} /> 显示东方财富暗盘资金</label>
           <label><input id="show_sparkline" name="show_sparkline" type="checkbox"
                         {% if config.show_sparkline %}checked{% endif %} /> 显示走势图</label>
+          <label><input id="show_chart_depth" name="show_chart_depth" type="checkbox"
+                        {% if config.show_chart_depth %}checked{% endif %} /> 经典主题：在 K 线内显示千档挂单分布</label>
+          <label><input id="chart_fill_width" name="chart_fill_width" type="checkbox"
+                        {% if config.chart_fill_width %}checked{% endif %} /> K 线按已有数据铺满宽度</label>
           <label><input id="show_sparkline_fill" name="show_sparkline_fill" type="checkbox"
                         {% if config.show_sparkline_fill %}checked{% endif %} /> 填充走势图下方颜色</label>
           <label><input id="show_bs_points" name="show_bs_points" type="checkbox"
@@ -302,6 +347,8 @@
           <label><input id="compact" name="compact" type="checkbox"
                         {% if config.compact %}checked{% endif %} /> 紧凑模式</label>
         </div>
+        <p class="hint">「K 线按已有数据铺满宽度」默认关闭：分时横轴固定为 09:30–15:00（压缩午休），未交易的时间留白；
+          开启后，已有分时数据从首个点到末个点铺满宽度。两个主题均生效，日 K 仍按日期显示。</p>
 
         <div class="field">
           <label for="grayscale_level">灰度值 <span class="value" id="grayscale_level-value"></span></label>
