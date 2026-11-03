@@ -94,6 +94,43 @@ class _FakePoller:
         self.refreshes += 1
 
 
+def test_quit_keeps_qt_alive_until_all_workers_finish(monkeypatch):
+    events = []
+    callbacks = []
+
+    class Worker:
+        def __init__(self, name, running):
+            self.name = name
+            self.running = running
+
+        def stop(self):
+            events.append(f"stop:{self.name}")
+
+        def isRunning(self):
+            return self.running
+
+    workers = [Worker("quotes", False), Worker("depth", True), Worker("reminders", True)]
+    app = object.__new__(app_module.WidgetApp)
+    app._quitting = False
+    app._global_window_hotkey = None
+    app.poller, app.depth_poller, app.notification_listener = workers
+    app._flush_bounds = lambda: events.append("flush")
+    app.server = SimpleNamespace(stop=lambda: events.append("server-stop"))
+    app.qt = SimpleNamespace(quit=lambda: events.append("qt-quit"))
+    monkeypatch.setattr(app_module.QTimer, "singleShot", lambda ms, callback: callbacks.append(callback))
+
+    app.quit()
+    app.quit()  # Repeated close requests must not start another shutdown.
+    assert events == ["flush", "stop:quotes", "stop:depth", "stop:reminders"]
+    assert len(callbacks) == 1
+    workers[1].running = False
+    callbacks.pop(0)()
+    assert "qt-quit" not in events
+    workers[2].running = False
+    callbacks.pop(0)()
+    assert events[-2:] == ["server-stop", "qt-quit"]
+
+
 @pytest.fixture()
 def dispatch(monkeypatch):
     def run(config: Config, *, tray: bool = True, times: int = 1):
