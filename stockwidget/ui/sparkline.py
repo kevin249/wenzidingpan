@@ -309,14 +309,16 @@ class Sparkline(SizedWidget):
         max_width = profile_width
         right = float(width - 1)
 
+        occupied_rows = {row for row, _side in buckets}
         painter.save()
         for (row, side), volume in buckets.items():
             bar_width = max(1.0, max_width * volume / maximum)
-            # 灰度模式下买卖盘不再是红 / 绿两色，而是同一个灰：方向靠左右位置区分。
+            # Use two pixels for isolated levels and keep dense price rows distinct.
+            thickness = 1.4 if row - 1 in occupied_rows or row + 1 in occupied_rows else 2.0
             color = self._paint_color(
                 DEPTH_BID_COLOR if side == "bid" else DEPTH_ASK_COLOR, 88
             )
-            painter.fillRect(QRectF(right - bar_width, row - 0.7, bar_width, 1.4), color)
+            painter.fillRect(QRectF(right - bar_width, row - thickness / 2, bar_width, thickness), color)
 
         label = {
             DEPTH_FULL: "千档",
