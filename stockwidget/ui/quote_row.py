@@ -46,7 +46,7 @@ from ..mcp_depth import DepthSnapshot
 from ..providers.base import Quote
 from ..symbols import classify
 from . import kline_loader
-from .depth_ladder import MODE_DAILY, OUTER_PAD, DepthLadder
+from .depth_ladder import MODE_DAILY, MODE_INTRADAY, OUTER_PAD, DepthLadder
 from .sparkline import Sparkline
 from .sizing import SizedLabel, SizedWidget
 from .theme import (
@@ -226,6 +226,8 @@ class QuoteRow(SizedWidget):
 
     def apply_config(self, config: Config) -> None:
         previous = self._config
+        if previous.display_theme != "theme2" and config.display_theme == "theme2":
+            self.theme2_depth.set_chart_mode(MODE_INTRADAY, notify=False)
         if (
             previous.display_theme != config.display_theme
             or previous.row_style != config.row_style

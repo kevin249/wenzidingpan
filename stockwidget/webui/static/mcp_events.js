@@ -18,7 +18,7 @@
           <option value="local">本地计算 · 逃顶王 TDW</option>
           <option value="mcp">MCP 订阅</option>
         </select>
-        <p class="hint">TDW 动力线以虚线叠加在主图，独立刻度 0–4。分钟或日 K 收盘后，在对应价位标 B1 底部、B2 关注、S1 阶段卖出、S2 清仓卖出。MCP 选项显示订阅标记。</p>
+        <p class="hint">主题 1 与主题 2 默认都显示实时分钟 TDW。当前一分钟随行情重算，空心三角与 * 表示盘中信号，价格回落时可能撤销；收盘确认后画实心三角。动力线独立刻度 0–4。主题 2 手动切换日 K 时才查看日线。</p>
       </div>
       <div class="field">
         <label for="mcp-event-sort">当日 MCP 信息排序</label>

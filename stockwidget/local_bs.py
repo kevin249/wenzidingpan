@@ -35,7 +35,7 @@ class LocalBsNotifier:
             for minute in trend.minutes:
                 stamp = f"{day} {minute}"
                 point = trend.tdw_points.get(stamp)
-                if point is None or stamp <= latest or stamp > cutoff:
+                if point is None or point.provisional or stamp <= latest or stamp > cutoff:
                     continue
                 latest = stamp
                 if previous and point.events:

@@ -368,3 +368,14 @@ class _FailingSession:
 
     def get(self, *args, **kwargs):
         raise self._error
+
+
+def test_live_fetch_bypasses_unexpired_minute_cache():
+    stamp = "2026-10-23 10:02"
+    snapshots = [f"{stamp},10,{close},12,9,100" for close in (10, 11, 12)]
+    session = _ScriptedSession([_JsonResponse(_em([row])) for row in snapshots])
+    client = KlineClient(source=EASTMONEY, session=session)
+    assert client.fetch("600519", "1m", now=1000).latest.close == 10
+    assert client.fetch("600519", "1m", now=1000.1, fresh=True).latest.close == 11
+    assert client.fetch("600519", "1m", now=1000.2, fresh=True).latest.close == 12
+    assert session.calls == 3

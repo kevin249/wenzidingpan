@@ -37,3 +37,15 @@ def test_quotes_and_close_only_samples_cannot_fabricate_tdw_signals():
     notifier = LocalBsNotifier()
     for trend in (None, Trend(prices=[10., 15.]), Trend(prices=[10., 15., 9.])):
         assert notifier.collect([QUOTE], {QUOTE.symbol: trend}, enabled=True, at=START.timestamp()) == []
+
+
+def test_live_cross_is_not_announced_as_closed_or_printed_twice():
+    notifier = LocalBsNotifier()
+    assert not collect(notifier, ["09:59", "10:00"])
+    day, stamp = "2026-10-23", "2026-10-23 10:01"
+    now = START + timedelta(minutes=1)
+    for provisional, expected in [(True, 0), (False, 1), (False, 0)]:
+        trend = Trend(prices=[440., 442.], minutes=["10:00", "10:01"], trade_date=day,
+                      tdw_points={stamp: Point(.6, 442., ("B2",), provisional)})
+        messages = notifier.collect([QUOTE], {QUOTE.symbol: trend}, enabled=True, at=now.timestamp())
+        assert len(messages) == expected

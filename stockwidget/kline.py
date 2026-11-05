@@ -497,6 +497,7 @@ class KlineClient:
         *,
         adjust: bool = True,
         now: float | None = None,
+        fresh: bool = False,
     ) -> Kline:
         """取一只股票某个周期的 K 线。
 
@@ -518,6 +519,9 @@ class KlineClient:
         adjust_key = ADJUST_QFQ if adjust else ADJUST_NONE
         key = (symbol.code, name, adjust_key, count)
         moment = time.time() if now is None else float(now)
+
+        if fresh:
+            return self._load(symbol, name, count, adjust)
 
         with self._lock:
             cached = self._cache.get(key)

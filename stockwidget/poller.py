@@ -54,6 +54,7 @@ class Poller(QThread):
         self._pending: Snapshot | None = None
         self._quote_cache: list[Quote] = []
         self._trend_cache: dict[str, Trend] = {}
+        self._tdw_feeds: dict[str, tdw.MinuteFeed] = {}
         self._tdw_cache: dict[str, dict[str, tdw.Point]] = {}
         self._provider_setting = config.provider
         self._provider_id = config.provider
@@ -105,13 +106,15 @@ class Poller(QThread):
         return None
 
     def _publish(self, config: Config, generation: int, symbols=None) -> None:
+        local = config.show_bs_points and mcp_bs.get_source() == mcp_bs.SOURCE_LOCAL
         snapshot = Snapshot(
             provider_id=self._provider_id,
             quotes=list(self._quote_cache),
             dark_date=self._dark_result.trade_date if config.show_dark_trade else "",
             dark_error=self._dark_result.error if config.show_dark_trade else None,
             dark_enabled=config.show_dark_trade,
-            trends=dict(self._trend_cache),
+            trends={s: t.with_tdw(self._tdw_cache[s]) if local and s in self._tdw_cache else t
+                    for s, t in self._trend_cache.items()},
             effective_provider=self._effective_provider,
             updated_symbols=tuple(symbols) if symbols is not None else None,
             generation=generation,
@@ -145,7 +148,7 @@ class Poller(QThread):
             if s in config.symbols and self._chart_enabled(config)
         }
         self._tdw_cache.clear()
-        self._trend_cache = {s: replace(t, tdw_points={}) for s, t in self._trend_cache.items()}
+        self._tdw_feeds.clear()
         self._clients = {s: c for s, c in self._clients.items() if s in config.symbols}
         self._merge_dark(config)
 
@@ -220,15 +223,13 @@ class Poller(QThread):
             self._merge_dark(config)
             changed = config.symbols
         elif kind == "tdw":
-            if result is None:
+            if result is not None:
+                self._tdw_cache[symbol] = result
+            if symbol not in self._trend_cache or symbol not in self._tdw_cache:
                 return
-            self._tdw_cache[symbol] = result
-            if symbol not in self._trend_cache:
-                return
-            self._trend_cache[symbol] = replace(self._trend_cache[symbol], tdw_points=result)
             changed = [symbol]
         else:
-            self._trend_cache[symbol] = replace(result, tdw_points=self._tdw_cache.get(symbol, {}))
+            self._trend_cache[symbol] = result
             changed = [symbol]
         self._publish(config, generation, changed)
 
@@ -242,6 +243,7 @@ class Poller(QThread):
         inflight: dict[tuple[str, str], tuple[Future, int]] = {}
         due: dict[tuple[str, str], float] = {}
         generation = -1
+        closing_fetch: dict[str, str] = {}
         forced: set[tuple[str, str]] = set()
         try:
             while not self._stopping.is_set():
@@ -255,6 +257,7 @@ class Poller(QThread):
                 if current != generation:
                     generation = current
                     due.clear()
+                    closing_fetch.clear()
                     self._prepare(config)
                     self._publish(config, generation)
                 if explicit:
@@ -271,13 +274,22 @@ class Poller(QThread):
                     self._accept(key, result, config, generation)
                     interval = (
                         config.refresh_seconds if key[0] == "quotes" else
-                        60.0 if key[0] == "tdw" else
-                        config.chart_refresh_seconds if key[0] == "chart" else DARK_REFRESH_SECONDS
+                        config.chart_refresh_seconds if key[0] in {"chart", "tdw"} else DARK_REFRESH_SECONDS
                     )
                     # Start-to-start cadence: network work is not added to the interval.
+                    if key[0] == "tdw" and result is None:
+                        interval = max(interval, 5.0)
                     due[key] = started + interval
 
                 active = self._should_poll(config, False)
+                if not active:
+                    # Lunch/close can arrive between polls. Reconcile the last live bar once.
+                    for symbol, points in self._tdw_cache.items():
+                        if points and ("tdw", symbol) in jobs:
+                            stamp = next(reversed(points))
+                            if points[stamp].provisional and closing_fetch.get(symbol) != stamp:
+                                forced.add(("tdw", symbol))
+                                closing_fetch[symbol] = stamp
                 chart_slots = CHART_WORKERS - sum(k[0] == "chart" for k in inflight)
                 tdw_slots = 2 - sum(k[0] == "tdw" for k in inflight)
                 now = time.monotonic()
@@ -295,7 +307,10 @@ class Poller(QThread):
                     elif kind == "dark":
                         fetch, args = self._fetch_dark, (config,)
                     elif kind == "tdw":
-                        fetch, args = tdw.fetch_minute, (symbol, config.kline_source)
+                        if symbol not in self._tdw_feeds:
+                            self._tdw_feeds[symbol] = tdw.MinuteFeed(symbol, config.kline_source)
+                        fetch = self._tdw_feeds[symbol].fetch
+                        args = (self._trend_cache.get(symbol),)
                         tdw_slots -= 1
                     else:
                         if symbol not in self._clients:

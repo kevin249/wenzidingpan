@@ -41,8 +41,9 @@ def draw_event(painter, x, y, text, height, width, color, labels):
     tip = min(y, height - 6) if buying else max(6, y)
     base = tip + delta
     painter.save()
-    painter.setPen(Qt.NoPen)
-    painter.setBrush(color)
+    forming = text.endswith("*")
+    painter.setPen(QPen(color, 1) if forming else Qt.NoPen)
+    painter.setBrush(Qt.NoBrush if forming else color)
     painter.drawPolygon(QPolygonF([QPointF(x, tip), QPointF(x - 3, base), QPointF(x + 3, base)]))
     if tip != y:
         painter.setPen(color)

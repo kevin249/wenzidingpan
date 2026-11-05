@@ -13,6 +13,7 @@ from datetime import date, datetime
 import requests
 
 from . import tdw
+from .kline import Bar
 from .market_hours import SHANGHAI_TZ
 from .providers.base import USER_AGENT, describe_error
 from .symbols import Symbol, classify
@@ -77,6 +78,36 @@ class Trend:
     stale: bool = False  # 接口失败时暂用当天最后一份有效曲线
 
     tdw_points: dict[str, tdw.Point] = field(default_factory=dict)
+    last_minute_bar: Bar | None = None
+
+    def with_tdw(self, points: dict[str, tdw.Point], *, now: datetime | None = None) -> Trend:
+        """Align the price and TDW tail without moving a signal onto the preceding minute."""
+        if not points:
+            return self
+        stamp = next(reversed(points))
+        point = points[stamp]
+        if point.provisional and stamp != tdw.forming_minute(now or datetime.now(SHANGHAI_TZ)):
+            # A failed or delayed final refresh is not evidence of a confirmed signal.
+            return replace(self, tdw_points={key: p for key, p in points.items() if not p.provisional})
+        if (stamp[:10] != self.trade_date or not self.minutes
+                or len(self.prices) != len(self.minutes) or stamp[11:16] < self.minutes[-1]):
+            return replace(self, tdw_points=points)
+        if stamp[11:16] == self.minutes[-1]:
+            if not point.provisional:
+                return replace(self, tdw_points=points)
+            volumes = self.volumes
+            if len(volumes) == len(self.minutes):
+                volumes = [*volumes[:-1], point.volume]
+            prices = PriceSeries(self.prices, getattr(self.prices, "symbol", ""))
+            prices[-1] = point.close
+            return replace(self, prices=prices, volumes=volumes, tdw_points=points)
+        last = f"{self.trade_date} {self.minutes[-1]}"
+        tail = [(time, p) for time, p in points.items() if last < time <= stamp]
+        volumes = [*self.volumes, *(p.volume for _, p in tail)] if len(self.volumes) == len(self.minutes) else []
+        prices = PriceSeries(self.prices, getattr(self.prices, "symbol", ""))
+        prices.extend(p.close for _, p in tail)
+        return replace(self, tdw_points=points, minutes=[*self.minutes, *(time[11:16] for time, _ in tail)],
+                       prices=prices, volumes=volumes)
 
     def __bool__(self) -> bool:
         return len(self.prices) >= 2
@@ -98,6 +129,7 @@ def parse_eastmoney(payload: object) -> Trend:
     open_price: float | None = None
     high_price: float | None = None
     low_price: float | None = None
+    last_minute_bar = None
     for item in data.get("trends") or []:
         parts = str(item or "").split(",")
         if len(parts) < 3:
@@ -105,8 +137,8 @@ def parse_eastmoney(payload: object) -> Trend:
         minute = parts[0].strip().split(" ")[-1][:5]
         close = _number(parts[2])
         if close is not None and close > 0 and _is_trading_minute(minute):
+            candidate = _number(parts[1])
             if open_price is None:
-                candidate = _number(parts[1])
                 open_price = candidate if candidate is not None and candidate > 0 else close
             high = _number(parts[3]) if len(parts) > 3 else None
             low = _number(parts[4]) if len(parts) > 4 else None
@@ -120,6 +152,9 @@ def parse_eastmoney(payload: object) -> Trend:
             trade_date = _trade_date(stamp) or trade_date
             volume = _number(parts[5]) if len(parts) > 5 else None
             volumes.append(volume if volume is not None and volume > 0 else 0.0)
+            last_minute_bar = None
+            if candidate and low and high and 0 < low <= close <= high and trade_date:
+                last_minute_bar = Bar(f"{trade_date} {minute}", candidate, high, low, close, volumes[-1])
 
     return Trend(
         prices=prices,
@@ -131,6 +166,7 @@ def parse_eastmoney(payload: object) -> Trend:
         minutes=minutes,
         trade_date=trade_date,
         source="eastmoney",
+        last_minute_bar=last_minute_bar,
     )
 
 

@@ -2567,3 +2567,30 @@ def test_day_candles_use_warm_history_and_source_switch_removes_tdw(app, monkeyp
         assert not row.theme2_depth._daily_power
     finally:
         row.close()
+
+
+def test_switching_to_theme2_uses_same_live_minute_as_classic(app, monkeypatch):
+    from dataclasses import replace
+    from stockwidget import mcp_bs, tdw
+    from stockwidget.providers.base import Quote
+    from stockwidget.ui.depth_ladder import MODE_DAILY, MODE_INTRADAY
+    monkeypatch.setattr(mcp_bs, "get_source", lambda: "local")
+    row = QuoteRow("603986")
+    cfg = Config(show_bs_points=True)
+    try:
+        row.apply_config(cfg)
+        day, stamp = "2026-10-23", "2026-10-23 10:01"
+        trend = Trend(trade_date=day, minutes=["10:00", "10:01"], prices=[10., 11.],
+                      tdw_points={stamp: tdw.Point(.6, 11., ("B2",), provisional=True)})
+        row.update_quote(Quote.from_prices("603986", "测试", 11, 10), cfg, trend)
+        assert row.sparkline._signals == [(1, "B2*")]
+        row.theme2_depth.set_chart_mode(MODE_DAILY, notify=False)
+        row.apply_config(replace(cfg, display_theme="theme2"))
+        assert row.theme2_depth.chart_mode == MODE_INTRADAY
+        assert row.theme2_depth._signals == row.sparkline._signals == [(1, "B2*")]
+        updated = replace(trend, prices=[10., 10.], tdw_points={stamp: tdw.Point(.4, 10., (), True)})
+        row.update_quote(Quote.from_prices("603986", "测试", 10, 10), row._config, updated)
+        assert row.theme2_depth._signals == row.sparkline._signals == []
+        assert row.theme2_depth._minute_power == row.sparkline._tdw_power == [None, .4]
+    finally:
+        row.close()

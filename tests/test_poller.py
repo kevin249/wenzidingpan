@@ -30,7 +30,7 @@ def wait_for(condition, timeout=2):
 def running(monkeypatch):
     pollers, gates = [], []
 
-    monkeypatch.setattr(module.tdw, "fetch_minute", lambda *args: {})
+    monkeypatch.setattr(module.tdw.MinuteFeed, "fetch", lambda *args: {})
 
     def gate():
         event = threading.Event()
