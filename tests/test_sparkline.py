@@ -9,7 +9,7 @@ from __future__ import annotations
 import math
 
 import pytest
-from PySide6.QtCore import QPoint
+from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QColor, QImage, QRegion
 from PySide6.QtWidgets import QApplication, QWidget
 
@@ -37,12 +37,11 @@ def app():
 def rendered(app):
     """画一段起落明显的曲线，返回图像与几何换算函数。"""
     prices = [10 + 0.9 * math.sin(i / 14) + 0.25 * math.sin(i / 3.3) for i in range(240)]
-    from stockwidget.intraday import calculate_bs_points
 
-    signals = calculate_bs_points(prices)
-    assert signals, "构造的曲线应当能产生 B/S 点"
+    signals = [(19, "B"), (37, "S"), (76, "B"), (88, "S")]
 
     widget = Sparkline()
+    widget.set_fill_width(True)
     widget.set_series(prices)
     widget.set_prev_close(10.0)
     widget.set_color(CURVE_COLOR)
@@ -68,7 +67,7 @@ def rendered(app):
         return (image.height() - 2) - (value - low) / span * (image.height() - 4)
 
     def x_of(index: int) -> int:
-        return round(index / (len(prices) - 1) * (image.width() - 1))
+        return int(index / (len(prices) - 1) * (image.width() - 1))
 
     return image, signals, prices, y_of, x_of
 
@@ -149,14 +148,13 @@ def test_sell_lines_drop_from_top_and_stop_at_curve(rendered):
 
 def test_signals_hidden_when_switched_off(app):
     prices = [10 + 0.9 * math.sin(i / 14) for i in range(120)]
-    from stockwidget.intraday import calculate_bs_points
 
     widget = Sparkline()
     widget.set_series(prices)
     widget.set_color(CURVE_COLOR)
     widget.set_annotations(
         None,
-        calculate_bs_points(prices),
+        [(12, "B"), (36, "S")],
         show_signals=False,
         show_open_line=False,
         show_high_low=False,
@@ -264,7 +262,9 @@ def test_theme2_traded_volume_is_opposite_depth_with_equal_sidebar_width(app):
         )
     )
     widget.resize(WIDTH, HEIGHT)
-    image = widget.grab().toImage()
+    image = QImage(widget.size(), QImage.Format_ARGB32)
+    image.fill(Qt.transparent)
+    widget.render(image, QPoint(), QRegion(), QWidget.DrawChildren)
 
     side = round(widget._side_profile_width(image.width()))
     assert side == round(image.width() * 0.28)
@@ -276,15 +276,15 @@ def test_theme2_traded_volume_is_opposite_depth_with_equal_sidebar_width(app):
         for x in range(image.width()):
             pixel = image.pixelColor(x, y)
             if (
-                abs(pixel.red() - TRADED_VOLUME_COLOR.red()) < TOLERANCE
-                and abs(pixel.green() - TRADED_VOLUME_COLOR.green()) < TOLERANCE
-                and abs(pixel.blue() - TRADED_VOLUME_COLOR.blue()) < TOLERANCE
+                abs(pixel.red() - TRADED_VOLUME_COLOR.red()) < 6
+                and abs(pixel.green() - TRADED_VOLUME_COLOR.green()) < 6
+                and abs(pixel.blue() - TRADED_VOLUME_COLOR.blue()) < 6
             ):
                 volume_pixels.append((x, y))
             if (
-                abs(pixel.red() - DEPTH_BID_COLOR.red()) < TOLERANCE
-                and abs(pixel.green() - DEPTH_BID_COLOR.green()) < TOLERANCE
-                and abs(pixel.blue() - DEPTH_BID_COLOR.blue()) < TOLERANCE
+                abs(pixel.red() - DEPTH_BID_COLOR.red()) < 6
+                and abs(pixel.green() - DEPTH_BID_COLOR.green()) < 6
+                and abs(pixel.blue() - DEPTH_BID_COLOR.blue()) < 6
             ):
                 depth_pixels.append((x, y))
             if (
@@ -339,11 +339,9 @@ def _sparkline_widget(level: int, *, grayscale: bool = True) -> Sparkline:
 
     只要有一个站点漏了灰度转换，图里就会留下彩色像素。
     """
-    from stockwidget.intraday import calculate_bs_points
 
     prices = [10 + 0.9 * math.sin(i / 14) + 0.25 * math.sin(i / 3.3) for i in range(240)]
-    signals = calculate_bs_points(prices)
-    assert signals, "构造的曲线应当能产生 B/S 点"
+    signals = [(12, "B"), (36, "S")]
 
     levels = tuple(
         [DepthLevel("bid", 9.78 + index * 0.03, 100 + index * 80) for index in range(6)]
@@ -430,3 +428,64 @@ def test_colored_elements_still_show_up_while_grayscale_is_off(app):
     """反证：同样的元素在非灰度下确实带彩色，上面的断言才不是空转。"""
     colored, _mean = _pixel_counts(_render_on_backdrop(_sparkline_widget(150, grayscale=False)))
     assert colored > 0
+
+
+def test_tdw_markers_stay_on_the_price_scale_with_grayscale_l2(app, monkeypatch):
+    from stockwidget.ui import tdw_overlay
+
+    w = Sparkline()
+    w.resize(300, 100)
+    w.set_series([10., 11., 12.])
+    w.set_tdw_power([.4, .6, .8])
+    w.set_annotations(None, [(1, "B2")], show_signals=True, show_open_line=False,
+                      show_high_low=False, show_fill=False, grayscale=True)
+    w.set_depth(DepthSnapshot("600000", levels=(DepthLevel("bid", 11.1, 50),), available=True))
+    positions = []
+    monkeypatch.setattr(tdw_overlay, "draw_event", lambda painter, x, y, *args: positions.append(y))
+    for enabled in (False, True):
+        w.set_show_depth(enabled)
+        w.grab()
+    assert positions == pytest.approx([50., 50.], abs=1.)
+
+
+@pytest.mark.parametrize("height", [8, 20, 96])
+def test_four_tdw_guides_survive_compact_warmup_and_stay_out_of_book(app, height):
+    w = Sparkline()
+    w.setFixedSize(360, height)
+    w.set_series([11., 11.], ["10:01:00", "10:01:03"])
+    w.set_annotations(None, [], show_signals=True, show_open_line=False,
+                      show_high_low=False, show_fill=False, grayscale=True)
+    w.set_show_depth(True)
+    w.set_depth(DepthSnapshot("600000", levels=(DepthLevel("bid", 11., 50),), available=True))
+    # A new session has prices but too few real-time bars for a TDW value.
+    w.set_tdw_power([], show_levels=False)
+    before = _render_on_backdrop(w)
+    w.set_tdw_power([], show_levels=True)
+    after = _render_on_backdrop(w)
+    rows = [y for y in range(height)
+            if sum(before.pixel(x, y) != after.pixel(x, y) for x in range(120, 220)) > 25]
+    assert len(rows) == 4
+    if height == 96:
+        assert rows == [14, 20, 82, 89]
+    assert all(before.pixel(x, y) == after.pixel(x, y)
+               for x in range(260, 360) for y in range(height))
+    w.close()
+
+
+def test_dense_tdw_paths_keep_real_endpoint_and_break_at_missing_data(app):
+    from stockwidget.ui.tdw_overlay import series_path, visible_events
+
+    values = [i % 4 for i in range(2000)] + [None] + [3, 2, 1]
+    path = series_path(values, lambda i: i / 10, float, 4)
+    coords = [path.elementAt(i) for i in range(path.elementCount())]
+    assert len(coords) < 60
+    assert (coords[0].x, coords[0].y) == (0, values[0])
+    assert (coords[-1].x, coords[-1].y) == (200.3, values[-1])
+    assert any(el.isMoveTo() and el.x == 200.1 for el in coords)
+    assert any(el.x == 199.9 and el.y == values[1999] for el in coords)
+
+    signals = [(n, "B1" if n % 2 else "S2") for n in range(2000)]
+    visible = list(visible_events(signals, len(values), lambda i: i / 10))
+    assert visible[-1] == signals[-1] and len(visible) < 20
+    assert all(right[0] - left[0] >= 120 for left, right in zip(visible, visible[1:]))
+    assert len(signals) == 2000

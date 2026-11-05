@@ -328,6 +328,8 @@
                         {% if config.show_chart_depth %}checked{% endif %} /> 经典主题：在 K 线内显示千档挂单分布</label>
           <label><input id="chart_fill_width" name="chart_fill_width" type="checkbox"
                         {% if config.chart_fill_width %}checked{% endif %} /> K 线按已有数据铺满宽度</label>
+          <label><input id="tdw_recent_five" name="tdw_recent_five" type="checkbox"
+                        {% if config.tdw_recent_five %}checked{% endif %} /> 实时 TDW 只显示最近 5 分钟（秒 K）</label>
           <label><input id="show_sparkline_fill" name="show_sparkline_fill" type="checkbox"
                         {% if config.show_sparkline_fill %}checked{% endif %} /> 填充走势图下方颜色</label>
           <label><input id="show_bs_points" name="show_bs_points" type="checkbox"

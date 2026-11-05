@@ -370,3 +370,13 @@ def test_webui_theme_switch_restores_each_theme_profile(server):
     assert restored2["font_size"] == 20
     assert restored2["background_alpha"] == 0.7
     assert restored2["theme2_depth_width"] == 204
+
+
+def test_recent_seconds_view_is_an_opt_in_persisted_setting(server):
+    client = _client(server)
+    url = f"/api/config?token={server.token}"
+    assert client.get(url).get_json()["config"]["tdw_recent_five"] is False
+    saved = client.post(url, json={"tdw_recent_five": True}).get_json()["config"]
+    assert saved["tdw_recent_five"] and Store(server.store.path).get().tdw_recent_five
+    body = client.get(f"/?token={server.token}").get_data(as_text=True)
+    assert "checked" in body.split('id="tdw_recent_five"')[1].split("</label>")[0]

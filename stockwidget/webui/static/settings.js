@@ -22,6 +22,7 @@ const CHECKBOXES = [
   'grayscale',
   'intraday_chart',
   'chart_fill_width',
+  'tdw_recent_five',
   'compact',
   'stock_name_bold',
   'stock_price_bold',

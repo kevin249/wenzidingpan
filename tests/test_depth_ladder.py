@@ -1251,3 +1251,28 @@ def test_theme2_daily_bs_labels_are_drawn_on_date_aligned_candles(app):
         for y in range(widget.height())
     ), "关闭显示 B/S 时，日 K 也必须隐藏信号"
     widget.close()
+
+
+@pytest.mark.parametrize("side", ["left", "right"])
+@pytest.mark.parametrize("mode", [MODE_INTRADAY, MODE_DAILY])
+def test_tdw_guides_span_chart_and_clear_mirrored_book(app, side, mode):
+    widget = _widget(theme2_side=side, grayscale=True)
+    widget.setFixedSize(700, 96)
+    widget.set_expanded(True)
+    widget.set_chart_mode(mode, notify=False)
+    widget.set_depth(_depth())
+    widget.set_intraday(_trend())
+    widget.set_kline(_kline())
+    widget.set_tdw_power([], [], show_levels=False)
+    before = _render(widget)
+    widget.set_tdw_power([], [], show_levels=True)
+    after = _render(widget)
+
+    layout = widget._layout()
+    middle = round((layout.kline_left + layout.kline_right) / 2)
+    rows = [y for y in range(96)
+            if sum(before.pixel(x, y) != after.pixel(x, y) for x in range(middle - 20, middle + 20)) >= 8]
+    assert rows == [14, 20, 82, 89]
+    assert all(before.pixel(x, y) == after.pixel(x, y)
+               for x in _depth_band(layout) for y in rows)
+    widget.close()

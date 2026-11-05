@@ -5,14 +5,16 @@
 
 from __future__ import annotations
 
+from bisect import bisect_left
 import threading
 import time
 from dataclasses import dataclass, field, replace
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import requests
 
-from . import mcp_bs
+from . import tdw
+from .kline import Bar
 from .market_hours import SHANGHAI_TZ
 from .providers.base import USER_AGENT, describe_error
 from .symbols import Symbol, classify
@@ -69,83 +71,41 @@ class Trend:
     high_price: float | None = None
     low_price: float | None = None
     error: str | None = None
-    # 与 prices 严格对齐，保留真实分钟，不能用数组下标代替行情时间。
+    # 与 prices 对齐，支持分钟时间和行情源的秒级时间。
     minutes: list[str] = field(default_factory=list)
     trade_date: str = ""
     source: str = ""
     fetched_at: float = 0.0  # 最近一次成功获取该曲线的时间
     stale: bool = False  # 接口失败时暂用当天最后一份有效曲线
 
+    tdw_points: dict[str, tdw.Point] = field(default_factory=dict)
+    realtime_bars: list[Bar] = field(default_factory=list)  # 与价格序列末段对齐
+
+    recent_view: bool = False
+
+    def last_five_minutes(self) -> Trend:
+        """Slice the displayed candles after TDW has been computed on the full history."""
+        bars = self.realtime_bars
+        if not bars:
+            return self
+        end = datetime.fromisoformat(bars[-1].time)
+        cutoff = (end - timedelta(minutes=5)).isoformat(sep=" ", timespec="seconds")
+        start = bisect_left(bars, cutoff, key=lambda bar: bar.time)
+        bars = bars[start:]
+        return replace(
+            self, realtime_bars=bars, recent_view=True,
+            prices=PriceSeries((bar.close for bar in bars), getattr(self.prices, "symbol", "")),
+            volumes=[bar.volume for bar in bars], minutes=[bar.time[11:] for bar in bars],
+            high_price=max(bar.high for bar in bars), low_price=min(bar.low for bar in bars),
+            tdw_points={bar.time: self.tdw_points[bar.time] for bar in bars if bar.time in self.tdw_points},
+        )
+
     def __bool__(self) -> bool:
-        return len(self.prices) >= 2
+        return bool(self.prices) if self.recent_view else len(self.prices) >= 2
 
 
 def _secid(symbol: Symbol) -> str:
     return f"{1 if symbol.market == 'sh' else 0}.{symbol.code}"
-
-
-@dataclass(frozen=True)
-class LocalBsSignal:
-    index: int
-    side: str
-    confirmed_index: int
-
-
-def local_bs_signals(prices: list[float], reversal_percent: float = 0.005) -> list[LocalBsSignal]:
-    """与绘图共用的反转扫描，同时保留转折点和首次确认点。"""
-    if len(prices) < 3:
-        return []
-    direction = 0
-    extreme_index = 0
-    extreme = prices[0]
-    low = high = prices[0]
-    low_index = high_index = 0
-    signals: list[LocalBsSignal] = []
-    for index, price in enumerate(prices[1:], 1):
-        if direction == 0:
-            if price < low:
-                low, low_index = price, index
-            if price > high:
-                high, high_index = price, index
-            if low and (price - low) / low >= reversal_percent:
-                signals.append(LocalBsSignal(low_index, "B", index))
-                direction, extreme, extreme_index = 1, price, index
-            elif high and (high - price) / high >= reversal_percent:
-                signals.append(LocalBsSignal(high_index, "S", index))
-                direction, extreme, extreme_index = -1, price, index
-        elif direction > 0:
-            if price >= extreme:
-                extreme, extreme_index = price, index
-            elif extreme and (extreme - price) / extreme >= reversal_percent:
-                signals.append(LocalBsSignal(extreme_index, "S", index))
-                direction = -1
-                extreme, extreme_index = price, index
-        else:
-            if price <= extreme:
-                extreme, extreme_index = price, index
-            elif extreme and (price - extreme) / extreme >= reversal_percent:
-                signals.append(LocalBsSignal(extreme_index, "B", index))
-                direction = 1
-                extreme, extreme_index = price, index
-    return signals
-
-
-def _local_bs_points(prices: list[float], reversal_percent: float = 0.005) -> list[tuple[int, str]]:
-    return [(signal.index, signal.side) for signal in local_bs_signals(prices, reversal_percent)]
-
-
-def calculate_bs_points(
-    prices: list[float], reversal_percent: float = 0.005, *, symbol: str = ""
-) -> list[tuple[int, str]]:
-    """按设置选择 B/S 来源。
-
-    界面可显式传股票代码，联网分时也可通过 :class:`PriceSeries` 携带代码。
-    无股票上下文的普通 list 保持本地计算，供算法测试和独立调用使用。
-    """
-    symbol = symbol or getattr(prices, "symbol", "")
-    if symbol and mcp_bs.get_source() == mcp_bs.SOURCE_MCP:
-        return mcp_bs.bs_points(symbol, prices)
-    return _local_bs_points(prices, reversal_percent)
 
 
 def parse_eastmoney(payload: object) -> Trend:
@@ -167,8 +127,8 @@ def parse_eastmoney(payload: object) -> Trend:
         minute = parts[0].strip().split(" ")[-1][:5]
         close = _number(parts[2])
         if close is not None and close > 0 and _is_trading_minute(minute):
+            candidate = _number(parts[1])
             if open_price is None:
-                candidate = _number(parts[1])
                 open_price = candidate if candidate is not None and candidate > 0 else close
             high = _number(parts[3]) if len(parts) > 3 else None
             low = _number(parts[4]) if len(parts) > 4 else None

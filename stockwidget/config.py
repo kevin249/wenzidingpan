@@ -62,6 +62,7 @@ THEME_SCOPED_FIELDS = (
     "grayscale_level",
     "intraday_chart",
     "chart_fill_width",
+    "tdw_recent_five",
     "show_dark_trade",
     "compact",
     "theme2_side",
@@ -184,6 +185,7 @@ class Config:
     # 走势图画当日分时曲线（联网取分钟数据）；关掉则只画组件运行期间的采样点
     intraday_chart: bool = True
     chart_fill_width: bool = False  # 默认完整交易日横轴；开启后已有分时数据铺满宽度
+    tdw_recent_five: bool = False
     show_dark_trade: bool = True
     compact: bool = False
     display_theme: str = "theme1"  # theme1 = 经典网格，theme2 = 千档竖列
@@ -455,6 +457,7 @@ def sanitize(raw: Any, *, _include_theme_profiles: bool = True) -> Config:
         "grayscale",
         "intraday_chart",
         "chart_fill_width",
+        "tdw_recent_five",
         "show_dark_trade",
         "compact",
         "theme2_always_expanded",
@@ -477,11 +480,10 @@ def sanitize(raw: Any, *, _include_theme_profiles: bool = True) -> Config:
         values = {k: _as_number(bounds.get(k)) for k in ("x", "y", "width", "height")}
         if all(v is not None for v in values.values()):
             scale = _as_number(bounds.get("scale"))
-            min_width = 1 if out.display_theme == "theme2" else 200
             out.bounds = Bounds(
                 x=int(values["x"]),
                 y=int(values["y"]),
-                width=int(_clamp(round(values["width"]), min_width, 4000)),
+                width=int(_clamp(round(values["width"]), 1, 4000)),
                 height=int(_clamp(round(values["height"]), 56, 4000)),
                 scale=round(_clamp(scale if scale is not None else 1.0, 0.6, 3.0), 3),
                 manual_size=bounds.get("manual_size") is True,

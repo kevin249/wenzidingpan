@@ -203,9 +203,8 @@ class ResizeGrip(QWidget):
         delta = event.globalPosition().toPoint() - self._origin
         self.dragged.emit(
             QSize(
-                # The window applies the theme-specific width limit.
-                max(1, self._start_size.width() + delta.x()),
-                max(80, self._start_size.height() + delta.y()),
+                self._start_size.width() + delta.x(),
+                self._start_size.height() + delta.y(),
             )
         )
         event.accept()
@@ -544,8 +543,8 @@ class TickerWindow(QWidget):
             Qt.ScrollBarAsNeeded if config.display_theme == "theme2" else Qt.ScrollBarAlwaysOff
         )
         self.empty_label.setVisible(not single and not self._rows)
-        # 多行模式始终保留右下角透明热区；鼠标穿透时它也必须一起禁用。
-        self.grip.setVisible(not config.click_through and (not single or config.show_title_buttons))
+        # Keep the resize hit area available even when the title bar is hidden.
+        self.grip.setVisible(not config.click_through)
         self.grip.set_always_visible(config.show_title_buttons)
         self._position_grip()
 
@@ -648,14 +647,14 @@ class TickerWindow(QWidget):
         """把窗口上的未读数清掉；用户从托盘那边确认时走这里。"""
         self.title_bar.clear_bell()
 
-    def refresh_bs_signals(self, symbol: str) -> None:
+    def refresh_bs_signals(self, symbol: str = "") -> None:
         """B/S 工具数据更新时，仅刷新匹配股票的绘图标记。"""
-        target = classify(symbol)
-        if target is None:
+        target = classify(symbol) if symbol else None
+        if symbol and target is None:
             return
         for raw, row in self._rows.items():
             parsed = classify(raw)
-            if parsed is not None and parsed.code == target.code:
+            if target is None or (parsed is not None and parsed.code == target.code):
                 row.refresh_bs_signals()
 
     def _sync_rows(self, quotes, trends: dict | None = None) -> None:
@@ -855,8 +854,6 @@ class TickerWindow(QWidget):
         """高度按网格行数算，宽度按列数摊开——1 行就是全部横向铺满。"""
         chrome = self._chrome_height()
         if self._config.display_theme == "theme2":
-            self.setMinimumWidth(0)
-            self.setMaximumWidth(16777215)
             self.setMinimumHeight(0)
             self.setMaximumHeight(16777215)
             if not self._rows:
@@ -884,8 +881,6 @@ class TickerWindow(QWidget):
 
         if self._config.layout == "single":
             self.setFixedHeight(chrome + self.marquee.height() + 4)
-            self.setMinimumWidth(220)
-            self.setMaximumWidth(16777215)
             return
 
         self.setMinimumHeight(0)
@@ -1158,18 +1153,18 @@ class TickerWindow(QWidget):
         return {"theme": self._config.display_theme, "scale": self._scale, "regions": regions}
 
     def _bounded_drag_size(self, size: QSize) -> QSize:
-        # Theme 2 is a compressible canvas; its natural width is only a preference.
-        minimum_width = 1 if self._config.display_theme == "theme2" else 180
+        # A width-only drag must also preserve a compact window already shorter than 80 px.
+        start = self._drag_start_size if self._drag_start_size.isValid() else self.size()
+        minimum_height = max(1, min(80, start.height()))
         screen = self.screen()
         if screen is None:
-            return QSize(max(minimum_width, size.width()), max(80, size.height()))
+            return QSize(max(1, size.width()), max(minimum_height, size.height()))
         geo = screen.availableGeometry()
         max_width = max(1, geo.right() - max(self.x(), geo.left()) + 1)
         max_height = max(1, geo.bottom() - max(self.y(), geo.top()) + 1)
-        min_width = min(minimum_width, max_width)
-        min_height = min(80, max_height)
+        min_height = min(minimum_height, max_height)
         return QSize(
-            round(_clamp(size.width(), min_width, max_width)),
+            round(_clamp(size.width(), 1, max_width)),
             round(_clamp(size.height(), min_height, max_height)),
         )
 

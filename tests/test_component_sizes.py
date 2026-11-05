@@ -94,6 +94,64 @@ def test_numeric_window_size_uses_drag_path_and_titlebar_keeps_grip_visible(app)
     window.close()
 
 
+def drag_to_width(window, width):
+    # Exercise the actual grip events as well as the shared resize handler.
+    grip = window.grip
+    origin = grip.mapToGlobal(grip.rect().center())
+    grip.mousePressEvent(QMouseEvent(
+        QMouseEvent.MouseButtonPress, QPointF(grip.rect().center()), QPointF(origin),
+        Qt.LeftButton, Qt.LeftButton, Qt.NoModifier,
+    ))
+    target = origin + QPoint(width - window.width(), 0)
+    grip.mouseMoveEvent(QMouseEvent(
+        QMouseEvent.MouseMove, QPointF(grip.mapFromGlobal(target)), QPointF(target),
+        Qt.NoButton, Qt.LeftButton, Qt.NoModifier,
+    ))
+    grip.mouseReleaseEvent(QMouseEvent(
+        QMouseEvent.MouseButtonRelease, QPointF(grip.rect().center()), QPointF(target),
+        Qt.LeftButton, Qt.NoButton, Qt.NoModifier,
+    ))
+    window.flush_bounds()
+
+
+@pytest.mark.parametrize("layout", ["single", "multi"])
+def test_classic_manual_width_survives_refresh_and_restart(app, tmp_path, layout):
+    store = Store(tmp_path / "config.json")
+    config = store.update({"layout": layout, "show_title_buttons": False})
+    window = TickerWindow(config)
+    quote = Quote.from_prices("603986", "兆易创新", 442, 441)
+    window._sync_rows([quote])
+    window.bounds_changed.connect(lambda bounds: store.update({"bounds": bounds}))
+    window.show()
+    app.processEvents()
+    try:
+        height = window.height()
+        window.resize_from_settings({"width": 100})
+        assert window.width() == 100 and window.height() == height
+        assert window.grip.isVisible()
+        drag_to_width(window, 64)
+        window._sync_rows([quote])
+        app.processEvents()
+        assert window.width() == 64 and window.height() == height
+        assert window.scaled_config().font_size == config.font_size
+        if layout == "multi":
+            assert window._rows[quote.symbol].width() <= window.scroll.viewport().width()
+    finally:
+        window.close()
+
+    store.update({"display_theme": "theme2"})
+    store.update({"display_theme": "theme1"})
+    saved = Store(store.path).get()
+    assert saved.bounds.width == 64 and saved.bounds.manual_size
+    restored = TickerWindow(saved)
+    try:
+        restored.restore_bounds(saved.bounds, [app.primaryScreen().availableGeometry()])
+        restored._sync_rows([quote])
+        assert restored.width() == 64
+    finally:
+        restored.close()
+
+
 @pytest.mark.parametrize("method", ["settings", "grip"])
 @pytest.mark.parametrize("side", ["left", "right"])
 @pytest.mark.parametrize("title", [False, True])
@@ -113,23 +171,7 @@ def test_theme2_can_shrink_below_old_minimum_and_restore(app, tmp_path, method, 
             if method == "settings":
                 window.resize_from_settings({"width": width})
             else:
-                # Exercise the actual grip events as well as the shared resize handler.
-                grip = window.grip
-                origin = grip.mapToGlobal(grip.rect().center())
-                grip.mousePressEvent(QMouseEvent(
-                    QMouseEvent.MouseButtonPress, QPointF(grip.rect().center()), QPointF(origin),
-                    Qt.LeftButton, Qt.LeftButton, Qt.NoModifier,
-                ))
-                target = origin + QPoint(width - window.width(), 0)
-                grip.mouseMoveEvent(QMouseEvent(
-                    QMouseEvent.MouseMove, QPointF(grip.mapFromGlobal(target)), QPointF(target),
-                    Qt.NoButton, Qt.LeftButton, Qt.NoModifier,
-                ))
-                grip.mouseReleaseEvent(QMouseEvent(
-                    QMouseEvent.MouseButtonRelease, QPointF(grip.rect().center()), QPointF(target),
-                    Qt.LeftButton, Qt.NoButton, Qt.NoModifier,
-                ))
-                window.flush_bounds()
+                drag_to_width(window, width)
             app.processEvents()
             assert window.width() == width
             for expanded in (True, False):

@@ -11,8 +11,6 @@ import requests
 from stockwidget.intraday import (
     IntradayClient,
     Trend,
-    calculate_bs_points,
-    local_bs_signals,
     parse_eastmoney,
     parse_tencent,
 )
@@ -86,22 +84,6 @@ def test_trend_is_falsy_without_enough_points():
     assert not Trend(prices=[10.0])
     assert not Trend()
     assert Trend(prices=[10.0, 10.1])
-
-
-def test_bs_points_require_confirmed_half_percent_reversal():
-    prices = [10.00, 10.06, 10.12, 10.05, 9.98, 10.04]
-    assert calculate_bs_points(prices) == [(0, "B"), (2, "S"), (4, "B")]
-
-
-def test_bs_points_ignore_noise_and_unconfirmed_last_wave():
-    assert calculate_bs_points([10.00, 10.01, 9.99, 10.02]) == []
-
-
-def test_bs_confirmation_indices_match_chart_pivots_and_threshold_crossing():
-    prices = [10.00, 10.06, 10.12, 10.05, 9.98, 10.04]
-    signals = local_bs_signals(prices)
-    assert [(s.index, s.side) for s in signals] == calculate_bs_points(prices)
-    assert [(s.index, s.confirmed_index) for s in signals] == [(0, 1), (2, 3), (4, 5)]
 
 
 def test_tencent_fallback_parses_minutes():
