@@ -46,6 +46,7 @@ class Sparkline(SizedWidget):
         self._minutes: list[str] = []
         self._realtime_bars: list[Bar] = []
         self._fill_width = False
+        self._recent_view = False
         self._volumes: list[float] = []
         self._show_volume_profile = False
         self._configured_profile_width = 0
@@ -95,10 +96,12 @@ class Sparkline(SizedWidget):
                 self.update()
 
     def set_series(self, prices: list[float], minutes: list[str] | None = None,
-                   realtime_bars: list[Bar] | None = None) -> None:
+                   realtime_bars: list[Bar] | None = None, *, recent=False) -> None:
         resolved_minutes = list(minutes or [])
         bars = realtime_bars or []
-        if prices != self._series or resolved_minutes != self._minutes or bars != self._realtime_bars:
+        if (prices != self._series or resolved_minutes != self._minutes or bars != self._realtime_bars
+                or recent != self._recent_view):
+            self._recent_view = recent
             self._realtime_bars = bars
             self._series = list(prices)
             self._minutes = resolved_minutes
@@ -223,6 +226,7 @@ class Sparkline(SizedWidget):
         self._samples.clear()
         self._sample_minutes.clear()
         self._series = []
+        self._recent_view = False
         self._minutes = []
         self._realtime_bars = []
         self._volumes = []
@@ -400,6 +404,8 @@ class Sparkline(SizedWidget):
         if max_width >= 80:
             label += f" {snapshot.bid_count}/{snapshot.ask_count}"
         painter.setFont(self._annotation_font)
+        if painter.fontMetrics().horizontalAdvance(label) > max_width:
+            label = label.split("·")[0].split()[0]
         label_color = self._paint_color(ANNOTATION_COLOR)
         backing = 15 if label_color.lightness() >= 120 else 245
         painter.setBackground(QBrush(QColor(backing, backing, backing, 210)))
@@ -426,11 +432,12 @@ class Sparkline(SizedWidget):
             price_low = min(price_low, min(bar.low for bar in self._realtime_bars))
             price_high = max(price_high, max(bar.high for bar in self._realtime_bars))
         low, high = price_low, price_high
-        if self._prev_close is not None:
+        if self._prev_close is not None and not self._recent_view:
             low, high = min(low, self._prev_close), max(high, self._prev_close)
-        if self._show_open_line and self._open_price is not None:
+        if self._show_open_line and self._open_price is not None and not self._recent_view:
             low, high = min(low, self._open_price), max(high, self._open_price)
-        low, high = self._price_scale.bounds(low, high)
+        scale = PriceScale() if self._recent_view else self._price_scale
+        low, high = scale.bounds(low, high)
         span = high - low
 
         def y_of(value: float) -> float:
@@ -448,7 +455,7 @@ class Sparkline(SizedWidget):
 
         def x_of(index: int) -> float:
             fraction = intraday_fraction(
-                index, len(points), minutes, fill_width=self._fill_width
+                index, len(points), minutes, fill_width=self._fill_width or self._recent_view
             )
             return chart_left + fraction * (chart_right - chart_left)
 
@@ -471,11 +478,8 @@ class Sparkline(SizedWidget):
                     start = height - 1 if kind.startswith("B") else 1
                     painter.drawLine(QPointF(x, start), QPointF(x, y))
 
-        curve = QPainterPath()
-        curve.moveTo(QPointF(x_of(0), y_of(points[0])))
         prefix = len(points) - len(self._realtime_bars)
-        for index, value in enumerate(points[1:], 1):
-            curve.lineTo(QPointF(x_of(index), y_of(value)))
+        curve = tdw_overlay.series_path(points, x_of, y_of, 4 if self._realtime_bars else 0)
 
         if self._show_fill:
             # 面积：曲线以下填到底，颜色跟涨跌走但压得很淡。
@@ -537,15 +541,19 @@ class Sparkline(SizedWidget):
 
         if self._show_signals and self._tdw_power:
             labels = []
-            for index, kind in self._signals:
-                if 0 <= index < len(points):
-                    color = self._paint_color(BUY_COLOR if kind.startswith("B") else SELL_COLOR)
-                    tdw_overlay.draw_event(painter, x_of(index), y_of(points[index]), kind, height, width, color, labels)
+            for index, kind in tdw_overlay.visible_events(self._signals, len(points), x_of):
+                color = self._paint_color(BUY_COLOR if kind.startswith("B") else SELL_COLOR)
+                tdw_overlay.draw_event(painter, x_of(index), y_of(points[index]), kind, height, width, color, labels)
 
         tdw_overlay.draw_level_labels(painter, level_labels)
 
         if self._show_high_low:
             painter.setFont(self._annotation_font)
+            # At the narrowest widths the two price labels cover the whole non-book area.
+            if self._show_signals and self._show_tdw_levels and (
+                guide_right - chart_left < 2 * painter.fontMetrics().horizontalAdvance(f"{price_high:.2f}") + 8
+            ):
+                return
             painter.setPen(curve_color)
             label_x = round(chart_left + 2)
             painter.drawText(label_x, painter.fontMetrics().ascent() + 1, f"{price_high:.2f}")

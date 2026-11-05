@@ -2597,3 +2597,40 @@ def test_switching_to_theme2_uses_same_realtime_second_as_classic(app, monkeypat
         assert row.theme2_depth._minute_power == row.sparkline._tdw_power == [None, .4]
     finally:
         row.close()
+
+
+def test_recent_tdw_view_keeps_session_values_and_restores_full_feed(app, monkeypatch):
+    from dataclasses import replace
+    from stockwidget import mcp_bs, tdw
+    from stockwidget.kline import Bar
+    from stockwidget.providers.base import Quote
+
+    source = ["local"]
+    monkeypatch.setattr(mcp_bs, "get_source", lambda: source[0])
+    clocks = ["09:32:00", "11:30:00", "13:01:02", "13:05:01", "13:06:02"]
+    prices = [9., 10., 11., 12., 11.5]
+    day = "2026-11-05"
+    bars = [Bar(f"{day} {clock}", p, p, p, p) for clock, p in zip(clocks, prices)]
+    points = {b.time: tdw.Point(i * .6, b.close, ("B2",) if i == 3 else ()) for i, b in enumerate(bars)}
+    trend = Trend(prices=prices, volumes=[1]*5, minutes=clocks, trade_date=day, realtime_bars=bars, tdw_points=points)
+    cfg = Config(tdw_recent_five=True)
+    row = QuoteRow("603986")
+    try:
+        row.apply_config(cfg)
+        row.update_quote(Quote.from_prices("603986", "兆易创新", 11.5, 9), cfg, trend)
+        assert row.sparkline._series == prices[2:]
+        assert row.theme2_depth._trend.minutes == clocks[2:]
+        assert row.sparkline._tdw_power == row.theme2_depth._minute_power == [1.2, 3*.6, 2.4]
+        assert row.sparkline._signals == [(1, "B2")]
+        assert "13:05:01 B2" in row.toolTip()
+        source[0] = "mcp"
+        row.refresh_bs_signals()
+        assert row.sparkline._series == prices and not row.sparkline._tdw_power
+        source[0] = "local"
+        row.refresh_bs_signals()
+        assert row.sparkline._series == prices[2:]
+        row.apply_config(replace(cfg, tdw_recent_five=False))
+        assert row._display_trend is trend and row.sparkline._series == prices
+        assert row.sparkline._signals == [(3, "B2")]
+    finally:
+        row.close()
