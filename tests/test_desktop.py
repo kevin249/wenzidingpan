@@ -12,6 +12,8 @@ from stockwidget import desktop
 @pytest.fixture()
 def x11_socket_dir(tmp_path, monkeypatch):
     """把探测目录挪到临时目录，测试里可以真起一个 unix socket 冒充 X 服务器。"""
+    if not hasattr(socket, "AF_UNIX"):
+        pytest.skip("模拟 X11 服务器需要 Unix 域套接字")
     monkeypatch.setattr(desktop, "X11_SOCKET_DIR", str(tmp_path))
     return tmp_path
 

@@ -319,11 +319,16 @@ def test_serial_scheduler_does_not_double_wait_after_long_batch():
     poller = mcp_depth.McpDepthPoller(
         mcp_depth.Config(symbols=["600000", "000001"])
     )
-    poller._last_bs_fetch_at = 100.0
     # 模拟多股串行完成后：最早股票 60 秒到期，后面股票更晚。
     poller._next_depth_due = {"600000": 161.0, "000001": 164.0}
 
+    # B/S 刚刷新过，本轮由最早到期的盘口决定唤醒时间。
+    poller._last_bs_fetch_at = 160.0
     assert poller._next_wake_seconds(poller._config, now=160.0) == pytest.approx(1.0)
+
+    # B/S 也已到期时，轮询器优先处理它。
+    poller._last_bs_fetch_at = 100.0
+    assert poller._next_wake_seconds(poller._config, now=160.0) == pytest.approx(0.1)
 
 
 def test_depth_state_keeps_cached_thousand_until_full_depth_recovers():
