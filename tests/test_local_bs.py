@@ -1,198 +1,62 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from stockwidget.intraday import Trend
-from stockwidget.local_bs import LocalBsNotifier, SAMPLE_LEN
+from stockwidget.local_bs import LocalBsNotifier
 from stockwidget.market_hours import SHANGHAI_TZ
 from stockwidget.providers.base import Quote
+from stockwidget.tdw import Point
 
 
-AT = datetime(2026, 10, 23, 10, 0, tzinfo=SHANGHAI_TZ).timestamp()
+START = datetime(2026, 10, 23, 10, 0, tzinfo=SHANGHAI_TZ)
+QUOTE = Quote.from_prices("603986", "兆易创新", 442, 441)
 
 
-def collect(notifier, prices, *, symbol="603986", enabled=True, at=AT, sampled=False):
-    quote = Quote.from_prices(symbol, "测试股票", prices[-1], 10.0)
-    trends = {} if sampled else {symbol: Trend(prices=prices)}
-    return notifier.collect([quote], trends, enabled=enabled, at=at)
+def collect(notifier, minutes, at=START, **options):
+    day = START.date().isoformat()
+    trend = Trend(prices=[442.] * len(minutes), minutes=minutes, trade_date=day,
+                  tdw_points={f"{day} {m}": Point(.6, 442., ("B2",)) for m in minutes})
+    return notifier.collect([QUOTE], {QUOTE.symbol: trend}, enabled=options.get("enabled", True), at=at.timestamp())
 
 
-def test_initial_history_is_silent_and_new_buy_sell_print_once():
+def test_notifier_is_silent_on_history_short_packets_and_switches():
     notifier = LocalBsNotifier()
-    assert collect(notifier, [10.00, 10.06, 10.12]) == []
-    sell = collect(notifier, [10.00, 10.06, 10.12, 10.05])
-    assert len(sell) == 1
-    assert "[2026-10-23 10:00:00] [本地B/S] 测试股票(603986) | S" in sell[0]
-    assert "转折价=10.12 | 确认价=10.05 | 最新分时价=10.05 | 分时点=3" in sell[0]
-    assert collect(notifier, [10.00, 10.06, 10.12, 10.05]) == []
-    assert collect(notifier, [10.00, 10.06, 10.12, 10.05, 9.98]) == []
-    buy = collect(notifier, [10.00, 10.06, 10.12, 10.05, 9.98, 10.04])
-    assert len(buy) == 1 and " | B | " in buy[0] and "转折价=9.98" in buy[0]
+    assert not collect(notifier, ["09:31", "09:32"])
+    assert not collect(notifier, ["09:32", "10:00"])
+    times = ["09:59", "10:00", "10:01", "10:02"]
+    later = START + timedelta(minutes=2)
+    messages = collect(notifier, times, at=later)
+    assert len(messages) == 2 and "B2 关注" in messages[0] and "行情时间=10:02" in messages[1]
+    assert not collect(notifier, times[:2], at=later)
+    assert not collect(notifier, times, at=later)
+    assert not collect(notifier, times, at=later, enabled=False)
+    assert not collect(notifier, times, at=later)
+    assert not collect(notifier, times, at=START+timedelta(days=1))
 
 
-def test_same_minute_update_and_disappear_reappear_do_not_repeat():
+def test_quotes_and_close_only_samples_cannot_fabricate_tdw_signals():
     notifier = LocalBsNotifier()
-    assert collect(notifier, [10.00, 10.02, 10.04]) == []
-    assert len(collect(notifier, [10.00, 10.02, 10.06])) == 1
-    assert collect(notifier, [10.00, 10.02, 10.04]) == []
-    assert collect(notifier, [10.00, 10.02, 10.07]) == []
+    for trend in (None, Trend(prices=[10., 15.]), Trend(prices=[10., 15., 9.])):
+        assert notifier.collect([QUOTE], {QUOTE.symbol: trend}, enabled=True, at=START.timestamp()) == []
 
 
-def test_all_new_points_between_polls_are_reported_in_order():
+def test_live_cross_is_not_announced_as_closed_or_printed_twice():
     notifier = LocalBsNotifier()
-    collect(notifier, [10.00, 10.01])
-    messages = collect(notifier, [10.00, 10.01, 10.10, 10.00, 10.10])
-    assert [message.split(" | ")[1] for message in messages] == ["B", "S", "B"]
+    assert not collect(notifier, ["09:59", "10:00"])
+    day, stamp = "2026-10-23", "2026-10-23 10:01"
+    now = START + timedelta(minutes=1)
+    for provisional, expected in [(True, 0), (False, 1), (False, 0)]:
+        trend = Trend(prices=[440., 442.], minutes=["10:00", "10:01"], trade_date=day,
+                      tdw_points={stamp: Point(.6, 442., ("B2",), provisional)})
+        messages = notifier.collect([QUOTE], {QUOTE.symbol: trend}, enabled=True, at=now.timestamp())
+        assert len(messages) == expected
 
 
-def test_disabled_source_or_markers_rebaseline_on_enable():
+def test_two_confirmed_seconds_in_one_minute_are_notified_independently():
     notifier = LocalBsNotifier()
-    collect(notifier, [10.0, 10.01])
-    assert collect(notifier, [10.0, 10.01, 10.10], enabled=False) == []
-    assert collect(notifier, [10.0, 10.01, 10.10]) == []
-    assert len(collect(notifier, [10.0, 10.01, 10.10, 10.0])) == 1
-
-
-def test_shanghai_day_rebaselines_but_shorter_series_does_not_forget_history():
-    notifier = LocalBsNotifier()
-    collect(notifier, [10.0, 10.01, 10.10, 10.0])
-    assert collect(notifier, [10.0, 10.01, 10.10, 10.0, 10.1], at=AT + 86400) == []
-    assert collect(notifier, [10.0, 10.01, 10.10], at=AT + 86401) == []
-    assert collect(notifier, [10.0, 10.01, 10.10, 10.0], at=AT + 86402) == []
-    messages = collect(notifier, [10.0, 10.01, 10.10, 10.0, 10.1, 10.0], at=AT + 86403)
-    assert len(messages) == 1 and " | S | " in messages[0]
-
-
-def test_quote_failure_does_not_replay_intraday_signals():
-    notifier = LocalBsNotifier()
-    prices = [10.0, 10.01, 10.10]
-    collect(notifier, prices)
-    assert notifier.collect([Quote.failed("603986", "超时")], {}, enabled=True, at=AT) == []
-    assert collect(notifier, prices) == []
-    assert len(collect(notifier, prices + [10.0])) == 1
-
-
-def test_stock_identity_is_normalized_but_independent():
-    notifier = LocalBsNotifier()
-    quotes = [Quote.from_prices(code, code, 10.01, 10.0) for code in ("603986", "300223")]
-    trends = {q.symbol: Trend(prices=[10.0, 10.01]) for q in quotes}
-    assert notifier.collect(quotes, trends, enabled=True, at=AT) == []
-    quotes[0].symbol = "603986.SH"
-    trends = {q.symbol: Trend(prices=[10.0, 10.01, 10.10]) for q in quotes}
-    messages = notifier.collect(quotes, trends, enabled=True, at=AT)
+    assert not collect(notifier, ["09:59:56", "09:59:59"])
+    clocks = ["10:00:03", "10:00:06"]
+    at = START + timedelta(seconds=7)
+    messages = collect(notifier, clocks, at=at)
     assert len(messages) == 2
-    assert "(603986)" in messages[0] and "(300223)" in messages[1]
-    assert notifier.collect(quotes, trends, enabled=True, at=AT) == []
-
-
-def test_sample_fallback_notifies_and_rolling_window_does_not_replay():
-    notifier = LocalBsNotifier()
-    assert collect(notifier, [10.0], sampled=True) == []
-    assert collect(notifier, [10.01], sampled=True) == []
-    buy = collect(notifier, [10.10], sampled=True)
-    assert len(buy) == 1 and "最新采样价=10.10 | 采样点=1" in buy[0]
-    for _ in range(SAMPLE_LEN * 3):
-        assert collect(notifier, [10.10], sampled=True) == []
-    sell = collect(notifier, [10.0], sampled=True)
-    assert len(sell) == 1 and " | S | " in sell[0]
-    assert collect(notifier, [10.0], sampled=True) == []
-    assert len(notifier._stocks["sh603986"].histories["sample"].seen) <= SAMPLE_LEN
-
-
-def test_data_mode_changes_only_establish_baseline():
-    notifier = LocalBsNotifier()
-    collect(notifier, [10.0, 10.01])
-    assert collect(notifier, [10.01], sampled=True) == []
-    assert collect(notifier, [10.01], sampled=True) == []
-    assert collect(notifier, [10.0, 10.01, 10.10, 10.0]) == []
-    assert len(collect(notifier, [10.0, 10.01, 10.10, 10.0, 10.10])) == 1
-
-
-def test_short_full_oscillation_never_replays_old_signals():
-    notifier = LocalBsNotifier()
-    prices = [280.0, 282.0, 284.0, 281.0, 283.0, 280.0, 282.0]
-    assert collect(notifier, prices) == []
-    for _ in range(20):
-        assert collect(notifier, prices[:3]) == []
-        assert collect(notifier, prices) == []
-    # 恢复后真正新确认的 S 仍只报一次。
-    messages = collect(notifier, prices + [280.0])
-    assert len(messages) == 1 and " | S | " in messages[0]
-    assert collect(notifier, prices + [280.0]) == []
-
-
-def test_history_rewritten_at_same_length_is_not_a_new_confirmation():
-    notifier = LocalBsNotifier()
-    collect(notifier, [10.0, 10.0, 10.0, 10.0, 10.0])
-    assert collect(notifier, [10.0, 10.1, 10.0, 10.0, 10.0]) == []
-    assert len(collect(notifier, [10.0, 10.1, 10.0, 10.0, 10.1])) == 1
-
-
-def test_disabled_or_missing_stock_does_not_erase_intraday_history():
-    for missing in (True, False):
-        notifier = LocalBsNotifier()
-        prices = [10.0, 10.1, 10.2, 10.0, 10.1]
-        collect(notifier, prices)
-        if missing:
-            assert notifier.collect([], {}, enabled=True, at=AT) == []
-        else:
-            assert collect(notifier, prices, enabled=False) == []
-        assert collect(notifier, prices[:3]) == []
-        assert collect(notifier, prices) == []
-
-
-def collect_minutes(notifier, prices, minutes, *, source="eastmoney", day="2026-10-23", at=AT):
-    quote = Quote.from_prices("603986", "兆易创新", prices[-1], 280.0)
-    trend = Trend(prices=prices, minutes=minutes, trade_date=day, source=source)
-    return notifier.collect([quote], {quote.symbol: trend}, enabled=True, at=at)
-
-
-def test_minute_identity_survives_missing_bar_backfill_and_source_switch():
-    notifier = LocalBsNotifier()
-    # 09:57 补入后，同一批点的数组下标变了，但行情时间没有变。
-    sparse = [280.0, 282.0, 280.0, 282.0]
-    sparse_minutes = ["09:56", "09:58", "09:59", "10:00"]
-    full = [280.0, 280.5, 282.0, 280.0, 282.0]
-    full_minutes = ["09:56", "09:57", "09:58", "09:59", "10:00"]
-    assert collect_minutes(notifier, sparse, sparse_minutes) == []
-    assert collect_minutes(notifier, full, full_minutes) == []
-    assert collect_minutes(notifier, sparse, sparse_minutes, source="tencent") == []
-    assert collect_minutes(notifier, full, full_minutes) == []
-    messages = collect_minutes(notifier, full + [280.0], full_minutes + ["10:01"], at=AT + 60)
-    assert len(messages) == 1
-    assert "转折时间=10:00 | 确认时间=10:01" in messages[0]
-    assert "转折价=282.00 | 确认价=280.00" in messages[0]
-    assert "周期=分时" in messages[0] and "数据源=eastmoney" in messages[0]
-
-
-def test_confirmation_price_is_not_replaced_by_latest_price():
-    notifier = LocalBsNotifier()
-    collect_minutes(notifier, [280, 280], ["09:59", "10:00"])
-    messages = collect_minutes(notifier, [280, 280, 282, 283], ["09:59", "10:00", "10:01", "10:02"], at=AT + 120)
-    assert len(messages) == 1
-    assert "确认时间=10:01" in messages[0]
-    assert "确认价=282.00 | 最新分时价=283.00" in messages[0]
-
-
-def test_same_minute_can_confirm_new_signal_but_cannot_repeat_it():
-    notifier = LocalBsNotifier()
-    minutes = ["09:58", "09:59", "10:00"]
-    collect_minutes(notifier, [280.0, 280.5, 280.8], minutes)
-    assert len(collect_minutes(notifier, [280.0, 280.5, 282.0], minutes)) == 1
-    assert collect_minutes(notifier, [280.0, 280.5, 280.8], minutes) == []
-    assert collect_minutes(notifier, [280.0, 280.5, 282.1], minutes) == []
-
-
-def test_initial_partial_history_does_not_replay_pre_start_signals():
-    notifier = LocalBsNotifier()
-    collect_minutes(notifier, [280, 282], ["09:30", "09:31"])
-    assert collect_minutes(notifier, [280, 282, 280, 282], ["09:30", "09:31", "09:32", "09:33"]) == []
-
-
-def test_old_trade_date_and_invalid_time_axis_do_not_alert_or_reset_history():
-    notifier = LocalBsNotifier()
-    times = ["09:58", "09:59", "10:00"]
-    collect_minutes(notifier, [280, 281, 282], times)
-    assert collect_minutes(notifier, [280, 282, 280], times, day="2026-10-22") == []
-    for invalid in (["09:58"], ["10:00", "09:59", "09:58"], ["bad"] * 3):
-        assert collect_minutes(notifier, [280, 282, 280], invalid) == []
-    assert collect_minutes(notifier, [280, 281, 282], times) == []
-    assert len(collect_minutes(notifier, [280, 281, 282, 280], times + ["10:01"], at=AT + 60)) == 1
+    assert all(f"行情时间={clock}" in msg for clock, msg in zip(clocks, messages))
+    assert not collect(notifier, clocks, at=at)

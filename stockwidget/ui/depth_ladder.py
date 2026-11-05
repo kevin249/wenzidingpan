@@ -48,6 +48,7 @@ from ..mcp_depth import (
     DEPTH_TEN,
     DepthSnapshot,
 )
+from . import tdw_overlay
 from .price_scale import PriceScale
 from .sizing import SizedWidget
 from .sparkline import ANNOTATION_COLOR
@@ -166,6 +167,9 @@ class DepthLadder(SizedWidget):
         self._kline_message = ""
         self._price_scale = PriceScale()
         self._signals: list[tuple[int, str]] = []
+        self._minute_power = []
+        self._daily_power = []
+        self._show_tdw_levels = False
         self._daily_signals: list[tuple[int, str]] = []
         self._show_signals = True
         self._preferred_width = 168
@@ -330,12 +334,14 @@ class DepthLadder(SizedWidget):
             list(trend.prices) if trend else None,
             list(trend.minutes) if trend else None,
             list(trend.volumes) if trend else None,
+            trend.realtime_bars if trend else None,
             resolved,
         )
         old = (
             list(self._trend.prices) if self._trend else None,
             list(self._trend.minutes) if self._trend else None,
             list(self._trend.volumes) if self._trend else None,
+            self._trend.realtime_bars if self._trend else None,
             self._prev_close,
         )
         if state != old:
@@ -365,6 +371,12 @@ class DepthLadder(SizedWidget):
         self._signals = new
         self._show_signals = bool(show)
         self.update()
+
+    def set_tdw_power(self, minute, daily, *, show_levels=True):
+        if (minute, daily, show_levels) != (self._minute_power, self._daily_power, self._show_tdw_levels):
+            self._minute_power, self._daily_power = minute, daily
+            self._show_tdw_levels = show_levels
+            self.update()
 
     def set_daily_signals(self, signals=None) -> None:
         """日K B/S 标记：索引对应日K bars，而非盘中分钟序列。"""
@@ -903,7 +915,7 @@ class DepthLadder(SizedWidget):
 
         # B/S 转折标记：B 从底部向上画、S 从顶部向下画，都停在曲线上，不穿过去。
         # 只有分时模式的横轴才是分钟索引，日K 的日期轴对不上这些索引。
-        if self._show_signals and self._signals:
+        if self._show_signals and self._signals and not self._minute_power:
             top = INNER_PAD
             bottom = float(self.height()) - INNER_PAD
             for index, kind in self._signals:
@@ -915,18 +927,33 @@ class DepthLadder(SizedWidget):
                 start = bottom if kind.startswith("B") else top
                 painter.drawLine(QPointF(x, start), QPointF(x, y_of(prices[index])))
 
+        if self._show_signals and self._minute_power:
+            tdw_overlay.draw_power(painter, self._minute_power, lambda i: self._intraday_x(layout, i, count),
+                                   self.height(), self._paint_color(tdw_overlay.POWER_COLOR, 180))
         curve = QPainterPath()
         curve.moveTo(QPointF(self._intraday_x(layout, 0, count), y_of(prices[0])))
+        bars = self._trend.realtime_bars if self._trend else []
+        prefix = count - len(bars)
         for index, value in enumerate(prices[1:], 1):
             curve.lineTo(
                 QPointF(self._intraday_x(layout, index, count), y_of(value))
             )
 
-        pen = QPen(self._paint_color(CURVE_COLOR), 1.4)
+        pen = QPen(self._paint_color(CURVE_COLOR), 1 if bars else 1.4)
         pen.setJoinStyle(Qt.RoundJoin)
         pen.setCapStyle(Qt.RoundCap)
         painter.setPen(pen)
         painter.drawPath(curve)
+        tdw_overlay.draw_realtime_candles(painter, bars, prefix, lambda i: self._intraday_x(layout, i, count),
+                                          y_of, self._paint_color(CURVE_COLOR))
+
+        if self._show_signals and self._minute_power:
+            labels = []
+            for index, kind in self._signals:
+                if 0 <= index < count:
+                    color = self._paint_color(BS_BUY_COLOR if kind.startswith("B") else BS_SELL_COLOR)
+                    tdw_overlay.draw_event(painter, self._intraday_x(layout, index, count), y_of(prices[index]),
+                                           kind, self.height(), self.width(), color, labels)
 
     def _draw_candles(
         self, painter: QPainter, layout: _Layout, y_of, bars: list[Bar]
@@ -948,6 +975,18 @@ class DepthLadder(SizedWidget):
             top = min(y_of(bar.open), y_of(bar.close))
             height = max(1.0, abs(y_of(bar.open) - y_of(bar.close)))
             painter.fillRect(QRectF(x - body_width / 2.0, top, body_width, height), color)
+
+        if self._show_signals and self._daily_power:
+            tdw_overlay.draw_power(painter, self._daily_power, lambda i: layout.plot_left + (i + 0.5) * step,
+                                   self.height(), self._paint_color(tdw_overlay.POWER_COLOR, 180))
+            labels = []
+            for index, kind in self._daily_signals:
+                buying = kind.startswith("B")
+                bar = bars[index]
+                tdw_overlay.draw_event(painter, layout.plot_left + (index + 0.5) * step,
+                                       y_of(bar.low if buying else bar.high), kind, self.height(), self.width(),
+                                       self._paint_color(BS_BUY_COLOR if buying else BS_SELL_COLOR), labels)
+            return
 
         # B/S 属于对应交易日，不能拿分钟横坐标直接绘在日期横轴上。
         # 同一天的 B/S 贴近该日蜡烛的低点/高点，便于区分方向。
@@ -1009,8 +1048,11 @@ class DepthLadder(SizedWidget):
         if bars:
             values += [bar.high for bar in bars]
             values += [bar.low for bar in bars]
-        if self._chart_mode == MODE_INTRADAY and self._prev_close:
-            values.append(self._prev_close)
+        if self._chart_mode == MODE_INTRADAY:
+            if self._prev_close:
+                values.append(self._prev_close)
+            if self._trend and self._trend.realtime_bars:
+                values.extend(p for p in (self._trend.low_price, self._trend.high_price) if p is not None)
         y_of = self._price_mapper(values) if values else None
         return prices, volumes, levels, bars, y_of
 
@@ -1035,6 +1077,19 @@ class DepthLadder(SizedWidget):
         if not layout.has_chart_band:
             return
         prices, _volumes, _levels, bars, y_of = chart_values
+        level_labels = None
+        if y_of is not None and self._show_signals and self._show_tdw_levels:
+            left, right = layout.plot_left, layout.plot_right
+            if self._depth and self._depth.available:
+                left, right = layout.chart_left, layout.chart_right
+            # Leave the volume axis and its bars clear, including in mirrored mode.
+            if layout.mirror:
+                right = min(right, layout.kline_right)
+            else:
+                left = max(left, layout.kline_left)
+            level_labels = tdw_overlay.draw_levels(painter, left, right, self.height(),
+                                                  self._paint_color(tdw_overlay.LEVEL_COLOR, 190),
+                                                  mirror=layout.mirror)
         if y_of is None:
             message = self._kline_message or (
                 "日K 加载中…" if self._chart_mode == MODE_DAILY else "暂无分时数据"
@@ -1044,6 +1099,7 @@ class DepthLadder(SizedWidget):
             self._draw_candles(painter, layout, y_of, bars)
         else:
             self._draw_intraday(painter, layout, y_of, prices)
+        tdw_overlay.draw_level_labels(painter, level_labels)
         self._draw_chart_badge(painter, layout)
 
     # ------------------------------------------------------------ 绘制：入口

@@ -22,6 +22,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+import time
 from datetime import datetime
 
 from PySide6.QtCore import QSize, Qt, Signal
@@ -35,16 +37,16 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import mcp_bs
+from .. import mcp_bs, tdw
 from ..config import Config
-from ..intraday import Trend, calculate_bs_points
+from ..intraday import Trend
 from ..kline import PERIOD_DAY
 from ..market_hours import SHANGHAI_TZ
 from ..mcp_depth import DepthSnapshot
 from ..providers.base import Quote
 from ..symbols import classify
 from . import kline_loader
-from .depth_ladder import MODE_DAILY, OUTER_PAD, DepthLadder
+from .depth_ladder import MODE_DAILY, MODE_INTRADAY, OUTER_PAD, DepthLadder
 from .sparkline import Sparkline
 from .sizing import SizedLabel, SizedWidget
 from .theme import (
@@ -125,6 +127,8 @@ class QuoteRow(SizedWidget):
         self.symbol = symbol
         self._last_quote: Quote | None = None
         self._last_trend: Trend | None = None
+        self._daily_tdw = {}
+        self._last_daily_request = float("-inf")
         self._chart_day = None
         self._last_depth: DepthSnapshot | None = None
         self._theme2_expanded = False
@@ -222,6 +226,8 @@ class QuoteRow(SizedWidget):
 
     def apply_config(self, config: Config) -> None:
         previous = self._config
+        if previous.display_theme != "theme2" and config.display_theme == "theme2":
+            self.theme2_depth.set_chart_mode(MODE_INTRADAY, notify=False)
         if (
             previous.display_theme != config.display_theme
             or previous.row_style != config.row_style
@@ -415,10 +421,20 @@ class QuoteRow(SizedWidget):
                 or not self._config.stock_component_visible(self.symbol, "chart", include_global=False)):
             return
         kline = self.theme2_depth.kline
-        if kline is not None and kline.bars:
+        if kline and kline.bars:
+            if not kline.fetched_at:
+                return
+            now = datetime.now(SHANGHAI_TZ)
+            fetched = datetime.fromtimestamp(kline.fetched_at, SHANGHAI_TZ)
+            close = now.replace(hour=15, minute=0, second=0, microsecond=0)
+            if fetched.date() == now.date() and not (fetched < close <= now):
+                return
+        if time.monotonic() - self._last_daily_request < 30:
             return
-        self.theme2_depth.set_kline(None, "日K 加载中…")
-        kline_loader.loader().request(self.symbol, PERIOD_DAY, kline_loader.UI_LIMIT)
+        self._last_daily_request = time.monotonic()
+        if not kline:
+            self.theme2_depth.set_kline(None, "日K 加载中…")
+        kline_loader.loader().request(self.symbol, PERIOD_DAY, kline_loader.UI_LIMIT + 100)
 
     def _on_theme2_chart_mode_changed(self, mode: str) -> None:
         if mode == MODE_DAILY:
@@ -429,7 +445,15 @@ class QuoteRow(SizedWidget):
             return
         message = ""
         if kline is None or not kline.bars:
+            if self.theme2_depth.kline:
+                return  # Retain the last good candles and overlay until a retry succeeds.
             message = (getattr(kline, "error", "") or "") or "日K 暂无数据"
+        self._daily_tdw = {}
+        if kline and kline.bars:
+            as_of = datetime.fromtimestamp(kline.fetched_at, SHANGHAI_TZ) if kline.fetched_at else datetime.now(SHANGHAI_TZ)
+            self._daily_tdw = tdw.calculate(kline.bars, PERIOD_DAY, as_of)
+            if len(kline.bars) > kline_loader.UI_LIMIT:
+                kline = replace(kline, bars=kline.bars[-kline_loader.UI_LIMIT:])
         self.theme2_depth.set_kline(kline, message)
         self.refresh_bs_signals()
 
@@ -729,7 +753,7 @@ class QuoteRow(SizedWidget):
             self._last_trend = None
             self.sparkline.clear()
             self._chart_day = today
-        if not config.intraday_chart:
+        if not config.intraday_chart and not (trend and trend.realtime_bars):
             trend = None
         elif quote.error and not trend:
             trend = self._last_trend
@@ -747,6 +771,9 @@ class QuoteRow(SizedWidget):
             self.sparkline.setToolTip(f"分时刷新失败（{trend.error}），保留 {stamp} 的图表，等待下次更新")
         elif quote.error:
             self.sparkline.setToolTip(f"报价更新失败（{quote.error}），保留最后有效图表")
+        elif trend and trend.realtime_bars:
+            vendor = {"eastmoney": "东方财富", "tencent": "腾讯财经"}.get(trend.source, trend.source)
+            self.sparkline.setToolTip(f"实时 K 线 · {vendor} · 最近成交 {trend.realtime_bars[-1].time}")
         else:
             self.sparkline.setToolTip("")
         # 曲线对鼠标透明，悬停事件由股票卡片接收。
@@ -766,6 +793,7 @@ class QuoteRow(SizedWidget):
             if trend:
                 self._update_sparkline_data(quote, config, trend, color)
             self._set_dark(None, config)
+            self.refresh_bs_signals()
             self._update_layout_mode()
             self._apply_component_sizes()
             return
@@ -785,6 +813,7 @@ class QuoteRow(SizedWidget):
         )
 
         self._update_sparkline_data(quote, config, trend, color)
+        self.refresh_bs_signals()
         self._set_dark(quote.dark_fund, config)
         # 文本写入后 minimumSizeHint 才准确；必要时切到更窄的堆叠布局。
         self._update_layout_mode()
@@ -794,22 +823,12 @@ class QuoteRow(SizedWidget):
         if not quote.error:
             self.sparkline.set_color(color)
             self.sparkline.push_sample(quote.price)
-        self.sparkline.set_series(trend.prices if trend else [], trend.minutes if trend else [])
+        self.sparkline.set_series(trend.prices if trend else [], trend.minutes if trend else [],
+                                  trend.realtime_bars if trend else [])
         # 分时接口给了昨收就用它的，否则用行情里的——虚线基准不能缺。
         prev_close = (trend.prev_close if trend and trend.prev_close else None) or quote.prev_close
         if prev_close is not None or not quote.error:
             self.sparkline.set_prev_close(prev_close)
-        prices = trend.prices if trend else self.sparkline.points
-        self.sparkline.set_annotations(
-            trend.open_price if trend else (prices[0] if prices else None),
-            calculate_bs_points(prices, symbol=quote.symbol),
-            show_signals=config.show_bs_points and not quote.error,
-            show_open_line=config.show_open_line,
-            show_high_low=config.show_high_low,
-            show_fill=config.show_sparkline_fill,
-            grayscale=config.grayscale,
-            grayscale_level=config.grayscale_level,
-        )
 
     def _update_theme2_data(self, quote: Quote, config: Config, trend: Trend | None, color) -> None:
         symbol = classify(quote.symbol)
@@ -868,49 +887,41 @@ class QuoteRow(SizedWidget):
         )
         prev_close = (trend.prev_close if trend and trend.prev_close else None) or quote.prev_close
         self.theme2_depth.set_intraday(trend, prev_close)
+        self._request_theme2_kline()
 
-        # B/S 标记跟着分时曲线走；行情出错或没数据时清空，避免留下上一只的点。
-        signals = (
-            calculate_bs_points(prices, symbol=quote.symbol)
-            if prices and config.show_bs_points and not quote.error
-            else []
-        )
-        self.theme2_depth.set_signals(signals, show=config.show_bs_points)
-        bars = self.theme2_depth.kline.bars if self.theme2_depth.kline else []
-        self.theme2_depth.set_daily_signals(
-            mcp_bs.daily_bs_points(quote.symbol, bars)
-            if bars and config.show_bs_points and not quote.error else []
-        )
 
     def refresh_bs_signals(self) -> None:
-        """MCP B/S 缓存更新后只重绘标记，不额外请求行情或重排窗口。"""
         quote = self._last_quote
         if quote is None:
             return
         config = self._config
+        enabled = config.show_bs_points and not quote.error
         trend = self._last_trend
-        enabled = bool(config.show_bs_points and not quote.error)
-        prices = trend.prices if trend else []
-        self.theme2_depth.set_signals(
-            calculate_bs_points(prices, symbol=quote.symbol) if enabled and prices else [],
-            show=config.show_bs_points,
-        )
+        prices = trend.prices if trend else self.sparkline.points
         bars = self.theme2_depth.kline.bars if self.theme2_depth.kline else []
-        self.theme2_depth.set_daily_signals(
-            mcp_bs.daily_bs_points(quote.symbol, bars) if enabled and bars else []
+        signals, daily, minute_power, daily_power = [], [], [], []
+        local_tdw = enabled and mcp_bs.get_source() == mcp_bs.SOURCE_LOCAL
+        if enabled and not local_tdw:
+            if prices:
+                signals = mcp_bs.bs_points(quote.symbol, prices)
+            if bars:
+                daily = mcp_bs.daily_bs_points(quote.symbol, bars)
+        elif local_tdw:
+            if trend and len(trend.minutes) == len(trend.prices):
+                minute_power, signals = tdw.align(
+                    trend.tdw_points, (f"{trend.trade_date} {m}" for m in trend.minutes)
+                )
+            daily_power, daily = tdw.align(self._daily_tdw, (bar.time[:10] for bar in bars))
+        self.theme2_depth.set_signals(signals if trend else [], show=enabled)
+        self.theme2_depth.set_daily_signals(daily)
+        self.theme2_depth.set_tdw_power(minute_power, daily_power, show_levels=local_tdw)
+        self.sparkline.set_tdw_power(minute_power, show_levels=local_tdw)
+        self.sparkline.set_annotations(
+            trend.open_price if trend else (prices[0] if prices else None), signals,
+            show_signals=enabled, show_open_line=config.show_open_line,
+            show_high_low=config.show_high_low, show_fill=config.show_sparkline_fill,
+            grayscale=config.grayscale, grayscale_level=config.grayscale_level,
         )
-        if enabled and config.show_sparkline:
-            spark_prices = trend.prices if trend else self.sparkline.points
-            self.sparkline.set_annotations(
-                trend.open_price if trend else (spark_prices[0] if spark_prices else None),
-                calculate_bs_points(spark_prices, symbol=quote.symbol),
-                show_signals=config.show_bs_points,
-                show_open_line=config.show_open_line,
-                show_high_low=config.show_high_low,
-                show_fill=config.show_sparkline_fill,
-                grayscale=config.grayscale,
-                grayscale_level=config.grayscale_level,
-            )
 
     def update_depth(self, snapshot: DepthSnapshot | None) -> None:
         self._last_depth = snapshot

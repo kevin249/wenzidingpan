@@ -1637,7 +1637,7 @@ def test_theme2_canvas_receives_mcp_bs_points(app, monkeypatch):
     row.update_quote(quote, config, trend)
 
     # 主题2 的 K 线画在行内，B/S 仍要按当天 MCP 信号映射到分时索引上。
-    assert requested == [("600519", trend.prices)] * 2
+    assert requested == [("600519", trend.prices)]
     assert row.theme2_depth._signals == [(1, "B"), (2, "S")]
     assert row.theme2_depth._show_signals is True
 
@@ -1647,7 +1647,7 @@ def test_theme2_canvas_receives_mcp_bs_points(app, monkeypatch):
 
 
 def test_both_themes_follow_local_source_on_snapshot_and_signal_refresh(app, monkeypatch):
-    from stockwidget import mcp_bs
+    from stockwidget import mcp_bs, tdw
     from stockwidget.providers.base import Quote
 
     monkeypatch.setattr(mcp_bs, "get_source", lambda: "local")
@@ -1658,9 +1658,12 @@ def test_both_themes_follow_local_source_on_snapshot_and_signal_refresh(app, mon
     row.update_quote(
         Quote.from_prices("603986", "兆易创新", 10.04, 10.0),
         config,
-        Trend(prices=[10.0, 10.06, 10.12, 10.05, 9.98, 10.04]),
+        Trend(prices=[10.0, 10.06, 10.12], minutes=["09:30", "09:32", "09:33"], trade_date="2026-10-23",
+              tdw_points={"2026-10-23 09:32": tdw.Point(0.6, 10.06, ("B2",)),
+                          "2026-10-23 09:33": tdw.Point(1.0, 10.12, ())}),
     )
-    expected = [(0, "B"), (2, "S"), (4, "B")]
+    expected = [(1, "B2")]
+    assert row.sparkline._tdw_power == [None, 0.6, 1.0]
     assert row.theme2_depth._signals == row.sparkline._signals == expected
     row.refresh_bs_signals()
     assert row.theme2_depth._signals == row.sparkline._signals == expected
@@ -2531,3 +2534,66 @@ def test_switching_theme2_back_to_classic_restores_stacked_and_hidden_titlebar(a
     assert layout.getItemPosition(layout.indexOf(row.dark_box))[:2] == (2, 0)
     assert layout.getItemPosition(layout.indexOf(row.percent_label))[:2] == (2, 1)
     window.close()
+
+
+def test_day_candles_use_warm_history_and_source_switch_removes_tdw(app, monkeypatch):
+    from stockwidget import mcp_bs
+    from stockwidget.kline import Bar, Kline, PERIOD_DAY
+    from stockwidget.market_hours import SHANGHAI_TZ
+    from stockwidget.providers.base import Quote
+    from stockwidget.ui.kline_loader import UI_LIMIT
+    from datetime import datetime, timedelta
+
+    first = datetime(2026, 1, 1, 16, tzinfo=SHANGHAI_TZ)
+    closes = [10.] * 101 + [14.] * 12 + [10.] * 47
+    bars = [Bar((first + timedelta(days=i)).date().isoformat(), c, 14., 10., c)
+            for i, c in enumerate(closes)]
+    row = QuoteRow("603986")
+    source = ["local"]
+    monkeypatch.setattr(mcp_bs, "get_source", lambda: source[0])
+    monkeypatch.setattr(mcp_bs, "daily_bs_points", lambda *args: [(2, "S")])
+    try:
+        cfg = Config(display_theme="theme2", show_bs_points=True)
+        row.apply_config(cfg)
+        row.update_quote(Quote.from_prices("603986", "测试", 10., 10.), cfg)
+        row._on_kline_loaded("603986", PERIOD_DAY, Kline(
+            symbol="603986", bars=bars, fetched_at=(first + timedelta(days=161)).timestamp()))
+        assert row.theme2_depth.kline.bars == bars[-UI_LIMIT:]
+        assert len(row.theme2_depth._daily_power) == UI_LIMIT
+        assert row.theme2_depth._daily_signals == [(1, "B1/B2"), (13, "S1/S2")]
+        assert row.theme2_depth._show_tdw_levels and row.sparkline._show_tdw_levels
+        source[0] = "mcp"
+        row.refresh_bs_signals()
+        assert row.theme2_depth._daily_signals == [(2, "S")]
+        assert not row.theme2_depth._show_tdw_levels and not row.sparkline._show_tdw_levels
+        assert not row.theme2_depth._daily_power
+    finally:
+        row.close()
+
+
+def test_switching_to_theme2_uses_same_realtime_second_as_classic(app, monkeypatch):
+    from dataclasses import replace
+    from stockwidget.kline import Bar
+    from stockwidget import mcp_bs, tdw
+    from stockwidget.providers.base import Quote
+    from stockwidget.ui.depth_ladder import MODE_DAILY, MODE_INTRADAY
+    monkeypatch.setattr(mcp_bs, "get_source", lambda: "local")
+    row = QuoteRow("603986")
+    cfg = Config(show_bs_points=True, intraday_chart=False)
+    try:
+        row.apply_config(cfg)
+        day, stamp = "2026-10-23", "2026-10-23 10:01:12"
+        trend = Trend(trade_date=day, realtime_bars=[Bar(stamp, 10, 11, 10, 11)], minutes=["10:01:06", "10:01:12"], prices=[10., 11.],
+                      tdw_points={stamp: tdw.Point(.6, 11., ("B2",), provisional=True)})
+        row.update_quote(Quote.from_prices("603986", "测试", 11, 10), cfg, trend)
+        assert row.sparkline._signals == [(1, "B2*")]
+        row.theme2_depth.set_chart_mode(MODE_DAILY, notify=False)
+        row.apply_config(replace(cfg, display_theme="theme2"))
+        assert row.theme2_depth.chart_mode == MODE_INTRADAY
+        assert row.theme2_depth._signals == row.sparkline._signals == [(1, "B2*")]
+        updated = replace(trend, prices=[10., 10.], tdw_points={stamp: tdw.Point(.4, 10., (), True)})
+        row.update_quote(Quote.from_prices("603986", "测试", 10, 10), row._config, updated)
+        assert row.theme2_depth._signals == row.sparkline._signals == []
+        assert row.theme2_depth._minute_power == row.sparkline._tdw_power == [None, .4]
+    finally:
+        row.close()

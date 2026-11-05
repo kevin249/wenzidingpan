@@ -11,13 +11,15 @@ from datetime import datetime
 import time
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt
-from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPainterPath, QPen, QPolygonF
 from PySide6.QtWidgets import QWidget
 
 from ..config import DEFAULT_GRAYSCALE_LEVEL
 from ..local_bs import SAMPLE_LEN
+from ..kline import Bar
 from ..market_hours import SHANGHAI_TZ
 from ..mcp_depth import DEPTH_FIVE, DEPTH_FULL, DEPTH_TEN, DepthSnapshot
+from . import tdw_overlay
 from .price_scale import PriceScale
 from .sizing import SizedWidget
 from .theme import display_color
@@ -42,12 +44,15 @@ class Sparkline(SizedWidget):
         self._sample_minutes: deque[str] = deque(maxlen=SAMPLE_LEN)
         self._series: list[float] = []  # 当日分时，空则用采样点
         self._minutes: list[str] = []
+        self._realtime_bars: list[Bar] = []
         self._fill_width = False
         self._volumes: list[float] = []
         self._show_volume_profile = False
         self._configured_profile_width = 0
         self._prev_close: float | None = None
         self._open_price: float | None = None
+        self._tdw_power: list[float | None] = []
+        self._show_tdw_levels = False
         self._signals: list[tuple[int, str]] = []
         self._show_signals = True
         self._show_open_line = True
@@ -89,9 +94,12 @@ class Sparkline(SizedWidget):
             if not self._series:
                 self.update()
 
-    def set_series(self, prices: list[float], minutes: list[str] | None = None) -> None:
+    def set_series(self, prices: list[float], minutes: list[str] | None = None,
+                   realtime_bars: list[Bar] | None = None) -> None:
         resolved_minutes = list(minutes or [])
-        if prices != self._series or resolved_minutes != self._minutes:
+        bars = realtime_bars or []
+        if prices != self._series or resolved_minutes != self._minutes or bars != self._realtime_bars:
+            self._realtime_bars = bars
             self._series = list(prices)
             self._minutes = resolved_minutes
             self.update()
@@ -127,6 +135,11 @@ class Sparkline(SizedWidget):
     def set_depth(self, snapshot: DepthSnapshot | None) -> None:
         if snapshot != self._depth:
             self._depth = snapshot
+            self.update()
+
+    def set_tdw_power(self, power, *, show_levels=True):
+        if (power, show_levels) != (self._tdw_power, self._show_tdw_levels):
+            self._tdw_power, self._show_tdw_levels = power, show_levels
             self.update()
 
     def set_show_depth(self, enabled: bool) -> None:
@@ -211,9 +224,11 @@ class Sparkline(SizedWidget):
         self._sample_minutes.clear()
         self._series = []
         self._minutes = []
+        self._realtime_bars = []
         self._volumes = []
         self._show_volume_profile = False
         self._signals = []
+        self._tdw_power = []
         self._open_price = None
         self._prev_close = None
         self.update()
@@ -294,31 +309,83 @@ class Sparkline(SizedWidget):
 
         # 只画当前 K 线价格窗口内可见的挂单；千档价格绝不能反向撑大 K 线 Y 轴。
         buckets: dict[tuple[int, str], float] = {}
+        best_ask, best_bid = float("inf"), 0.0
         for level in snapshot.levels:
-            y = round(y_of(level.price))
-            if y < 0 or y >= height:
+            if level.price <= 0 or level.volume <= 0:
                 continue
-            key = (y, level.side)
-            buckets[key] = buckets.get(key, 0.0) + level.volume
+            if level.side == "ask":
+                best_ask = min(best_ask, level.price)
+            elif level.side == "bid":
+                best_bid = max(best_bid, level.price)
+            else:
+                continue
+            y = round(y_of(level.price))
+            if 0 <= y < height:
+                key = (y, level.side)
+                buckets[key] = buckets.get(key, 0.0) + level.volume
         if not buckets:
             return
 
+        mid = None
+        spread_pixels = 0.0
+        if 0 < best_bid < best_ask < float("inf"):
+            ask_y, bid_y = y_of(best_ask), y_of(best_bid)
+            mid = round((ask_y + bid_y) / 2)
+            spread_pixels = bid_y - ask_y
+        occupied_rows = {y for y, side in buckets}
+        dense = len(occupied_rows) > height / 2
+        if dense:
+            # One 2 px bar + 1 px of space per price band. Never pool bid and ask.
+            bands = {}
+            for (y, side), volume in buckets.items():
+                if mid is None:
+                    center = 3 * (y // 3) + 1
+                else:
+                    offset = 2 + 3 * (max(0, abs(y - mid) - 1) // 3)
+                    center = mid - offset if side == "ask" else mid + offset
+                key = (max(0, min(height - 1, center)), side)
+                bands[key] = bands.get(key, 0.0) + volume
+            buckets = bands
         maximum = max(buckets.values())
-        if maximum <= 0:
-            return
-        max_width = profile_width
+        max_width = min(profile_width, width)
         right = float(width - 1)
-
-        occupied_rows = {row for row, _side in buckets}
+        # Draw the book with solid pixels; antialiased translucent rows merge into the backdrop.
+        alpha = 255 if self._grayscale else 215
         painter.save()
+        painter.setRenderHint(QPainter.Antialiasing, False)
         for (row, side), volume in buckets.items():
             bar_width = max(1.0, max_width * volume / maximum)
             # Use two pixels for isolated levels and keep dense price rows distinct.
-            thickness = 1.4 if row - 1 in occupied_rows or row + 1 in occupied_rows else 2.0
+            thickness = 1 if not dense and (row - 1 in occupied_rows or row + 1 in occupied_rows) else 2
+            top = row - thickness // 2
+            if (row, "ask") in buckets and (row, "bid") in buckets:
+                # Split a shared screen row around its center so both sides survive.
+                thickness = 1
+                top = row - 1 if side == "ask" else row
             color = self._paint_color(
-                DEPTH_BID_COLOR if side == "bid" else DEPTH_ASK_COLOR, 88
+                DEPTH_BID_COLOR if side == "bid" else DEPTH_ASK_COLOR, alpha
             )
-            painter.fillRect(QRectF(right - bar_width, row - thickness / 2, bar_width, thickness), color)
+            painter.fillRect(QRectF(right - bar_width, top, bar_width, thickness), color)
+
+        if mid is not None and 0 <= mid < height:
+            left = max(0.0, right - max_width)
+            ink = self._paint_color(ANNOTATION_COLOR)
+            if dense or spread_pixels >= 4:
+                painter.setPen(QPen(ink, 1, Qt.DotLine))
+                painter.drawLine(QPointF(left, mid), QPointF(right, mid))
+            # End markers remain readable when a one-tick spread is subpixel.
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(ink)
+            for x, dx in ((left, -4.0), (right - 4.0, 4.0)):
+                painter.drawPolygon(QPolygonF([QPointF(x, mid), QPointF(x + dx, mid - 3),
+                                               QPointF(x + dx, mid + 3)]))
+            if max_width >= 56 and height >= 32:
+                painter.setFont(self._annotation_font)
+                painter.setPen(ink)
+                h = painter.fontMetrics().height()
+                for top, word in ((mid - h - 2, "卖"), (mid + 2, "买")):
+                    if 0 <= top and top + h <= height:
+                        painter.drawText(QRectF(max(0, left - 18), top, 16, h), Qt.AlignCenter, word)
 
         label = {
             DEPTH_FULL: "千档",
@@ -329,9 +396,15 @@ class Sparkline(SizedWidget):
             label += "·降级"
         if snapshot.received_at and time.time() - snapshot.received_at > DEPTH_STALE_SECONDS:
             label += "·延迟"
-        label += f" {snapshot.bid_count}/{snapshot.ask_count}"
+        label += "·合量" if dense else ""
+        if max_width >= 80:
+            label += f" {snapshot.bid_count}/{snapshot.ask_count}"
         painter.setFont(self._annotation_font)
-        painter.setPen(self._paint_color(ANNOTATION_COLOR))
+        label_color = self._paint_color(ANNOTATION_COLOR)
+        backing = 15 if label_color.lightness() >= 120 else 245
+        painter.setBackground(QBrush(QColor(backing, backing, backing, 210)))
+        painter.setBackgroundMode(Qt.OpaqueMode)
+        painter.setPen(label_color)
         painter.drawText(
             QRectF(max(0.0, width - max_width - 2), 1, max_width, max(12, height / 4)),
             Qt.AlignRight | Qt.AlignTop,
@@ -349,6 +422,9 @@ class Sparkline(SizedWidget):
 
         # 纵向范围要把昨收算进去，基准线才不会跑到图外。
         price_low, price_high = min(points), max(points)
+        if self._realtime_bars:
+            price_low = min(price_low, min(bar.low for bar in self._realtime_bars))
+            price_high = max(price_high, max(bar.high for bar in self._realtime_bars))
         low, high = price_low, price_high
         if self._prev_close is not None:
             low, high = min(low, self._prev_close), max(high, self._prev_close)
@@ -385,7 +461,7 @@ class Sparkline(SizedWidget):
 
         # B/S 波动转折：B 红线从底部向上画到曲线，S 蓝线从顶部向下画到曲线，
         # 两者都停在转折点上，不穿过曲线。
-        if self._show_signals:
+        if self._show_signals and not self._tdw_power:
             for index, kind in self._signals:
                 if 0 <= index < len(points):
                     color = self._paint_color(BUY_COLOR if kind.startswith("B") else SELL_COLOR)
@@ -397,6 +473,7 @@ class Sparkline(SizedWidget):
 
         curve = QPainterPath()
         curve.moveTo(QPointF(x_of(0), y_of(points[0])))
+        prefix = len(points) - len(self._realtime_bars)
         for index, value in enumerate(points[1:], 1):
             curve.lineTo(QPointF(x_of(index), y_of(value)))
 
@@ -414,6 +491,16 @@ class Sparkline(SizedWidget):
         if self._show_depth:
             self._draw_depth(painter, width, height, y_of, profile_width or self._side_profile_width(width))
 
+        level_labels = None
+        if self._show_signals and self._show_tdw_levels:
+            guide_right = chart_right
+            if self._show_depth and self._depth and self._depth.available:
+                guide_right = min(guide_right, width - self._side_profile_width(width) - 6)
+            label_inset = painter.fontMetrics().horizontalAdvance(f"{price_high:.2f}") + 6 if self._show_high_low else 0
+            level_labels = tdw_overlay.draw_levels(painter, chart_left, guide_right, height,
+                                                  self._paint_color(tdw_overlay.LEVEL_COLOR, 190),
+                                                  label_inset=label_inset)
+
         # 昨收基准线
         if self._prev_close is not None:
             pen = QPen(self._paint_color(self._color, BASELINE_ALPHA), 1, Qt.DashLine)
@@ -430,11 +517,32 @@ class Sparkline(SizedWidget):
             y = y_of(self._open_price)
             painter.drawLine(QPointF(chart_left, y), QPointF(chart_right, y))
 
-        pen = QPen(curve_color, 1.4)
+        if self._show_signals and self._tdw_power:
+            tdw_overlay.draw_power(painter, self._tdw_power, x_of, height,
+                                   self._paint_color(tdw_overlay.POWER_COLOR, 180))
+        if self._grayscale and self._show_depth and self._depth and self._depth.available:
+            painter.save()
+            book_width = profile_width or self._side_profile_width(width)
+            painter.setClipRect(QRectF(width - book_width - 2, 0, book_width + 2, height))
+            backing = 15 if curve_color.lightness() >= 120 else 245
+            painter.setPen(QPen(QColor(backing, backing, backing, 230), 3.4))
+            painter.drawPath(curve)
+            painter.restore()
+        pen = QPen(curve_color, 1 if self._realtime_bars else 1.4)
         pen.setJoinStyle(Qt.RoundJoin)
         pen.setCapStyle(Qt.RoundCap)
         painter.setPen(pen)
         painter.drawPath(curve)
+        tdw_overlay.draw_realtime_candles(painter, self._realtime_bars, prefix, x_of, y_of, curve_color)
+
+        if self._show_signals and self._tdw_power:
+            labels = []
+            for index, kind in self._signals:
+                if 0 <= index < len(points):
+                    color = self._paint_color(BUY_COLOR if kind.startswith("B") else SELL_COLOR)
+                    tdw_overlay.draw_event(painter, x_of(index), y_of(points[index]), kind, height, width, color, labels)
+
+        tdw_overlay.draw_level_labels(painter, level_labels)
 
         if self._show_high_low:
             painter.setFont(self._annotation_font)
