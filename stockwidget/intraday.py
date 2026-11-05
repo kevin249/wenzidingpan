@@ -12,7 +12,7 @@ from datetime import date, datetime
 
 import requests
 
-from . import mcp_bs
+from . import tdw
 from .market_hours import SHANGHAI_TZ
 from .providers.base import USER_AGENT, describe_error
 from .symbols import Symbol, classify
@@ -76,76 +76,14 @@ class Trend:
     fetched_at: float = 0.0  # 最近一次成功获取该曲线的时间
     stale: bool = False  # 接口失败时暂用当天最后一份有效曲线
 
+    tdw_points: dict[str, tdw.Point] = field(default_factory=dict)
+
     def __bool__(self) -> bool:
         return len(self.prices) >= 2
 
 
 def _secid(symbol: Symbol) -> str:
     return f"{1 if symbol.market == 'sh' else 0}.{symbol.code}"
-
-
-@dataclass(frozen=True)
-class LocalBsSignal:
-    index: int
-    side: str
-    confirmed_index: int
-
-
-def local_bs_signals(prices: list[float], reversal_percent: float = 0.005) -> list[LocalBsSignal]:
-    """与绘图共用的反转扫描，同时保留转折点和首次确认点。"""
-    if len(prices) < 3:
-        return []
-    direction = 0
-    extreme_index = 0
-    extreme = prices[0]
-    low = high = prices[0]
-    low_index = high_index = 0
-    signals: list[LocalBsSignal] = []
-    for index, price in enumerate(prices[1:], 1):
-        if direction == 0:
-            if price < low:
-                low, low_index = price, index
-            if price > high:
-                high, high_index = price, index
-            if low and (price - low) / low >= reversal_percent:
-                signals.append(LocalBsSignal(low_index, "B", index))
-                direction, extreme, extreme_index = 1, price, index
-            elif high and (high - price) / high >= reversal_percent:
-                signals.append(LocalBsSignal(high_index, "S", index))
-                direction, extreme, extreme_index = -1, price, index
-        elif direction > 0:
-            if price >= extreme:
-                extreme, extreme_index = price, index
-            elif extreme and (extreme - price) / extreme >= reversal_percent:
-                signals.append(LocalBsSignal(extreme_index, "S", index))
-                direction = -1
-                extreme, extreme_index = price, index
-        else:
-            if price <= extreme:
-                extreme, extreme_index = price, index
-            elif extreme and (price - extreme) / extreme >= reversal_percent:
-                signals.append(LocalBsSignal(extreme_index, "B", index))
-                direction = 1
-                extreme, extreme_index = price, index
-    return signals
-
-
-def _local_bs_points(prices: list[float], reversal_percent: float = 0.005) -> list[tuple[int, str]]:
-    return [(signal.index, signal.side) for signal in local_bs_signals(prices, reversal_percent)]
-
-
-def calculate_bs_points(
-    prices: list[float], reversal_percent: float = 0.005, *, symbol: str = ""
-) -> list[tuple[int, str]]:
-    """按设置选择 B/S 来源。
-
-    界面可显式传股票代码，联网分时也可通过 :class:`PriceSeries` 携带代码。
-    无股票上下文的普通 list 保持本地计算，供算法测试和独立调用使用。
-    """
-    symbol = symbol or getattr(prices, "symbol", "")
-    if symbol and mcp_bs.get_source() == mcp_bs.SOURCE_MCP:
-        return mcp_bs.bs_points(symbol, prices)
-    return _local_bs_points(prices, reversal_percent)
 
 
 def parse_eastmoney(payload: object) -> Trend:

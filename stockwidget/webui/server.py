@@ -39,10 +39,12 @@ class SettingsServer:
         host: str = DEFAULT_HOST,
         port: int = 0,
         on_resize: Callable[[dict], None] | None = None,
+        on_bs_source_change: Callable[[], None] | None = None,
     ) -> None:
         self.store = store
         self.on_change = on_change
         self.on_resize = on_resize
+        self.on_bs_source_change = on_bs_source_change
         self._layout_metrics: dict = {}
         self.host = host
         self.token = secrets.token_urlsafe(16)
@@ -137,10 +139,13 @@ class SettingsServer:
             payload = request.get_json(silent=True)
             if not isinstance(payload, dict):
                 return jsonify({"error": "请求体必须是 JSON 对象"}), 400
+            previous = mcp_bs.get_source()
             try:
                 source = mcp_bs.set_source(str(payload.get("source") or ""))
             except ValueError as exc:
                 return jsonify({"error": str(exc)}), 400
+            if previous != source and self.on_bs_source_change:
+                self.on_bs_source_change()
             return jsonify({"source": source})
 
         @app.get("/api/mcp-events")

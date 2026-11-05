@@ -10,7 +10,7 @@ from datetime import datetime
 
 from PySide6.QtCore import QThread, Signal
 
-from . import providers
+from . import providers, mcp_bs, tdw
 from .config import Config
 from .darktrade import CACHE_TTL_SECONDS as DARK_REFRESH_SECONDS, DarkResult, DarkTradeClient
 from .intraday import IntradayClient, Trend
@@ -54,6 +54,7 @@ class Poller(QThread):
         self._pending: Snapshot | None = None
         self._quote_cache: list[Quote] = []
         self._trend_cache: dict[str, Trend] = {}
+        self._tdw_cache: dict[str, dict[str, tdw.Point]] = {}
         self._provider_setting = config.provider
         self._provider_id = config.provider
         self._effective_provider: str | None = None
@@ -66,7 +67,7 @@ class Poller(QThread):
             config.provider, tuple(config.symbols), config.refresh_seconds,
             config.chart_refresh_seconds, config.show_sparkline,
             config.intraday_chart, config.display_theme, config.show_dark_trade,
-            config.debug_mode,
+            config.debug_mode, config.show_bs_points, config.kline_source,
         )
 
     def apply_config(self, config: Config) -> None:
@@ -143,6 +144,8 @@ class Poller(QThread):
             s: t for s, t in self._trend_cache.items()
             if s in config.symbols and self._chart_enabled(config)
         }
+        self._tdw_cache.clear()
+        self._trend_cache = {s: replace(t, tdw_points={}) for s, t in self._trend_cache.items()}
         self._clients = {s: c for s, c in self._clients.items() if s in config.symbols}
         self._merge_dark(config)
 
@@ -196,6 +199,8 @@ class Poller(QThread):
             jobs.append(("dark", ""))
         if Poller._chart_enabled(config):
             jobs.extend(("chart", s) for s in config.symbols)
+            if config.show_bs_points and mcp_bs.get_source() == mcp_bs.SOURCE_LOCAL:
+                jobs.extend(("tdw", s) for s in config.symbols)
         return jobs
 
     def _accept(self, key, result, config: Config, generation: int) -> None:
@@ -214,8 +219,16 @@ class Poller(QThread):
             self._dark_result = result
             self._merge_dark(config)
             changed = config.symbols
+        elif kind == "tdw":
+            if result is None:
+                return
+            self._tdw_cache[symbol] = result
+            if symbol not in self._trend_cache:
+                return
+            self._trend_cache[symbol] = replace(self._trend_cache[symbol], tdw_points=result)
+            changed = [symbol]
         else:
-            self._trend_cache[symbol] = result
+            self._trend_cache[symbol] = replace(result, tdw_points=self._tdw_cache.get(symbol, {}))
             changed = [symbol]
         self._publish(config, generation, changed)
 
@@ -223,6 +236,7 @@ class Poller(QThread):
         pools = {
             "quotes": ThreadPoolExecutor(max_workers=1, thread_name_prefix="quotes"),
             "dark": ThreadPoolExecutor(max_workers=1, thread_name_prefix="dark"),
+            "tdw": ThreadPoolExecutor(max_workers=2, thread_name_prefix="tdw"),
             "chart": ThreadPoolExecutor(max_workers=CHART_WORKERS, thread_name_prefix="chart"),
         }
         inflight: dict[tuple[str, str], tuple[Future, int]] = {}
@@ -257,6 +271,7 @@ class Poller(QThread):
                     self._accept(key, result, config, generation)
                     interval = (
                         config.refresh_seconds if key[0] == "quotes" else
+                        60.0 if key[0] == "tdw" else
                         config.chart_refresh_seconds if key[0] == "chart" else DARK_REFRESH_SECONDS
                     )
                     # Start-to-start cadence: network work is not added to the interval.
@@ -264,6 +279,7 @@ class Poller(QThread):
 
                 active = self._should_poll(config, False)
                 chart_slots = CHART_WORKERS - sum(k[0] == "chart" for k in inflight)
+                tdw_slots = 2 - sum(k[0] == "tdw" for k in inflight)
                 now = time.monotonic()
                 for key in sorted(jobs, key=lambda k: due.get(k, 0.0)):
                     kind, symbol = key
@@ -271,13 +287,16 @@ class Poller(QThread):
                         continue
                     if key not in forced and due.get(key, 0.0) > now:
                         continue
-                    if kind == "chart" and chart_slots <= 0:
+                    if (kind == "chart" and chart_slots <= 0) or (kind == "tdw" and tdw_slots <= 0):
                         continue
                     forced.discard(key)
                     if kind == "quotes":
                         fetch, args = self._fetch_quotes, (config,)
                     elif kind == "dark":
                         fetch, args = self._fetch_dark, (config,)
+                    elif kind == "tdw":
+                        fetch, args = tdw.fetch_minute, (symbol, config.kline_source)
+                        tdw_slots -= 1
                     else:
                         if symbol not in self._clients:
                             self._clients[symbol] = IntradayClient()
@@ -292,7 +311,7 @@ class Poller(QThread):
                 for key in jobs:
                     if key in inflight or not (active or key in forced):
                         continue
-                    if key[0] == "chart" and chart_slots <= 0:
+                    if (key[0] == "chart" and chart_slots <= 0) or (key[0] == "tdw" and tdw_slots <= 0):
                         continue
                     waits.append(0.0 if key in forced else max(0.0, due.get(key, 0.0) - now))
                 self._wake.wait(min(waits))

@@ -2,7 +2,7 @@
 
 B/S 有两个互斥来源：
 
-* ``local``：沿用组件自己的分时反转计算；
+* ``local``：按当前图表周期叠加本地 TDW；
 * ``mcp``：只显示 MCP 通道收到的 ``trading.holding_t_signal`` 信号。
 
 MCP 通知监听线程、Qt 行情线程和 Flask 设置线程都会访问这里，因此所有共享状态都

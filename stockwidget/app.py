@@ -27,6 +27,7 @@ class ConfigBridge(QObject):
 
     changed = Signal(object)
     resize_requested = Signal(object)
+    bs_source_changed = Signal()
 
 
 class WindowActivationFilter(QObject):
@@ -91,9 +92,11 @@ class WidgetApp:
         self.bridge = ConfigBridge()
         self.bridge.changed.connect(self._apply_config, Qt.QueuedConnection)
         self.bridge.resize_requested.connect(self.window.resize_from_settings, Qt.QueuedConnection)
+        self.bridge.bs_source_changed.connect(self._on_bs_source_changed, Qt.QueuedConnection)
         self.server = SettingsServer(
             self.store, on_change=self.bridge.changed.emit,
             on_resize=self.bridge.resize_requested.emit,
+            on_bs_source_change=self.bridge.bs_source_changed.emit,
         )
         self.window.layout_metrics_changed.connect(self.server.publish_layout_metrics)
         self.server.publish_layout_metrics(self.window.layout_metrics())
@@ -326,6 +329,11 @@ class WidgetApp:
 
     def _on_depth_snapshot(self, snapshot: DepthSnapshot) -> None:
         self.window.update_depth(snapshot)
+
+    def _on_bs_source_changed(self) -> None:
+        self._local_bs_notifier = LocalBsNotifier()
+        self.window.refresh_bs_signals()
+        self.poller.refresh_now()
 
     def _on_bs_updated(self, symbol: str) -> None:
         """由 MCP 线程通知图形线程刷新 B/S，不等行情轮询。"""
