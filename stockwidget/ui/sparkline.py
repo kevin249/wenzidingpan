@@ -16,6 +16,7 @@ from PySide6.QtWidgets import QWidget
 
 from ..config import DEFAULT_GRAYSCALE_LEVEL
 from ..local_bs import SAMPLE_LEN
+from ..kline import Bar
 from ..market_hours import SHANGHAI_TZ
 from ..mcp_depth import DEPTH_FIVE, DEPTH_FULL, DEPTH_TEN, DepthSnapshot
 from . import tdw_overlay
@@ -43,6 +44,7 @@ class Sparkline(SizedWidget):
         self._sample_minutes: deque[str] = deque(maxlen=SAMPLE_LEN)
         self._series: list[float] = []  # 当日分时，空则用采样点
         self._minutes: list[str] = []
+        self._realtime_bars: list[Bar] = []
         self._fill_width = False
         self._volumes: list[float] = []
         self._show_volume_profile = False
@@ -91,9 +93,12 @@ class Sparkline(SizedWidget):
             if not self._series:
                 self.update()
 
-    def set_series(self, prices: list[float], minutes: list[str] | None = None) -> None:
+    def set_series(self, prices: list[float], minutes: list[str] | None = None,
+                   realtime_bars: list[Bar] | None = None) -> None:
         resolved_minutes = list(minutes or [])
-        if prices != self._series or resolved_minutes != self._minutes:
+        bars = realtime_bars or []
+        if prices != self._series or resolved_minutes != self._minutes or bars != self._realtime_bars:
+            self._realtime_bars = bars
             self._series = list(prices)
             self._minutes = resolved_minutes
             self.update()
@@ -218,6 +223,7 @@ class Sparkline(SizedWidget):
         self._sample_minutes.clear()
         self._series = []
         self._minutes = []
+        self._realtime_bars = []
         self._volumes = []
         self._show_volume_profile = False
         self._signals = []
@@ -415,6 +421,9 @@ class Sparkline(SizedWidget):
 
         # 纵向范围要把昨收算进去，基准线才不会跑到图外。
         price_low, price_high = min(points), max(points)
+        if self._realtime_bars:
+            price_low = min(price_low, min(bar.low for bar in self._realtime_bars))
+            price_high = max(price_high, max(bar.high for bar in self._realtime_bars))
         low, high = price_low, price_high
         if self._prev_close is not None:
             low, high = min(low, self._prev_close), max(high, self._prev_close)
@@ -463,6 +472,7 @@ class Sparkline(SizedWidget):
 
         curve = QPainterPath()
         curve.moveTo(QPointF(x_of(0), y_of(points[0])))
+        prefix = len(points) - len(self._realtime_bars)
         for index, value in enumerate(points[1:], 1):
             curve.lineTo(QPointF(x_of(index), y_of(value)))
 
@@ -507,11 +517,12 @@ class Sparkline(SizedWidget):
             painter.setPen(QPen(QColor(backing, backing, backing, 230), 3.4))
             painter.drawPath(curve)
             painter.restore()
-        pen = QPen(curve_color, 1.4)
+        pen = QPen(curve_color, 1 if self._realtime_bars else 1.4)
         pen.setJoinStyle(Qt.RoundJoin)
         pen.setCapStyle(Qt.RoundCap)
         painter.setPen(pen)
         painter.drawPath(curve)
+        tdw_overlay.draw_realtime_candles(painter, self._realtime_bars, prefix, x_of, y_of, curve_color)
 
         if self._show_signals and self._tdw_power:
             labels = []

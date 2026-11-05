@@ -2569,18 +2569,19 @@ def test_day_candles_use_warm_history_and_source_switch_removes_tdw(app, monkeyp
         row.close()
 
 
-def test_switching_to_theme2_uses_same_live_minute_as_classic(app, monkeypatch):
+def test_switching_to_theme2_uses_same_realtime_second_as_classic(app, monkeypatch):
     from dataclasses import replace
+    from stockwidget.kline import Bar
     from stockwidget import mcp_bs, tdw
     from stockwidget.providers.base import Quote
     from stockwidget.ui.depth_ladder import MODE_DAILY, MODE_INTRADAY
     monkeypatch.setattr(mcp_bs, "get_source", lambda: "local")
     row = QuoteRow("603986")
-    cfg = Config(show_bs_points=True)
+    cfg = Config(show_bs_points=True, intraday_chart=False)
     try:
         row.apply_config(cfg)
-        day, stamp = "2026-10-23", "2026-10-23 10:01"
-        trend = Trend(trade_date=day, minutes=["10:00", "10:01"], prices=[10., 11.],
+        day, stamp = "2026-10-23", "2026-10-23 10:01:12"
+        trend = Trend(trade_date=day, realtime_bars=[Bar(stamp, 10, 11, 10, 11)], minutes=["10:01:06", "10:01:12"], prices=[10., 11.],
                       tdw_points={stamp: tdw.Point(.6, 11., ("B2",), provisional=True)})
         row.update_quote(Quote.from_prices("603986", "测试", 11, 10), cfg, trend)
         assert row.sparkline._signals == [(1, "B2*")]

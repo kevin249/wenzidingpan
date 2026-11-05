@@ -7,6 +7,33 @@ from PySide6.QtGui import QColor, QPainterPath, QPen, QPolygonF
 POWER_COLOR = QColor(232, 188, 74)
 
 
+def draw_realtime_candles(painter, bars, offset, x_of, y_of, color):
+    """Group only for painting when several real-time bars share four screen pixels."""
+    if not bars:
+        return
+    painter.save()
+    painter.setPen(QPen(color, 1))
+    i = 0
+    while i < len(bars):
+        x = x_of(offset + i)
+        first = bars[i]
+        high, low, close = first.high, first.low, first.close
+        i += 1
+        while i < len(bars) and x_of(offset + i) < x + 4:
+            bar = bars[i]
+            high, low, close = max(high, bar.high), min(low, bar.low), bar.close
+            i += 1
+        center = (x + x_of(offset + i - 1)) / 2
+        painter.drawLine(QPointF(center, y_of(high)), QPointF(center, y_of(low)))
+        top, bottom = sorted((y_of(first.open), y_of(close)))
+        if bottom - top < 1:
+            painter.drawLine(QPointF(center - 1, top), QPointF(center + 1, top))
+        else:
+            painter.setBrush(Qt.NoBrush if close > first.open else color)
+            painter.drawRect(QRectF(center - 1, top, 2, bottom - top))
+    painter.restore()
+
+
 def draw_power(painter, power, x_of, height, color):
     path = QPainterPath()
     contiguous = False

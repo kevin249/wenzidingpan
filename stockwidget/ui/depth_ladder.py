@@ -333,12 +333,14 @@ class DepthLadder(SizedWidget):
             list(trend.prices) if trend else None,
             list(trend.minutes) if trend else None,
             list(trend.volumes) if trend else None,
+            trend.realtime_bars if trend else None,
             resolved,
         )
         old = (
             list(self._trend.prices) if self._trend else None,
             list(self._trend.minutes) if self._trend else None,
             list(self._trend.volumes) if self._trend else None,
+            self._trend.realtime_bars if self._trend else None,
             self._prev_close,
         )
         if state != old:
@@ -928,16 +930,20 @@ class DepthLadder(SizedWidget):
                                    self.height(), self._paint_color(tdw_overlay.POWER_COLOR, 180))
         curve = QPainterPath()
         curve.moveTo(QPointF(self._intraday_x(layout, 0, count), y_of(prices[0])))
+        bars = self._trend.realtime_bars if self._trend else []
+        prefix = count - len(bars)
         for index, value in enumerate(prices[1:], 1):
             curve.lineTo(
                 QPointF(self._intraday_x(layout, index, count), y_of(value))
             )
 
-        pen = QPen(self._paint_color(CURVE_COLOR), 1.4)
+        pen = QPen(self._paint_color(CURVE_COLOR), 1 if bars else 1.4)
         pen.setJoinStyle(Qt.RoundJoin)
         pen.setCapStyle(Qt.RoundCap)
         painter.setPen(pen)
         painter.drawPath(curve)
+        tdw_overlay.draw_realtime_candles(painter, bars, prefix, lambda i: self._intraday_x(layout, i, count),
+                                          y_of, self._paint_color(CURVE_COLOR))
 
         if self._show_signals and self._minute_power:
             labels = []
@@ -1040,8 +1046,11 @@ class DepthLadder(SizedWidget):
         if bars:
             values += [bar.high for bar in bars]
             values += [bar.low for bar in bars]
-        if self._chart_mode == MODE_INTRADAY and self._prev_close:
-            values.append(self._prev_close)
+        if self._chart_mode == MODE_INTRADAY:
+            if self._prev_close:
+                values.append(self._prev_close)
+            if self._trend and self._trend.realtime_bars:
+                values.extend(p for p in (self._trend.low_price, self._trend.high_price) if p is not None)
         y_of = self._price_mapper(values) if values else None
         return prices, volumes, levels, bars, y_of
 

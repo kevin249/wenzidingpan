@@ -753,7 +753,7 @@ class QuoteRow(SizedWidget):
             self._last_trend = None
             self.sparkline.clear()
             self._chart_day = today
-        if not config.intraday_chart:
+        if not config.intraday_chart and not (trend and trend.realtime_bars):
             trend = None
         elif quote.error and not trend:
             trend = self._last_trend
@@ -771,6 +771,9 @@ class QuoteRow(SizedWidget):
             self.sparkline.setToolTip(f"分时刷新失败（{trend.error}），保留 {stamp} 的图表，等待下次更新")
         elif quote.error:
             self.sparkline.setToolTip(f"报价更新失败（{quote.error}），保留最后有效图表")
+        elif trend and trend.realtime_bars:
+            vendor = {"eastmoney": "东方财富", "tencent": "腾讯财经"}.get(trend.source, trend.source)
+            self.sparkline.setToolTip(f"实时 K 线 · {vendor} · 最近成交 {trend.realtime_bars[-1].time}")
         else:
             self.sparkline.setToolTip("")
         # 曲线对鼠标透明，悬停事件由股票卡片接收。
@@ -820,7 +823,8 @@ class QuoteRow(SizedWidget):
         if not quote.error:
             self.sparkline.set_color(color)
             self.sparkline.push_sample(quote.price)
-        self.sparkline.set_series(trend.prices if trend else [], trend.minutes if trend else [])
+        self.sparkline.set_series(trend.prices if trend else [], trend.minutes if trend else [],
+                                  trend.realtime_bars if trend else [])
         # 分时接口给了昨收就用它的，否则用行情里的——虚线基准不能缺。
         prev_close = (trend.prev_close if trend and trend.prev_close else None) or quote.prev_close
         if prev_close is not None or not quote.error:

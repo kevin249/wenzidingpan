@@ -191,7 +191,7 @@ def test_real_queued_gui_receives_fast_data_before_blocked_chart(app, monkeypatc
     poller = Poller(config)
     release = threading.Event()
     monkeypatch.setattr(module, "active_updates_allowed", lambda *args: True)
-    monkeypatch.setattr(module.tdw.MinuteFeed, "fetch", lambda *args: {})
+    monkeypatch.setattr(module.RealtimeFeed, "fetch", lambda *args: None)
     monkeypatch.setattr(poller, "_fetch_quotes", lambda cfg:
                         ("test", None, [Quote.from_prices(s, s, 10.5, 10) for s in cfg.symbols]))
 

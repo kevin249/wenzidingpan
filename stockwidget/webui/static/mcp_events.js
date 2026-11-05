@@ -18,7 +18,7 @@
           <option value="local">本地计算 · 逃顶王 TDW</option>
           <option value="mcp">MCP 订阅</option>
         </select>
-        <p class="hint">主题 1 与主题 2 默认都显示实时分钟 TDW。当前一分钟随行情重算，空心三角与 * 表示盘中信号，价格回落时可能撤销；收盘确认后画实心三角。动力线独立刻度 0–4。主题 2 手动切换日 K 时才查看日线。</p>
+        <p class="hint">两个主题的实时图都用东财或腾讯成交明细计算 TDW。同一秒的成交合成一根 K 线，B/S 标在对应秒。空心三角与 * 表示最新一根的暂定信号，确认后显示实心三角。主题 2 手动切到日 K 时按日线计算。</p>
       </div>
       <div class="field">
         <label for="mcp-event-sort">当日 MCP 信息排序</label>

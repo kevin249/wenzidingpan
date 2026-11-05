@@ -10,11 +10,12 @@ from datetime import datetime
 
 from PySide6.QtCore import QThread, Signal
 
-from . import providers, mcp_bs, tdw
+from . import providers, mcp_bs
+from .realtime import RealtimeFeed, with_price_history
 from .config import Config
 from .darktrade import CACHE_TTL_SECONDS as DARK_REFRESH_SECONDS, DarkResult, DarkTradeClient
 from .intraday import IntradayClient, Trend
-from .market_hours import OFF_HOURS_WAKE_SECONDS, active_updates_allowed
+from .market_hours import OFF_HOURS_WAKE_SECONDS, SHANGHAI_TZ, active_updates_allowed
 from .providers.base import Quote
 from .symbols import classify
 
@@ -54,8 +55,9 @@ class Poller(QThread):
         self._pending: Snapshot | None = None
         self._quote_cache: list[Quote] = []
         self._trend_cache: dict[str, Trend] = {}
-        self._tdw_feeds: dict[str, tdw.MinuteFeed] = {}
-        self._tdw_cache: dict[str, dict[str, tdw.Point]] = {}
+        self._tdw_feeds: dict[str, RealtimeFeed] = {}
+        self._tdw_cache: dict[str, Trend] = {}
+        self._display_cache: dict[str, Trend] = {}
         self._provider_setting = config.provider
         self._provider_id = config.provider
         self._effective_provider: str | None = None
@@ -113,8 +115,7 @@ class Poller(QThread):
             dark_date=self._dark_result.trade_date if config.show_dark_trade else "",
             dark_error=self._dark_result.error if config.show_dark_trade else None,
             dark_enabled=config.show_dark_trade,
-            trends={s: t.with_tdw(self._tdw_cache[s]) if local and s in self._tdw_cache else t
-                    for s, t in self._trend_cache.items()},
+            trends=(self._trend_cache | self._display_cache) if local else dict(self._trend_cache),
             effective_provider=self._effective_provider,
             updated_symbols=tuple(symbols) if symbols is not None else None,
             generation=generation,
@@ -148,6 +149,7 @@ class Poller(QThread):
             if s in config.symbols and self._chart_enabled(config)
         }
         self._tdw_cache.clear()
+        self._display_cache.clear()
         self._tdw_feeds.clear()
         self._clients = {s: c for s, c in self._clients.items() if s in config.symbols}
         self._merge_dark(config)
@@ -202,8 +204,10 @@ class Poller(QThread):
             jobs.append(("dark", ""))
         if Poller._chart_enabled(config):
             jobs.extend(("chart", s) for s in config.symbols)
-            if config.show_bs_points and mcp_bs.get_source() == mcp_bs.SOURCE_LOCAL:
-                jobs.extend(("tdw", s) for s in config.symbols)
+        offline = config.provider == "mock" and not config.intraday_chart
+        if (not offline and (config.show_sparkline or config.display_theme == "theme2") and config.show_bs_points
+                and mcp_bs.get_source() == mcp_bs.SOURCE_LOCAL):
+            jobs.extend(("tdw", s) for s in config.symbols)
         return jobs
 
     def _accept(self, key, result, config: Config, generation: int) -> None:
@@ -222,14 +226,27 @@ class Poller(QThread):
             self._dark_result = result
             self._merge_dark(config)
             changed = config.symbols
-        elif kind == "tdw":
-            if result is not None:
-                self._tdw_cache[symbol] = result
-            if symbol not in self._trend_cache or symbol not in self._tdw_cache:
-                return
-            changed = [symbol]
         else:
-            self._trend_cache[symbol] = result
+            if kind == "tdw":
+                if result is None:
+                    previous = self._tdw_cache.get(symbol)
+                    if previous and previous.trade_date == datetime.now(SHANGHAI_TZ).date().isoformat():
+                        result = replace(previous, stale=True, error="实时成交明细暂不可用")
+                if result is None:
+                    self._tdw_cache.pop(symbol, None)
+                    self._display_cache.pop(symbol, None)
+                else:
+                    self._tdw_cache[symbol] = result
+            else:
+                self._trend_cache[symbol] = result
+            live = self._tdw_cache.get(symbol)
+            history = self._trend_cache.get(symbol)
+            if live is not None:
+                if history and history.trade_date > live.trade_date:
+                    self._tdw_cache.pop(symbol, None)
+                    self._display_cache.pop(symbol, None)
+                else:
+                    self._display_cache[symbol] = with_price_history(live, history)
             changed = [symbol]
         self._publish(config, generation, changed)
 
@@ -284,7 +301,8 @@ class Poller(QThread):
                 active = self._should_poll(config, False)
                 if not active:
                     # Lunch/close can arrive between polls. Reconcile the last live bar once.
-                    for symbol, points in self._tdw_cache.items():
+                    for symbol, trend in self._tdw_cache.items():
+                        points = trend.tdw_points
                         if points and ("tdw", symbol) in jobs:
                             stamp = next(reversed(points))
                             if points[stamp].provisional and closing_fetch.get(symbol) != stamp:
@@ -308,9 +326,9 @@ class Poller(QThread):
                         fetch, args = self._fetch_dark, (config,)
                     elif kind == "tdw":
                         if symbol not in self._tdw_feeds:
-                            self._tdw_feeds[symbol] = tdw.MinuteFeed(symbol, config.kline_source)
+                            self._tdw_feeds[symbol] = RealtimeFeed(symbol, config.kline_source)
                         fetch = self._tdw_feeds[symbol].fetch
-                        args = (self._trend_cache.get(symbol),)
+                        args = ()
                         tdw_slots -= 1
                     else:
                         if symbol not in self._clients:

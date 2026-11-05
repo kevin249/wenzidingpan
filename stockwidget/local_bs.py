@@ -1,4 +1,4 @@
-"""Notify once for newly closed TDW minute bars on the displayed trading day."""
+"""Notify once for newly confirmed real-time TDW bars on the displayed trading day."""
 
 from datetime import datetime
 
@@ -31,7 +31,7 @@ class LocalBsNotifier:
                 continue
             previous = self._frontiers.get(quote.symbol)
             latest = previous or ""
-            cutoff = now.strftime("%Y-%m-%d %H:%M")
+            cutoff = now.strftime("%Y-%m-%d %H:%M:%S")
             for minute in trend.minutes:
                 stamp = f"{day} {minute}"
                 point = trend.tdw_points.get(stamp)
@@ -44,7 +44,7 @@ class LocalBsNotifier:
                     label = " / ".join(f"{tag} {EVENT_NAMES[tag]}" for tag in point.events)
                     messages.append(
                         f"[{now:%Y-%m-%d %H:%M:%S}] [本地B/S] {quote.name or code}({code}) | TDW {label} | "
-                        f"分钟={minute} | 收盘价={point.close:.2f} | 动力线={point.power:.2f}"
+                        f"行情时间={minute} | 收盘价={point.close:.2f} | 动力线={point.power:.2f}"
                     )
             if latest:
                 self._frontiers[quote.symbol] = latest if previous else max(latest, cutoff)

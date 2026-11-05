@@ -25,7 +25,7 @@ def test_notifier_is_silent_on_history_short_packets_and_switches():
     times = ["09:59", "10:00", "10:01", "10:02"]
     later = START + timedelta(minutes=2)
     messages = collect(notifier, times, at=later)
-    assert len(messages) == 2 and "B2 关注" in messages[0] and "分钟=10:02" in messages[1]
+    assert len(messages) == 2 and "B2 关注" in messages[0] and "行情时间=10:02" in messages[1]
     assert not collect(notifier, times[:2], at=later)
     assert not collect(notifier, times, at=later)
     assert not collect(notifier, times, at=later, enabled=False)
@@ -49,3 +49,14 @@ def test_live_cross_is_not_announced_as_closed_or_printed_twice():
                       tdw_points={stamp: Point(.6, 442., ("B2",), provisional)})
         messages = notifier.collect([QUOTE], {QUOTE.symbol: trend}, enabled=True, at=now.timestamp())
         assert len(messages) == expected
+
+
+def test_two_confirmed_seconds_in_one_minute_are_notified_independently():
+    notifier = LocalBsNotifier()
+    assert not collect(notifier, ["09:59:56", "09:59:59"])
+    clocks = ["10:00:03", "10:00:06"]
+    at = START + timedelta(seconds=7)
+    messages = collect(notifier, clocks, at=at)
+    assert len(messages) == 2
+    assert all(f"行情时间={clock}" in msg for clock, msg in zip(clocks, messages))
+    assert not collect(notifier, clocks, at=at)
