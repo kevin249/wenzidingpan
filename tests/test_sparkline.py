@@ -470,3 +470,22 @@ def test_four_tdw_guides_survive_compact_warmup_and_stay_out_of_book(app, height
     assert all(before.pixel(x, y) == after.pixel(x, y)
                for x in range(260, 360) for y in range(height))
     w.close()
+
+
+def test_dense_tdw_paths_keep_real_endpoint_and_break_at_missing_data(app):
+    from stockwidget.ui.tdw_overlay import series_path, visible_events
+
+    values = [i % 4 for i in range(2000)] + [None] + [3, 2, 1]
+    path = series_path(values, lambda i: i / 10, float, 4)
+    coords = [path.elementAt(i) for i in range(path.elementCount())]
+    assert len(coords) < 60
+    assert (coords[0].x, coords[0].y) == (0, values[0])
+    assert (coords[-1].x, coords[-1].y) == (200.3, values[-1])
+    assert any(el.isMoveTo() and el.x == 200.1 for el in coords)
+    assert any(el.x == 199.9 and el.y == values[1999] for el in coords)
+
+    signals = [(n, "B1" if n % 2 else "S2") for n in range(2000)]
+    visible = list(visible_events(signals, len(values), lambda i: i / 10))
+    assert visible[-1] == signals[-1] and len(visible) < 20
+    assert all(right[0] - left[0] >= 120 for left, right in zip(visible, visible[1:]))
+    assert len(signals) == 2000

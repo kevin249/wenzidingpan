@@ -5,10 +5,11 @@
 
 from __future__ import annotations
 
+from bisect import bisect_left
 import threading
 import time
 from dataclasses import dataclass, field, replace
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import requests
 
@@ -80,8 +81,27 @@ class Trend:
     tdw_points: dict[str, tdw.Point] = field(default_factory=dict)
     realtime_bars: list[Bar] = field(default_factory=list)  # 与价格序列末段对齐
 
+    recent_view: bool = False
+
+    def last_five_minutes(self) -> Trend:
+        """Slice the displayed candles after TDW has been computed on the full history."""
+        bars = self.realtime_bars
+        if not bars:
+            return self
+        end = datetime.fromisoformat(bars[-1].time)
+        cutoff = (end - timedelta(minutes=5)).isoformat(sep=" ", timespec="seconds")
+        start = bisect_left(bars, cutoff, key=lambda bar: bar.time)
+        bars = bars[start:]
+        return replace(
+            self, realtime_bars=bars, recent_view=True,
+            prices=PriceSeries((bar.close for bar in bars), getattr(self.prices, "symbol", "")),
+            volumes=[bar.volume for bar in bars], minutes=[bar.time[11:] for bar in bars],
+            high_price=max(bar.high for bar in bars), low_price=min(bar.low for bar in bars),
+            tdw_points={bar.time: self.tdw_points[bar.time] for bar in bars if bar.time in self.tdw_points},
+        )
+
     def __bool__(self) -> bool:
-        return len(self.prices) >= 2
+        return bool(self.prices) if self.recent_view else len(self.prices) >= 2
 
 
 def _secid(symbol: Symbol) -> str:

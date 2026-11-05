@@ -35,7 +35,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QFontMetricsF, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QFontMetricsF, QPainter, QPen
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from ..config import Config
@@ -335,6 +335,7 @@ class DepthLadder(SizedWidget):
             list(trend.minutes) if trend else None,
             list(trend.volumes) if trend else None,
             trend.realtime_bars if trend else None,
+            trend.recent_view if trend else False,
             resolved,
         )
         old = (
@@ -342,6 +343,7 @@ class DepthLadder(SizedWidget):
             list(self._trend.minutes) if self._trend else None,
             list(self._trend.volumes) if self._trend else None,
             self._trend.realtime_bars if self._trend else None,
+            self._recent_view(),
             self._prev_close,
         )
         if state != old:
@@ -481,11 +483,14 @@ class DepthLadder(SizedWidget):
             return 0.0
         return max(12.0, min(chart_width * 0.30, max(16.0, self._config.font_size * 3.2)))
 
+    def _recent_view(self):
+        return bool(self._trend is not None and self._trend.recent_view)
+
     def _intraday_x(self, layout: _Layout, index: int, count: int) -> float:
         """与经典主题共用时间轴；默认完整交易日，可切换为已有数据铺满。"""
         minutes = self._trend.minutes if self._trend else []
         fraction = intraday_fraction(
-            index, count, minutes, fill_width=self._config.chart_fill_width
+            index, count, minutes, fill_width=self._config.chart_fill_width or self._recent_view()
         )
         return layout.plot_left + layout.plot_span * fraction
 
@@ -497,7 +502,7 @@ class DepthLadder(SizedWidget):
         fractions = intraday_grid_fractions(
             len(trend.prices) if trend else 0,
             trend.minutes if trend else [],
-            fill_width=self._config.chart_fill_width,
+            fill_width=self._config.chart_fill_width or self._recent_view(),
         )
         return [
             layout.plot_left + layout.plot_span * fraction
@@ -775,6 +780,11 @@ class DepthLadder(SizedWidget):
             painter.drawText(price_rect, align, self._error[:18])
             return
 
+        if self._expanded and self._show_tdw_levels and self._config.grayscale:
+            # The quote shares the same gray as the chart. Back only the text glyph area.
+            background = QColor(18, 18, 18) if self._config.grayscale_level >= 120 else QColor(244, 244, 244)
+            painter.setBackground(background)
+            painter.setBackgroundMode(Qt.OpaqueMode)
         if self._component_visible("price"):
             painter.setPen(self._paint_color(self._price_color))
             painter.setFont(price_font)
@@ -795,7 +805,8 @@ class DepthLadder(SizedWidget):
         center_y = float(self.height()) / 2.0
         low, high = min(values), max(values)
         center = self._price if self._price and self._price > 0 else (low + high) / 2.0
-        axis_low, axis_high = self._price_scale.bounds(low, high, center=center)
+        scale = PriceScale() if self._chart_mode == MODE_INTRADAY and self._recent_view() else self._price_scale
+        axis_low, axis_high = scale.bounds(low, high, center=center)
         half = (axis_high - axis_low) / 2.0
 
         def y_of(value: float) -> float:
@@ -927,33 +938,30 @@ class DepthLadder(SizedWidget):
                 start = bottom if kind.startswith("B") else top
                 painter.drawLine(QPointF(x, start), QPointF(x, y_of(prices[index])))
 
+        def x_of(index):
+            return self._intraday_x(layout, index, count)
+
         if self._show_signals and self._minute_power:
-            tdw_overlay.draw_power(painter, self._minute_power, lambda i: self._intraday_x(layout, i, count),
-                                   self.height(), self._paint_color(tdw_overlay.POWER_COLOR, 180))
-        curve = QPainterPath()
-        curve.moveTo(QPointF(self._intraday_x(layout, 0, count), y_of(prices[0])))
+            tdw_overlay.draw_power(painter, self._minute_power, x_of, self.height(),
+                                   self._paint_color(tdw_overlay.POWER_COLOR, 180))
         bars = self._trend.realtime_bars if self._trend else []
         prefix = count - len(bars)
-        for index, value in enumerate(prices[1:], 1):
-            curve.lineTo(
-                QPointF(self._intraday_x(layout, index, count), y_of(value))
-            )
+        curve = tdw_overlay.series_path(prices, x_of, y_of, 4 if bars else 0)
 
         pen = QPen(self._paint_color(CURVE_COLOR), 1 if bars else 1.4)
         pen.setJoinStyle(Qt.RoundJoin)
         pen.setCapStyle(Qt.RoundCap)
         painter.setPen(pen)
         painter.drawPath(curve)
-        tdw_overlay.draw_realtime_candles(painter, bars, prefix, lambda i: self._intraday_x(layout, i, count),
+        tdw_overlay.draw_realtime_candles(painter, bars, prefix, x_of,
                                           y_of, self._paint_color(CURVE_COLOR))
 
         if self._show_signals and self._minute_power:
             labels = []
-            for index, kind in self._signals:
-                if 0 <= index < count:
-                    color = self._paint_color(BS_BUY_COLOR if kind.startswith("B") else BS_SELL_COLOR)
-                    tdw_overlay.draw_event(painter, self._intraday_x(layout, index, count), y_of(prices[index]),
-                                           kind, self.height(), self.width(), color, labels)
+            for index, kind in tdw_overlay.visible_events(self._signals, count, x_of):
+                color = self._paint_color(BS_BUY_COLOR if kind.startswith("B") else BS_SELL_COLOR)
+                tdw_overlay.draw_event(painter, x_of(index), y_of(prices[index]), kind,
+                                       self.height(), self.width(), color, labels)
 
     def _draw_candles(
         self, painter: QPainter, layout: _Layout, y_of, bars: list[Bar]
@@ -1011,7 +1019,7 @@ class DepthLadder(SizedWidget):
 
     def _draw_chart_badge(self, painter: QPainter, layout: _Layout) -> None:
         """分时/日K 角标；贴在图表区靠近盘口的一侧，避开外侧的「量」标注。"""
-        label = MODE_LABELS.get(self._chart_mode, "")
+        label = "近5分" if self._chart_mode == MODE_INTRADAY and self._recent_view() else MODE_LABELS.get(self._chart_mode, "")
         font = self._popup_font()
         painter.setFont(font)
         metrics = QFontMetricsF(font)
@@ -1049,7 +1057,7 @@ class DepthLadder(SizedWidget):
             values += [bar.high for bar in bars]
             values += [bar.low for bar in bars]
         if self._chart_mode == MODE_INTRADAY:
-            if self._prev_close:
+            if self._prev_close and not self._recent_view():
                 values.append(self._prev_close)
             if self._trend and self._trend.realtime_bars:
                 values.extend(p for p in (self._trend.low_price, self._trend.high_price) if p is not None)

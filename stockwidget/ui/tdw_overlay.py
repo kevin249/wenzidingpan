@@ -94,19 +94,47 @@ def draw_realtime_candles(painter, bars, offset, x_of, y_of, color):
     painter.restore()
 
 
-def draw_power(painter, power, x_of, height, color):
+def series_path(values, x_of, y_of, spacing=0):
+    """Preserve gaps and endpoints; paint the last real value in each crowded x interval."""
     path = QPainterPath()
-    contiguous = False
-    for index, value in enumerate(power):
+    bucket_x = None
+    last_x, last_value = 0, None
+    for i, value in enumerate(values):
         if value is None:
-            contiguous = False
+            if last_value is not None:
+                path.lineTo(last_x, y_of(last_value))
+            bucket_x = last_value = None
             continue
-        xy = QPointF(x_of(index), _power_y(value, height))
-        if contiguous:
-            path.lineTo(xy)
-        else:
-            path.moveTo(xy)
-        contiguous = True
+        x = x_of(i)
+        if bucket_x is None:
+            path.moveTo(x, y_of(value))
+            bucket_x = x
+        elif x - bucket_x >= spacing:
+            path.lineTo(last_x, y_of(last_value))
+            bucket_x = x
+        last_x, last_value = x, value
+    if last_value is not None:
+        path.lineTo(last_x, y_of(last_value))
+    return path
+
+
+def visible_events(events, count, x_of):
+    """Give the most recent signal priority if several triangles would overlap."""
+    retained = []
+    right = float("inf")
+    for index, kind in reversed(events):
+        if 0 <= index < count:
+            x = x_of(index)
+            if right - x >= 12:
+                retained.append((index, kind))
+                right = x
+    return reversed(retained)
+
+
+def draw_power(painter, power, x_of, height, color):
+    span = x_of(len(power) - 1) - x_of(0) if power else 0
+    spacing = 9 if len(power) > max(1, span) else 0
+    path = series_path(power, x_of, lambda value: _power_y(value, height), spacing)
     painter.save()
     painter.setPen(QPen(color, 1, Qt.DashLine))
     painter.drawPath(path)

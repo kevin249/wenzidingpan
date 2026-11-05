@@ -127,6 +127,7 @@ class QuoteRow(SizedWidget):
         self.symbol = symbol
         self._last_quote: Quote | None = None
         self._last_trend: Trend | None = None
+        self._display_trend: Trend | None = None
         self._daily_tdw = {}
         self._last_daily_request = float("-inf")
         self._chart_day = None
@@ -764,6 +765,9 @@ class QuoteRow(SizedWidget):
             self.sparkline.clear()
         self._last_quote = quote
         self._last_trend = trend
+        if self._use_recent_view():
+            trend = trend.last_five_minutes()
+        self._display_trend = trend
         if trend or (not quote.error and quote.price is not None):
             self._chart_day = today
         if trend and trend.stale:
@@ -776,8 +780,6 @@ class QuoteRow(SizedWidget):
             self.sparkline.setToolTip(f"实时 K 线 · {vendor} · 最近成交 {trend.realtime_bars[-1].time}")
         else:
             self.sparkline.setToolTip("")
-        # 曲线对鼠标透明，悬停事件由股票卡片接收。
-        self.setToolTip(self.sparkline.toolTip())
         color = direction_color(config, quote.change)
         self._update_theme2_data(quote, config, trend, color)
         self.name_label.setText(quote.name or quote.symbol)
@@ -824,7 +826,7 @@ class QuoteRow(SizedWidget):
             self.sparkline.set_color(color)
             self.sparkline.push_sample(quote.price)
         self.sparkline.set_series(trend.prices if trend else [], trend.minutes if trend else [],
-                                  trend.realtime_bars if trend else [])
+                                  trend.realtime_bars if trend else [], recent=bool(trend is not None and trend.recent_view))
         # 分时接口给了昨收就用它的，否则用行情里的——虚线基准不能缺。
         prev_close = (trend.prev_close if trend and trend.prev_close else None) or quote.prev_close
         if prev_close is not None or not quote.error:
@@ -890,13 +892,21 @@ class QuoteRow(SizedWidget):
         self._request_theme2_kline()
 
 
+    def _use_recent_view(self) -> bool:
+        return bool(self._config.tdw_recent_five and self._config.show_bs_points
+                    and self._last_trend and self._last_trend.realtime_bars
+                    and mcp_bs.get_source() == mcp_bs.SOURCE_LOCAL)
+
     def refresh_bs_signals(self) -> None:
         quote = self._last_quote
         if quote is None:
             return
         config = self._config
         enabled = config.show_bs_points and not quote.error
-        trend = self._last_trend
+        trend = self._display_trend
+        if self._use_recent_view() != bool(trend is not None and trend.recent_view):
+            self.update_quote(quote, config, self._last_trend)
+            return
         prices = trend.prices if trend else self.sparkline.points
         bars = self.theme2_depth.kline.bars if self.theme2_depth.kline else []
         signals, daily, minute_power, daily_power = [], [], [], []
@@ -912,6 +922,19 @@ class QuoteRow(SizedWidget):
                     trend.tdw_points, (f"{trend.trade_date} {m}" for m in trend.minutes)
                 )
             daily_power, daily = tdw.align(self._daily_tdw, (bar.time[:10] for bar in bars))
+        tip = self.sparkline.toolTip()
+        if local_tdw and trend and trend.realtime_bars and minute_power:
+            stamp = next(reversed(trend.tdw_points))
+            last = trend.tdw_points[stamp]
+            scope = "最近 5 分钟 · " if trend.recent_view else ""
+            details = [f"{scope}实时 TDW {last.power:.2f}{'*' if last.provisional else ''}"]
+            if signals:
+                index, label = signals[-1]
+                details.append(f"最近信号 {trend.minutes[index]} {label}")
+            if config.show_high_low and trend.high_price is not None and trend.low_price is not None:
+                details.append(f"高 {trend.high_price:.2f}　低 {trend.low_price:.2f}")
+            tip = "\n".join(filter(None, (tip, " · ".join(details))))
+        self.setToolTip(tip)
         self.theme2_depth.set_signals(signals if trend else [], show=enabled)
         self.theme2_depth.set_daily_signals(daily)
         self.theme2_depth.set_tdw_power(minute_power, daily_power, show_levels=local_tdw)

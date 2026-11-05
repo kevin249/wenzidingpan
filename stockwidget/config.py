@@ -62,6 +62,7 @@ THEME_SCOPED_FIELDS = (
     "grayscale_level",
     "intraday_chart",
     "chart_fill_width",
+    "tdw_recent_five",
     "show_dark_trade",
     "compact",
     "theme2_side",
@@ -183,6 +184,7 @@ class Config:
     # 走势图画当日分时曲线（联网取分钟数据）；关掉则只画组件运行期间的采样点
     intraday_chart: bool = True
     chart_fill_width: bool = False  # 默认完整交易日横轴；开启后已有分时数据铺满宽度
+    tdw_recent_five: bool = False
     show_dark_trade: bool = True
     compact: bool = False
     display_theme: str = "theme1"  # theme1 = 经典网格，theme2 = 千档竖列
@@ -453,6 +455,7 @@ def sanitize(raw: Any, *, _include_theme_profiles: bool = True) -> Config:
         "grayscale",
         "intraday_chart",
         "chart_fill_width",
+        "tdw_recent_five",
         "show_dark_trade",
         "compact",
         "click_through",
