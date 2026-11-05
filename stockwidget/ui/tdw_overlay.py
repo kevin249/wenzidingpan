@@ -1,10 +1,70 @@
 """Draw TDW on an independent 0–4 scale and mark events at their price bars."""
 
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QPainterPath, QPen, QPolygonF
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QPolygonF
 
+from ..tdw import LEVELS
 
 POWER_COLOR = QColor(232, 188, 74)
+LEVEL_COLOR = QColor(185, 196, 208)
+
+
+def _power_y(value, height):
+    return 2 + (1 - value / 4) * max(1, height - 4)
+
+
+def draw_levels(painter, left, right, height, color, *, label_inset=0, mirror=False):
+    """Draw guide strokes beneath the data and return the captions for the foreground."""
+    if right - left < 2 or height < 4:
+        return None
+    painter.save()
+    painter.setClipRect(QRectF(left, 0, right - left, height), Qt.IntersectClip)
+    painter.setRenderHint(QPainter.Antialiasing, False)
+    font = painter.font()
+    font.setPixelSize(10 if height >= 38 else 9)
+    font.setBold(True)
+    painter.setFont(font)
+    metrics = painter.fontMetrics()
+    label_width = max(metrics.horizontalAdvance(f"{tag} {v:g}") for tag, v in LEVELS) + 6
+    label_height = metrics.height()
+    show_labels = height >= 2 * label_height and right - left - label_inset >= 2 * label_width + 18
+
+    # At tiny widget heights a pair can round to the same pixel.
+    rows = {tag: round(_power_y(value, height)) for tag, value in LEVELS}
+    rows["S2"] = max(0, min(rows["S2"], rows["S1"] - 1))
+    rows["B1"] = min(height - 1, max(rows["B1"], rows["B2"] + 1))
+    labels = []
+    for tag, value in LEVELS:
+        outer = tag in ("S2", "B1")
+        pen = QPen(color, 1, Qt.CustomDashLine, Qt.FlatCap)
+        pen.setDashPattern([8, 4] if outer else [2, 3])
+        painter.setPen(pen)
+        y = rows[tag]
+        painter.drawLine(QPointF(left, y), QPointF(right, y))
+        if show_labels:
+            # Use separate columns for each pair, away from the order book.
+            inset = label_inset + (0 if outer else label_width + 4)
+            x = right - label_width - inset if mirror else left + inset
+            top = max(0, min(y - label_height / 2, height - label_height))
+            labels.append((QRectF(x, top, label_width, label_height), f"{tag} {value:g}"))
+    painter.restore()
+    return (font, color, labels) if labels else None
+
+
+def draw_level_labels(painter, captions):
+    if captions is None:
+        return
+    font, color, labels = captions
+    painter.save()
+    ink = QColor(color)
+    ink.setAlpha(255)
+    backing = QColor(18, 18, 18, 242) if ink.lightness() >= 120 else QColor(246, 246, 246, 242)
+    painter.setPen(ink)
+    painter.setFont(font)
+    for rect, caption in labels:
+        painter.fillRect(rect, backing)
+        painter.drawText(rect, Qt.AlignCenter, caption)
+    painter.restore()
 
 
 def draw_realtime_candles(painter, bars, offset, x_of, y_of, color):
@@ -41,7 +101,7 @@ def draw_power(painter, power, x_of, height, color):
         if value is None:
             contiguous = False
             continue
-        xy = QPointF(x_of(index), 2 + (1 - value / 4) * max(1, height - 4))
+        xy = QPointF(x_of(index), _power_y(value, height))
         if contiguous:
             path.lineTo(xy)
         else:
@@ -56,7 +116,7 @@ def draw_power(painter, power, x_of, height, color):
             font = painter.font()
             font.setPixelSize(10)
             painter.setFont(font)
-            painter.drawText(QPointF(x_of(0) + 52, height - 3), f"TDW {latest:.2f}")
+            painter.drawText(QPointF(x_of(0) + 132, height - 3), f"TDW {latest:.2f}")
     painter.restore()
 
 

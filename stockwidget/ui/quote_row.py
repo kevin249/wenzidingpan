@@ -900,12 +900,13 @@ class QuoteRow(SizedWidget):
         prices = trend.prices if trend else self.sparkline.points
         bars = self.theme2_depth.kline.bars if self.theme2_depth.kline else []
         signals, daily, minute_power, daily_power = [], [], [], []
-        if enabled and mcp_bs.get_source() == mcp_bs.SOURCE_MCP:
+        local_tdw = enabled and mcp_bs.get_source() == mcp_bs.SOURCE_LOCAL
+        if enabled and not local_tdw:
             if prices:
                 signals = mcp_bs.bs_points(quote.symbol, prices)
             if bars:
                 daily = mcp_bs.daily_bs_points(quote.symbol, bars)
-        elif enabled:
+        elif local_tdw:
             if trend and len(trend.minutes) == len(trend.prices):
                 minute_power, signals = tdw.align(
                     trend.tdw_points, (f"{trend.trade_date} {m}" for m in trend.minutes)
@@ -913,8 +914,8 @@ class QuoteRow(SizedWidget):
             daily_power, daily = tdw.align(self._daily_tdw, (bar.time[:10] for bar in bars))
         self.theme2_depth.set_signals(signals if trend else [], show=enabled)
         self.theme2_depth.set_daily_signals(daily)
-        self.theme2_depth.set_tdw_power(minute_power, daily_power)
-        self.sparkline.set_tdw_power(minute_power)
+        self.theme2_depth.set_tdw_power(minute_power, daily_power, show_levels=local_tdw)
+        self.sparkline.set_tdw_power(minute_power, show_levels=local_tdw)
         self.sparkline.set_annotations(
             trend.open_price if trend else (prices[0] if prices else None), signals,
             show_signals=enabled, show_open_line=config.show_open_line,

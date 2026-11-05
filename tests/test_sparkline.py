@@ -446,3 +446,27 @@ def test_tdw_markers_stay_on_the_price_scale_with_grayscale_l2(app, monkeypatch)
         w.set_show_depth(enabled)
         w.grab()
     assert positions == pytest.approx([50., 50.], abs=1.)
+
+
+@pytest.mark.parametrize("height", [8, 20, 96])
+def test_four_tdw_guides_survive_compact_warmup_and_stay_out_of_book(app, height):
+    w = Sparkline()
+    w.setFixedSize(360, height)
+    w.set_series([11., 11.], ["10:01:00", "10:01:03"])
+    w.set_annotations(None, [], show_signals=True, show_open_line=False,
+                      show_high_low=False, show_fill=False, grayscale=True)
+    w.set_show_depth(True)
+    w.set_depth(DepthSnapshot("600000", levels=(DepthLevel("bid", 11., 50),), available=True))
+    # A new session has prices but too few real-time bars for a TDW value.
+    w.set_tdw_power([], show_levels=False)
+    before = _render_on_backdrop(w)
+    w.set_tdw_power([], show_levels=True)
+    after = _render_on_backdrop(w)
+    rows = [y for y in range(height)
+            if sum(before.pixel(x, y) != after.pixel(x, y) for x in range(120, 220)) > 25]
+    assert len(rows) == 4
+    if height == 96:
+        assert rows == [14, 20, 82, 89]
+    assert all(before.pixel(x, y) == after.pixel(x, y)
+               for x in range(260, 360) for y in range(height))
+    w.close()

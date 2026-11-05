@@ -52,6 +52,7 @@ class Sparkline(SizedWidget):
         self._prev_close: float | None = None
         self._open_price: float | None = None
         self._tdw_power: list[float | None] = []
+        self._show_tdw_levels = False
         self._signals: list[tuple[int, str]] = []
         self._show_signals = True
         self._show_open_line = True
@@ -136,9 +137,9 @@ class Sparkline(SizedWidget):
             self._depth = snapshot
             self.update()
 
-    def set_tdw_power(self, power):
-        if self._tdw_power != power:
-            self._tdw_power = power
+    def set_tdw_power(self, power, *, show_levels=True):
+        if (power, show_levels) != (self._tdw_power, self._show_tdw_levels):
+            self._tdw_power, self._show_tdw_levels = power, show_levels
             self.update()
 
     def set_show_depth(self, enabled: bool) -> None:
@@ -490,6 +491,16 @@ class Sparkline(SizedWidget):
         if self._show_depth:
             self._draw_depth(painter, width, height, y_of, profile_width or self._side_profile_width(width))
 
+        level_labels = None
+        if self._show_signals and self._show_tdw_levels:
+            guide_right = chart_right
+            if self._show_depth and self._depth and self._depth.available:
+                guide_right = min(guide_right, width - self._side_profile_width(width) - 6)
+            label_inset = painter.fontMetrics().horizontalAdvance(f"{price_high:.2f}") + 6 if self._show_high_low else 0
+            level_labels = tdw_overlay.draw_levels(painter, chart_left, guide_right, height,
+                                                  self._paint_color(tdw_overlay.LEVEL_COLOR, 190),
+                                                  label_inset=label_inset)
+
         # 昨收基准线
         if self._prev_close is not None:
             pen = QPen(self._paint_color(self._color, BASELINE_ALPHA), 1, Qt.DashLine)
@@ -530,6 +541,8 @@ class Sparkline(SizedWidget):
                 if 0 <= index < len(points):
                     color = self._paint_color(BUY_COLOR if kind.startswith("B") else SELL_COLOR)
                     tdw_overlay.draw_event(painter, x_of(index), y_of(points[index]), kind, height, width, color, labels)
+
+        tdw_overlay.draw_level_labels(painter, level_labels)
 
         if self._show_high_low:
             painter.setFont(self._annotation_font)

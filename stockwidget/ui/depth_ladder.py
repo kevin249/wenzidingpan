@@ -169,6 +169,7 @@ class DepthLadder(SizedWidget):
         self._signals: list[tuple[int, str]] = []
         self._minute_power = []
         self._daily_power = []
+        self._show_tdw_levels = False
         self._daily_signals: list[tuple[int, str]] = []
         self._show_signals = True
         self._preferred_width = 168
@@ -371,9 +372,10 @@ class DepthLadder(SizedWidget):
         self._show_signals = bool(show)
         self.update()
 
-    def set_tdw_power(self, minute, daily):
-        if (minute, daily) != (self._minute_power, self._daily_power):
+    def set_tdw_power(self, minute, daily, *, show_levels=True):
+        if (minute, daily, show_levels) != (self._minute_power, self._daily_power, self._show_tdw_levels):
             self._minute_power, self._daily_power = minute, daily
+            self._show_tdw_levels = show_levels
             self.update()
 
     def set_daily_signals(self, signals=None) -> None:
@@ -1075,6 +1077,19 @@ class DepthLadder(SizedWidget):
         if not layout.has_chart_band:
             return
         prices, _volumes, _levels, bars, y_of = chart_values
+        level_labels = None
+        if y_of is not None and self._show_signals and self._show_tdw_levels:
+            left, right = layout.plot_left, layout.plot_right
+            if self._depth and self._depth.available:
+                left, right = layout.chart_left, layout.chart_right
+            # Leave the volume axis and its bars clear, including in mirrored mode.
+            if layout.mirror:
+                right = min(right, layout.kline_right)
+            else:
+                left = max(left, layout.kline_left)
+            level_labels = tdw_overlay.draw_levels(painter, left, right, self.height(),
+                                                  self._paint_color(tdw_overlay.LEVEL_COLOR, 190),
+                                                  mirror=layout.mirror)
         if y_of is None:
             message = self._kline_message or (
                 "日K 加载中…" if self._chart_mode == MODE_DAILY else "暂无分时数据"
@@ -1084,6 +1099,7 @@ class DepthLadder(SizedWidget):
             self._draw_candles(painter, layout, y_of, bars)
         else:
             self._draw_intraday(painter, layout, y_of, prices)
+        tdw_overlay.draw_level_labels(painter, level_labels)
         self._draw_chart_badge(painter, layout)
 
     # ------------------------------------------------------------ 绘制：入口
