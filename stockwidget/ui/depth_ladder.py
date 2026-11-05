@@ -599,7 +599,7 @@ class DepthLadder(SizedWidget):
             # 彩色模式下买红卖绿（A 股），灰度模式下两者同灰、只剩上下半区的区别。
             is_bid = side == "bid"
             color = self._paint_color(bid_color if is_bid else ask_color, DEPTH_ALPHA)
-            painter.setPen(QPen(color, 1.2))
+            painter.setPen(QPen(color, 2.0))
             if layout.mirror:
                 painter.drawLine(round(layout.axis_x), y, round(layout.axis_x + length), y)
             else:
