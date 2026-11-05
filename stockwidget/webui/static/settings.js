@@ -64,6 +64,7 @@ const TEXTS = [
   'row_style',
   'color_scheme',
   'font_family',
+  'tdw_label_color',
   'background_color',
   'mcp_url',
   'mcp_api_key',
@@ -333,6 +334,12 @@ function refreshHints() {
   if (provider && el('symbols-hint')) el('symbols-hint').textContent = provider.placeholder;
 
   const theme2 = el('display_theme').value === 'theme2';
+  const theme3 = activeTheme === 'theme3';
+  for (const choice of document.querySelectorAll('[name="theme-choice"]')) {
+    choice.checked = choice.value === activeTheme;
+  }
+  el('theme-font-heading').textContent = `主题 ${activeTheme.slice(-1)} 的字体颜色与字重`;
+  el('tdw-label-field').hidden = !theme3;
   const mirrorLeft = el('theme2_side').value === 'left';
   const single = !theme2 && el('layout').value === 'single';
   el('show_chart_depth').disabled = theme2 || single;
@@ -342,10 +349,11 @@ function refreshHints() {
   el('theme2_always_expanded').disabled = !theme2;
   // 灰度值只在开启「灰度显示」时才参与绘制，没开就没什么可调的。
   el('grayscale_level').disabled = !el('grayscale').checked;
-  el('layout').disabled = theme2;
+  el('layout').disabled = theme2 || theme3;
   for (const id of ['visible_rows', 'row_style', 'chart_height']) {
     el(id).disabled = single || theme2;
   }
+  if (theme3) el('row_style').disabled = true;
   for (const region of SIZE_REGIONS) {
     for (const axis of ['width', 'height']) {
       sizeInput(region, axis).disabled = single || (region === 'chart' && theme2) || (region === 'canvas' && !theme2);
@@ -361,12 +369,14 @@ function refreshHints() {
     ? mirrorLeft
       ? '主题 2 靠左：股价列贴最左，当前价虚线横贯整行；千档从股价轴向右长，最右是成交量轴。名称、代码、高低价和图表可以点击展开，也可开启「主题 2 始终展开」持续显示。顶栏字号与颜色跟主题 1 用同一套设置（股票名称 / 现价 / 涨跌幅 / 暗盘 / 高低价），股票代码与图注用「主题 2 代码与图注字号」。盘口柱长只由下面的宽度决定——点击展开 K 线时柱长一个像素都不变，且两侧的柱都不越过行的水平中点。分时横轴默认固定为完整交易日（9:30→15:00，午休压缩）；打开「K 线按已有数据铺满宽度」后按数据首末时刻展开。半小时竖线随当前时间范围定位，首末两条压在两根竖轴上。'
       : '主题 2 靠右：股价列贴最右，当前价虚线横贯整行；千档从股价轴向左长，最左是成交量轴。名称、代码、高低价和图表可以点击展开，也可开启「主题 2 始终展开」持续显示。顶栏字号与颜色跟主题 1 用同一套设置（股票名称 / 现价 / 涨跌幅 / 暗盘 / 高低价），股票代码与图注用「主题 2 代码与图注字号」。盘口柱长只由下面的宽度决定——点击展开 K 线时柱长一个像素都不变，且两侧的柱都不越过行的水平中点。分时横轴默认固定为完整交易日（9:30→15:00，午休压缩）；打开「K 线按已有数据铺满宽度」后按数据首末时刻展开。半小时竖线随当前时间范围定位，首末两条压在两根竖轴上。'
-    : '主题 1：保持原有经典网格/单行滚动显示。主题 1/2 的显示参数和窗口尺寸分别保存，切换互不覆盖。';
+    : theme3 ? '主题 3 在分时图右侧叠加千档挂单，下方显示本地 TDW 动力线。箭头标记指标的买卖信号。'
+             : '主题 1 支持经典网格和单行滚动。';
 
   el('row_style-hint').textContent = theme2
     ? '主题 2 不使用行内样式。'
+    : theme3 ? '顶部依次显示名称、暗盘、现价和涨跌幅。'
     : el('row_style').value === 'top_bottom'
-      ? '上下：上面一行依次显示股票名称、现价、涨跌幅、暗盘，下面紧贴 K 线。'
+      ? '上下：顶部显示名称、现价、涨跌幅和暗盘，下方显示走势图。'
       : el('row_style').value === 'stacked'
         ? '上中下：上面一行是名称与现价，下面一行是暗盘与涨跌幅，中间紧贴 K 线，上下不留间距。'
         : '左中右：左边名称压暗盘、右边现价压涨跌幅，左右各两行，中间永远是 K 线；格子窄到排不下时会自动改用上中下。';
@@ -412,8 +422,7 @@ async function apply(label = '已保存') {
   }
 }
 
-async function switchTheme() {
-  const nextTheme = el('display_theme').value;
+async function switchTheme(nextTheme) {
   if (nextTheme === activeTheme) {
     refreshHints();
     return;
@@ -421,9 +430,11 @@ async function switchTheme() {
 
   clearTimeout(fontApplyTimer);
   fontApplyTimer = null;
+  ++applySequence;
+  const main = document.querySelector('main');
+  main.inert = true;
   try {
-    // 下拉框已经变成目标主题了，但其它控件此刻仍是旧主题的值。
-    // 先强制按 activeTheme 保存这一屏，再只提交 display_theme 让后端载入目标 profile。
+    // 先保存当前页，再只提交主题标识，防止旧主题的字号和颜色写入新主题。
     const currentPatch = collect();
     currentPatch.display_theme = activeTheme;
     await postConfig(currentPatch);
@@ -434,6 +445,9 @@ async function switchTheme() {
     el('display_theme').value = activeTheme;
     refreshHints();
     note(`切换失败：${error.message}`);
+  } finally {
+    main.inert = false;
+    document.querySelector('[name="theme-choice"]:checked')?.focus({preventScroll: true});
   }
 }
 
@@ -506,7 +520,10 @@ for (const axis of ['width', 'height']) {
 for (const id of [...CHECKBOXES, 'provider', 'kline_source', 'theme2_side', 'layout', 'row_style', 'color_scheme', 'background_color']) {
   el(id).addEventListener('change', () => apply('已应用'));
 }
-el('display_theme').addEventListener('change', switchTheme);
+for (const choice of document.querySelectorAll('[name="theme-choice"]')) {
+  choice.addEventListener('change', () => switchTheme(choice.value));
+}
+el('tdw_label_color').addEventListener('change', () => apply('已应用'));
 for (const id of FONT_COLORS) {
   el(id).addEventListener('change', () => apply('已应用'));
   el(`${id}_auto`).addEventListener('change', () => {
@@ -587,6 +604,7 @@ document.addEventListener('click', (event) => {
   const data = await response.json();
   providers = data.providers;
   fill(data.config);
+  el('theme-picker').disabled = false;
   refreshLayoutMetrics();
   setInterval(refreshLayoutMetrics, 1000);
 

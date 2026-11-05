@@ -939,6 +939,9 @@ class TickerWindow(QWidget):
                        default=round(scaled.font_size * 13)) + 4
         if self._config.display_theme == "theme2":
             return max(148, round(scaled.font_size * 12.5))
+        if self._config.display_theme == "theme3":
+            return max(round(scaled.font_size * 33),
+                       max((row.classic_header_width() for row in self._rows.values()), default=0)) + 4
         if self._config.row_style == "top_bottom":
             return max(
                 (row.classic_header_width() for row in self._rows.values()),

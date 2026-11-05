@@ -159,6 +159,28 @@ def test_display_theme_defaults_to_classic_and_accepts_theme2():
     assert sanitize({"display_theme": "unknown"}).display_theme == "theme1"
 
 
+def test_theme3_upgrades_two_theme_file_and_restores_its_own_appearance(tmp_path):
+    path = tmp_path / "three-themes.json"
+    store = Store(path)
+    store.update({"font_family": "SimHei", "stock_name_color": "#112233"})
+    store.update({"display_theme": "theme2", "font_family": "SimSun"})
+    old = json.loads(path.read_text(encoding="utf-8"))
+    del old["theme_profiles"]["theme3"]
+    path.write_text(json.dumps(old), encoding="utf-8")
+    store = Store(path)
+    third = store.update({"display_theme": "theme3"})
+    assert third.stock_name_color == "#f4f4f1" and third.stock_price_font_size == 28
+    store.update({"font_family": "Microsoft YaHei", "background_alpha": 0,
+                  "tdw_label_color": "#abc", "grayscale": True})
+    assert store.update({"display_theme": "theme1"}).stock_name_color == "#112233"
+    assert store.update({"display_theme": "theme2"}).font_family == "SimSun"
+    store.update({"display_theme": "theme3"})
+    third = Store(path).get()
+    assert (third.font_family, third.background_alpha, third.tdw_label_color, third.grayscale) == (
+        "Microsoft YaHei", 0, "#aabbcc", True,
+    )
+
+
 def test_theme2_side_defaults_right_and_accepts_left_mirror():
     assert sanitize({}).theme2_side == "right"
     assert sanitize({"theme2_side": "left"}).theme2_side == "left"

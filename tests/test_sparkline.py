@@ -445,7 +445,8 @@ def test_tdw_markers_stay_on_the_price_scale_with_grayscale_l2(app, monkeypatch)
     for enabled in (False, True):
         w.set_show_depth(enabled)
         w.grab()
-    assert positions == pytest.approx([50., 50.], abs=1.)
+    # 下方 33px 属于动力线，价格中点在上方主图中央。
+    assert positions == pytest.approx([33.5, 33.5], abs=1.)
 
 
 @pytest.mark.parametrize("height", [8, 20, 96])
@@ -466,9 +467,14 @@ def test_four_tdw_guides_survive_compact_warmup_and_stay_out_of_book(app, height
             if sum(before.pixel(x, y) != after.pixel(x, y) for x in range(120, 220)) > 25]
     assert len(rows) == 4
     if height == 96:
-        assert rows == [14, 20, 82, 89]
-    assert all(before.pixel(x, y) == after.pixel(x, y)
-               for x in range(260, 360) for y in range(height))
+        assert rows == [70, 72, 90, 93]
+    # 高卡的盘口随主图一起缩短，下方的参考线不能进入盘口列。
+    if height == 96:
+        assert all(after.pixelColor(x, y) == BACKDROP
+                   for x in range(260, 360) for y in range(64, height))
+    else:
+        assert all(before.pixel(x, y) == after.pixel(x, y)
+                   for x in range(260, 360) for y in range(height))
     w.close()
 
 
@@ -489,3 +495,42 @@ def test_dense_tdw_paths_keep_real_endpoint_and_break_at_missing_data(app):
     assert visible[-1] == signals[-1] and len(visible) < 20
     assert all(right[0] - left[0] >= 120 for left, right in zip(visible, visible[1:]))
     assert len(signals) == 2000
+
+
+def test_classic_full_book_and_tdw_markers_have_no_text(app, monkeypatch):
+    from PySide6.QtGui import QPainter
+    from stockwidget.mcp_depth import DEPTH_FULL
+
+    widget = Sparkline()
+    widget.resize(360, 120)
+    widget.set_fill_width(True)
+    widget.set_series([10., 11., 12.])
+    widget.set_tdw_power([0.2, 1.5, 3.5])
+    widget.set_annotations(None, [(0, "B1"), (2, "S2*")], show_signals=True,
+                           show_open_line=False, show_high_low=False, show_fill=False, grayscale=True)
+    levels = tuple(DepthLevel("bid" if i < 100 else "ask", 10 + i / 100, i + 1)
+                   for i in range(200))
+    widget.set_depth(DepthSnapshot("600000", levels=levels, available=True, depth_mode=DEPTH_FULL))
+    captions = []
+    monkeypatch.setattr(QPainter, "drawText", lambda self, *args: captions.append(args[-1]))
+    widget.grab()
+    assert captions == []
+
+
+def test_card_axes_follow_session_and_recent_time_range(app, monkeypatch):
+    from PySide6.QtGui import QPainter
+
+    chart = Sparkline()
+    chart.set_card_style(True)
+    chart.resize(320, 160)
+    times = ["13:41:00", "13:46:00"]
+    chart.set_series([10., 11.], times)
+    captions = []
+    monkeypatch.setattr(QPainter, "drawText", lambda self, *args: captions.append(args[-1]))
+    chart.grab()
+    assert {"09:30", "11:30/13:00", "15:00"} <= set(captions)
+    captions.clear()
+    chart.set_series([10., 11.], times, recent=True)
+    chart.grab()
+    assert set(times) <= set(captions)
+    assert "15:00" not in captions

@@ -31,6 +31,7 @@ def test_eastmoney_takes_close_price_and_prev_close():
     assert trend.minutes == ["09:30", "09:31"]
     assert trend.trade_date == "2026-08-24"
     assert trend.source == "eastmoney"
+    assert trend.average_prices == [("09:30", 10.05), ("09:31", 10.15)]
     assert trend.volumes == [100.0, 120.0]
     assert trend.prev_close == 10.0
     assert trend.open_price == 10.0
@@ -88,8 +89,8 @@ def test_trend_is_falsy_without_enough_points():
 
 def test_tencent_fallback_parses_minutes():
     payload = {"data": {"sh600000": {"data": {"date": "20261023", "data": [
-        "0930 10.10 100 1000",
-        "0931 10.30 220 2200",
+        "0930 10.10 100 101000",
+        "0931 10.30 220 224400",
         "1201 9.90 1 1",  # 午休，应被滤掉
     ]}}}}
     trend = parse_tencent(payload, "sh600000")
@@ -98,6 +99,7 @@ def test_tencent_fallback_parses_minutes():
     assert trend.minutes == ["09:30", "09:31"]
     assert trend.trade_date == "2026-10-23"
     assert trend.source == "tencent"
+    assert trend.average_prices == [("09:30", 10.10), ("09:31", 10.20)]
 
 
 def test_tencent_rejects_bad_payload():

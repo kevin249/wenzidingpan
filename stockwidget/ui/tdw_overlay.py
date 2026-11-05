@@ -13,7 +13,7 @@ def _power_y(value, height):
     return 2 + (1 - value / 4) * max(1, height - 4)
 
 
-def draw_levels(painter, left, right, height, color, *, label_inset=0, mirror=False):
+def draw_levels(painter, left, right, height, color, *, label_inset=0, mirror=False, captions=True):
     """Draw guide strokes beneath the data and return the captions for the foreground."""
     if right - left < 2 or height < 4:
         return None
@@ -27,7 +27,7 @@ def draw_levels(painter, left, right, height, color, *, label_inset=0, mirror=Fa
     metrics = painter.fontMetrics()
     label_width = max(metrics.horizontalAdvance(f"{tag} {v:g}") for tag, v in LEVELS) + 6
     label_height = metrics.height()
-    show_labels = height >= 2 * label_height and right - left - label_inset >= 2 * label_width + 18
+    show_labels = captions and height >= 2 * label_height and right - left - label_inset >= 2 * label_width + 18
 
     # At tiny widget heights a pair can round to the same pixel.
     rows = {tag: round(_power_y(value, height)) for tag, value in LEVELS}
@@ -148,6 +148,73 @@ def draw_power(painter, power, x_of, height, color):
     painter.restore()
 
 
+def draw_power_panel(painter, power, events, x_of, right, width, height, paint_color, text_color):
+    """主题 3 的独立 0–4 动力轴。箭头锚定原始指标点，缺值处断线。"""
+    painter.save()
+    painter.setClipRect(QRectF(0, 0, width, height), Qt.IntersectClip)
+    metrics = painter.fontMetrics()
+    caption_h = metrics.height()
+    latest = next((v for v in reversed(power) if v is not None), None)
+    painter.setPen(QPen(paint_color(LEVEL_COLOR, 85), 1))
+    painter.drawLine(QPointF(0, 0), QPointF(width, 0))
+    painter.setPen(text_color)
+    caption = f"TDW  {latest:.2f}" if latest is not None else "TDW  等待成交数据"
+    painter.drawText(QRectF(0, 1, width, caption_h), Qt.AlignLeft | Qt.AlignVCenter, caption)
+    if height < caption_h + 12:
+        painter.restore()
+        return
+
+    margin = max(8, caption_h / 2)
+    top, bottom = caption_h + margin, height - margin
+    if bottom <= top:
+        painter.restore()
+        return
+
+    def y_of(value):
+        return bottom - (bottom - top) * value / 4
+
+    guides = {"S2": "#bf65b5", "S1": "#2fa9b1", "B2": "#d2ae38", "B1": "#71a75d"}
+    for tag, value in LEVELS:
+        painter.setPen(QPen(paint_color(QColor(guides[tag]), 195), 0.9))
+        painter.drawLine(QPointF(0, y_of(value)), QPointF(right, y_of(value)))
+    if latest is not None:
+        painter.setPen(QPen(paint_color(QColor("#83c95d"), 195), 1, Qt.DotLine))
+        painter.drawLine(QPointF(0, y_of(latest)), QPointF(right, y_of(latest)))
+
+    red, green = paint_color(QColor("#f2615d")), paint_color(QColor("#50d185"))
+    previous = None
+    for index, value in enumerate(power):
+        if value is None:
+            previous = None
+            continue
+        x = x_of(index)
+        if previous is not None:
+            old_x, old_value = previous
+            if x - old_x < 1 and index + 1 < len(power) and power[index + 1] is not None:
+                continue
+            painter.setPen(QPen(red if value >= old_value else green, 1.3))
+            painter.drawLine(QPointF(old_x, y_of(old_value)), QPointF(x, y_of(value)))
+        previous = (x, value)
+    for index, kind in visible_events(events, len(power), x_of):
+        if power[index] is None:
+            continue
+        x, tip = x_of(index), y_of(power[index])
+        direction = 1 if kind.startswith("B") else -1
+        base, tail = tip + direction * 4, tip + direction * 8
+        ink = red if direction == 1 else green
+        painter.setPen(QPen(ink, 1))
+        painter.setBrush(Qt.NoBrush if kind.endswith("*") else ink)
+        painter.drawPolygon(QPolygonF([
+            QPointF(x, tip), QPointF(x-3, base), QPointF(x-1, base), QPointF(x-1, tail),
+            QPointF(x+1, tail), QPointF(x+1, base), QPointF(x+3, base),
+        ]))
+    painter.setPen(text_color)
+    for value in (0, 2, 4):
+        painter.drawText(QRectF(right + 2, y_of(value) - caption_h / 2, width - right - 2, caption_h),
+                         Qt.AlignRight | Qt.AlignVCenter, f"{value:.1f}")
+    painter.restore()
+
+
 def draw_event(painter, x, y, text, height, width, color, labels):
     buying = text.startswith("B")
     y = max(1.0, min(height - 1.0, y))
@@ -163,7 +230,7 @@ def draw_event(painter, x, y, text, height, width, color, labels):
     if tip != y:
         painter.setPen(color)
         painter.drawLine(QPointF(x, tip), QPointF(x, y))
-    if height >= 38 and width >= 240:
+    if labels is not None and height >= 38 and width >= 240:
         font = painter.font()
         font.setPixelSize(10)
         font.setBold(True)

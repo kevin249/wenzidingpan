@@ -63,14 +63,21 @@
 
       <section class="card">
         <h2>显示</h2>
-        <div class="grid">
-          <div class="field">
-            <label for="display_theme">显示主题</label>
-            <select id="display_theme" name="display_theme">
-              <option value="theme1" {% if config.display_theme == 'theme1' %}selected{% endif %}>主题 1 · 经典网格</option>
-              <option value="theme2" {% if config.display_theme == 'theme2' %}selected{% endif %}>主题 2 · 千档竖列</option>
-            </select>
+        <fieldset class="theme-picker" id="theme-picker" disabled>
+          <legend>显示主题</legend>
+          <input type="hidden" id="display_theme" value="{{ config.display_theme }}" />
+          <div class="theme-cards">
+            {% for key, title in [('theme1', '经典网格'), ('theme2', '千档竖列'), ('theme3', '分时＋TDW')] %}
+              <label class="theme-card">
+                <input type="radio" name="theme-choice" value="{{ key }}"
+                       {% if config.display_theme == key %}checked{% endif %} />
+                <img src="{{ url_for('static', filename=key ~ '-preview.png') }}" alt="" />
+                <span>主题 {{ loop.index }} · {{ title }}</span>
+              </label>
+            {% endfor %}
           </div>
+        </fieldset>
+        <div class="grid">
           <div class="field">
             <label for="theme2_side">主题 2 停靠侧</label>
             <select id="theme2_side" name="theme2_side">
@@ -218,8 +225,8 @@
           </div>
         </div>
 
-        <h2>字体颜色与字重</h2>
-        <p class="hint">取消“跟随涨跌”后可选择固定颜色；字号、颜色与加粗设置对主题 1（网格/单行）和主题 2 同时生效。</p>
+        <h2 id="theme-font-heading">字体颜色与字重</h2>
+        <p class="hint">取消“跟随涨跌”可选择固定颜色。字体、字号、颜色和背景透明度按当前主题独立保存。</p>
         <div class="grid font-style-grid">
           <div class="font-style-field">
             <label class="font-style-title" for="stock_name_color">股票名称</label>
@@ -264,6 +271,10 @@
               <label><input id="dark_trade_bold" type="checkbox"
                             {% if config.dark_trade_bold %}checked{% endif %} /> 加粗</label>
             </div>
+          </div>
+          <div class="font-style-field" id="tdw-label-field" {% if config.display_theme != 'theme3' %}hidden{% endif %}>
+            <label for="tdw_label_color">TDW 图注</label>
+            <input id="tdw_label_color" type="color" value="{{ config.tdw_label_color }}" />
           </div>
         </div>
 
@@ -325,7 +336,7 @@
           <label><input id="show_sparkline" name="show_sparkline" type="checkbox"
                         {% if config.show_sparkline %}checked{% endif %} /> 显示走势图</label>
           <label><input id="show_chart_depth" name="show_chart_depth" type="checkbox"
-                        {% if config.show_chart_depth %}checked{% endif %} /> 经典主题：在 K 线内显示千档挂单分布</label>
+                        {% if config.show_chart_depth %}checked{% endif %} /> 在 K 线内显示千档挂单分布（主题 1、3）</label>
           <label><input id="chart_fill_width" name="chart_fill_width" type="checkbox"
                         {% if config.chart_fill_width %}checked{% endif %} /> K 线按已有数据铺满宽度</label>
           <label><input id="tdw_recent_five" name="tdw_recent_five" type="checkbox"
@@ -350,7 +361,7 @@
                         {% if config.compact %}checked{% endif %} /> 紧凑模式</label>
         </div>
         <p class="hint">「K 线按已有数据铺满宽度」默认关闭：分时横轴固定为 09:30–15:00（压缩午休），未交易的时间留白；
-          开启后，已有分时数据从首个点到末个点铺满宽度。两个主题均生效，日 K 仍按日期显示。</p>
+          开启后，已有分时数据从首个点到末个点铺满宽度。三个主题均生效，日 K 仍按日期显示。</p>
 
         <div class="field">
           <label for="grayscale_level">灰度值 <span class="value" id="grayscale_level-value"></span></label>

@@ -190,6 +190,17 @@ def test_both_workers_publish_by_trade_date_without_feeding_minutes_into_tdw(mon
     assert ("tdw", CODE) not in worker._jobs(cfg)
 
 
+def test_theme3_panel_uses_local_tdw_with_mcp_or_hidden_arrows(monkeypatch):
+    monkeypatch.setattr(mcp_bs, "get_source", lambda: "mcp")
+    cfg = Config(display_theme="theme3", symbols=[CODE], show_bs_points=False)
+    worker = Poller(cfg)
+    assert ("tdw", CODE) in worker._jobs(cfg)
+    live = Trend(prices=[10, 11], minutes=["09:31:03", "09:31:06"], trade_date=DAY,
+                 tdw_points={DAY+" 09:31:06": tdw.Point(.6, 11, ("B2",))})
+    worker._accept(("tdw", CODE), live, cfg, 0)
+    assert worker.take_snapshot().trends[CODE].tdw_points == live.tdw_points
+
+
 def test_quiet_auto_feed_uses_newer_vendor_but_never_invents_elapsed_bars(monkeypatch):
     feed = RealtimeFeed(CODE, "auto")
     old = second_bars(DAY, [("09:31:00", 10, 1), ("09:31:01", 11, 1)])

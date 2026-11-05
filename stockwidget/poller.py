@@ -108,7 +108,7 @@ class Poller(QThread):
         return None
 
     def _publish(self, config: Config, generation: int, symbols=None) -> None:
-        local = config.show_bs_points and mcp_bs.get_source() == mcp_bs.SOURCE_LOCAL
+        local = self._needs_tdw(config)
         snapshot = Snapshot(
             provider_id=self._provider_id,
             quotes=list(self._quote_cache),
@@ -198,6 +198,11 @@ class Poller(QThread):
         return started, fetch(*args)
 
     @staticmethod
+    def _needs_tdw(config: Config) -> bool:
+        return (config.display_theme == "theme3"
+                or config.show_bs_points and mcp_bs.get_source() == mcp_bs.SOURCE_LOCAL)
+
+    @staticmethod
     def _jobs(config: Config) -> list[tuple[str, str]]:
         jobs = [("quotes", "")]
         if config.show_dark_trade:
@@ -205,8 +210,7 @@ class Poller(QThread):
         if Poller._chart_enabled(config):
             jobs.extend(("chart", s) for s in config.symbols)
         offline = config.provider == "mock" and not config.intraday_chart
-        if (not offline and (config.show_sparkline or config.display_theme == "theme2") and config.show_bs_points
-                and mcp_bs.get_source() == mcp_bs.SOURCE_LOCAL):
+        if not offline and (config.show_sparkline or config.display_theme == "theme2") and Poller._needs_tdw(config):
             jobs.extend(("tdw", s) for s in config.symbols)
         return jobs
 

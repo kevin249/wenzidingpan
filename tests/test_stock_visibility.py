@@ -29,6 +29,27 @@ def quote(symbol="603986"):
     return result
 
 
+def test_theme3_header_and_chart_survive_switching_from_depth_theme(app):
+    row = QuoteRow("603986")
+    row.resize(440, 404)
+    config = sanitize({"display_theme": "theme3"})
+    for theme in ("theme2", "theme3"):
+        current = replace(config, display_theme=theme)
+        row.apply_config(current)
+        row.update_quote(quote(), current)
+    row.show()
+    app.processEvents()
+    fields = (row.name_label, row.dark_box, row.price_label, row.percent_label)
+    assert row.name_label.full_text() == "兆易创新"
+    assert [row.layout().getItemPosition(row.layout().indexOf(w))[:2] for w in fields] == [
+        (0, 0), (0, 1), (0, 2), (0, 3),
+    ]
+    assert row.sparkline._card_style and row.sparkline._side_profile_width(360) == 120
+    row.apply_config(Config())
+    assert not row.sparkline._card_style
+    row.close()
+
+
 def test_visibility_defaults_validation_and_normalization():
     default = sanitize({})
     assert all(default.stock_component_visible("600519", part) for part in STOCK_COMPONENTS)

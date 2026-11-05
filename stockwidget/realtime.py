@@ -223,5 +223,6 @@ def with_price_history(live: Trend, history: Trend | None) -> Trend:
     prices = PriceSeries(history.prices[:first] + live.prices, getattr(live.prices, "symbol", ""))
     volumes = history.volumes[:first] + live.volumes if len(history.volumes) >= first else []
     return replace(live, prices=prices, volumes=volumes, minutes=history.minutes[:first] + live.minutes,
+                   average_prices=[point for point in history.average_prices if point[0] <= live.minutes[-1][:5]],
                    prev_close=history.prev_close, open_price=history.open_price or live.open_price,
                    high_price=max(highs, default=None), low_price=min(lows, default=None))

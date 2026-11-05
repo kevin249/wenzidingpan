@@ -22,7 +22,14 @@ APP_DIR_NAME = "stock-ticker-widget"
 CONFIG_FILE_NAME = "config.json"
 
 LAYOUTS = ("multi", "single")
-DISPLAY_THEMES = ("theme1", "theme2")
+DISPLAY_THEMES = ("theme1", "theme2", "theme3")
+THEME3_DEFAULTS = {
+    "stock_name_font_size": 25, "stock_price_font_size": 28,
+    "stock_percent_font_size": 24, "dark_trade_font_size": 15, "chart_label_font_size": 11,
+    "stock_name_color": "#f4f4f1", "stock_price_color": "#f4f4f1", "dark_trade_color": "auto",
+    "stock_name_bold": True, "stock_percent_bold": True, "visible_rows": 2,
+    "show_open_line": False,
+}
 # K 线（日 K / 分钟 K）数据源。元组顺序即 auto 的降级顺序，
 # stockwidget/kline.py 直接读它，两边不会再各写一份。
 KLINE_SOURCES = ("auto", "eastmoney", "tencent", "sina")
@@ -85,6 +92,7 @@ THEME_SCOPED_FIELDS = (
     "stock_price_color",
     "stock_percent_color",
     "dark_trade_color",
+    "tdw_label_color",
     "stock_name_bold",
     "stock_price_bold",
     "stock_percent_bold",
@@ -188,7 +196,7 @@ class Config:
     tdw_recent_five: bool = False
     show_dark_trade: bool = True
     compact: bool = False
-    display_theme: str = "theme1"  # theme1 = 经典网格，theme2 = 千档竖列
+    display_theme: str = "theme1"  # 经典网格 / 千档竖列 / 分时＋TDW
     theme2_side: str = "right"  # right = 股价列靠右/盘口向左长，left = 靠左镜像
     theme2_depth_width: int = 84  # 主题2千档柱长度（折叠/展开恒定，25%~70% 夹取且不越行中点），像素
     theme2_popup_font_size: int = 11  # 主题2顶部信息条与图表小字（量标注/角标/提示）字号
@@ -213,6 +221,7 @@ class Config:
     stock_price_color: str = "auto"
     stock_percent_color: str = "auto"
     dark_trade_color: str = "#000000"
+    tdw_label_color: str = "#f4f4f1"
     stock_name_bold: bool = False
     stock_price_bold: bool = True
     stock_percent_bold: bool = False
@@ -262,7 +271,7 @@ def _theme_profile_from_config(config: Config) -> dict[str, Any]:
 
 
 def _default_theme_profile(theme: str) -> dict[str, Any]:
-    base = Config(display_theme=theme)
+    base = Config(display_theme=theme, **(THEME3_DEFAULTS if theme == "theme3" else {}))
     return _theme_profile_from_config(base)
 
 
@@ -271,6 +280,8 @@ def sanitize(raw: Any, *, _include_theme_profiles: bool = True) -> Config:
     out = Config()
     if not isinstance(raw, dict):
         return out
+    if raw.get("display_theme") == "theme3":
+        raw = {**THEME3_DEFAULTS, **raw, "layout": "multi"}
 
     if isinstance(raw.get("provider"), str):
         out.provider = raw["provider"]
@@ -419,7 +430,7 @@ def sanitize(raw: Any, *, _include_theme_profiles: bool = True) -> Config:
         out.tray_unread_font_size = int(_clamp(round(tray_unread_size), 7, 32))
 
     # 托盘颜色不支持 auto，只接受实际十六进制颜色。
-    for key in ("tray_icon_normal_color", "tray_icon_alert_color"):
+    for key in ("tray_icon_normal_color", "tray_icon_alert_color", "tdw_label_color"):
         color = raw.get(key)
         if isinstance(color, str):
             color = color.strip().lower()

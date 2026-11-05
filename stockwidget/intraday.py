@@ -82,6 +82,8 @@ class Trend:
     realtime_bars: list[Bar] = field(default_factory=list)  # 与价格序列末段对齐
 
     recent_view: bool = False
+    # 行情源的分时成交均价有自己的分钟时间，不随秒 K 重采样。
+    average_prices: list[tuple[str, float]] = field(default_factory=list)
 
     def last_five_minutes(self) -> Trend:
         """Slice the displayed candles after TDW has been computed on the full history."""
@@ -114,6 +116,7 @@ def parse_eastmoney(payload: object) -> Trend:
         return Trend(error="返回格式异常")
 
     prices: list[float] = []
+    averages: list[tuple[str, float]] = []
     volumes: list[float] = []
     minutes: list[str] = []
     trade_date = ""
@@ -137,6 +140,9 @@ def parse_eastmoney(payload: object) -> Trend:
             if low is not None and low > 0:
                 low_price = low if low_price is None else min(low_price, low)
             prices.append(close)
+            average = _number(parts[7]) if len(parts) > 7 else None
+            if average is not None and average > 0:
+                averages.append((minute, average))
             minutes.append(minute)
             stamp = parts[0].strip().split(" ")[0]
             trade_date = _trade_date(stamp) or trade_date
@@ -153,6 +159,7 @@ def parse_eastmoney(payload: object) -> Trend:
         minutes=minutes,
         trade_date=trade_date,
         source="eastmoney",
+        average_prices=averages,
     )
 
 
@@ -164,6 +171,7 @@ def parse_tencent(payload: object, key: str) -> Trend:
     trade_date = _trade_date(data.get("date"))
 
     prices: list[float] = []
+    averages: list[tuple[str, float]] = []
     volumes: list[float] = []
     minutes: list[str] = []
     prev_volume = 0.0
@@ -180,6 +188,9 @@ def parse_tencent(payload: object, key: str) -> Trend:
             if cumulative is not None and cumulative > 0:
                 volume = max(cumulative - prev_volume, 0.0)
                 prev_volume = cumulative
+                turnover = _number(parts[3]) if len(parts) > 3 else None
+                if turnover is not None and turnover > 0:
+                    averages.append((minute, turnover / (100 * cumulative)))
             else:
                 volume = 0.0
             volumes.append(volume)
@@ -193,6 +204,7 @@ def parse_tencent(payload: object, key: str) -> Trend:
         minutes=minutes,
         trade_date=trade_date,
         source="tencent",
+        average_prices=averages,
     )
 
 

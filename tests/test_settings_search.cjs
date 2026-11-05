@@ -39,6 +39,7 @@ function setup() {
     document: {
       body: { dataset: { token: 'test-token' } },
       getElementById: el,
+      querySelectorAll: () => [],
       createElement: () => new Element(),
       addEventListener() {},
     },
