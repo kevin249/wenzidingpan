@@ -8,6 +8,7 @@ build/
 *.egg-info/
 .DS_Store
 logs/mcp_connection.log
+logs/crash.log
 
 # WorkBuddy 会话内部记忆（不入库）
 .workbuddy/

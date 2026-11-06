@@ -11,6 +11,8 @@ from PySide6.QtWidgets import QApplication, QSystemTrayIcon
 
 from . import desktop, kline, mcp_bs, providers
 from .config import Config, Store
+from .crashlog import install_crash_log
+from .gui_gc import GuiGarbageCollector
 from .hotkey import DEFAULT_WINDOW_TOGGLE_HOTKEY, WindowsGlobalHotkey
 from .local_bs import LocalBsNotifier
 from .mcp_depth import DepthSnapshot, McpDepthPoller
@@ -45,6 +47,7 @@ class WidgetApp:
     def __init__(self, argv: list[str] | None = None, store: Store | None = None) -> None:
         desktop.apply_qt_platform()
         self.qt = QApplication(argv if argv is not None else sys.argv)
+        self._gui_gc = GuiGarbageCollector(self.qt)
         self.qt.setApplicationName("stock-ticker-widget")
         self.qt.setDesktopFileName("stock-ticker-widget")
         self.qt.setQuitOnLastWindowClosed(False)
@@ -419,4 +422,7 @@ class WidgetApp:
 
 
 def main() -> int:
+    crash_log = install_crash_log()
+    if crash_log is not None:
+        print(f"崩溃日志：{crash_log}", flush=True)
     return WidgetApp().run()
