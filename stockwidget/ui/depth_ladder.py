@@ -51,6 +51,7 @@ from ..mcp_depth import (
 from .theme import region_text_color
 from . import tdw_overlay
 from .price_scale import PriceScale
+from .depth_layout import depth_rows
 from .sizing import SizedWidget
 from .sparkline import ANNOTATION_COLOR
 from .sparkline import BUY_COLOR as BS_BUY_COLOR
@@ -542,15 +543,6 @@ class DepthLadder(SizedWidget):
         price_rect, percent_rect = self._price_blocks(self._layout())
         return price_rect.contains(position) or percent_rect.contains(position)
 
-    def _book_mid_price(self, levels) -> float | None:
-        if self._price is not None and self._price > 0:
-            return self._price
-        bids = [row.price for row in levels if row.side == "bid" and row.price > 0]
-        asks = [row.price for row in levels if row.side == "ask" and row.price > 0]
-        if bids and asks:
-            return (max(bids) + min(asks)) / 2.0
-        return max(bids) if bids else min(asks) if asks else None
-
     # ------------------------------------------------------------ 绘制：盘口
 
     def _paint_color(self, normal: QColor, alpha: int | None = None) -> QColor:
@@ -576,33 +568,13 @@ class DepthLadder(SizedWidget):
         if snapshot is None or not snapshot.available or not snapshot.levels:
             return
 
-        levels = [row for row in snapshot.levels if row.price > 0 and row.volume > 0]
-        if not levels:
-            return
-        mid_price = self._book_mid_price(levels)
-        if mid_price is None or mid_price <= 0:
-            return
-
         span = abs(layout.depth_edge - layout.axis_x)
         if span < 2:
             return
 
-        center_y = self.height() / 2.0
         top = INNER_PAD
         bottom = float(self.height()) - INNER_PAD
-
-        asks = sorted((row for row in levels if row.side == "ask" and row.price >= mid_price),
-                      key=lambda row: row.price)
-        bids = sorted((row for row in levels if row.side == "bid" and row.price <= mid_price),
-                      key=lambda row: row.price, reverse=True)
-
-        def distributed_y(index, count, upper):
-            near = center_y - LEVEL_GAP if upper else center_y + LEVEL_GAP
-            far = top if upper else bottom
-            return (near + far) / 2 if count <= 1 else near + (far - near) * index / (count - 1)
-
-        rows = [(distributed_y(i, len(side), upper), level)
-                for side, upper in ((asks, True), (bids, False)) for i, level in enumerate(side)]
+        rows = depth_rows(snapshot.levels, top, bottom, center_gap=LEVEL_GAP)
         if not rows:
             return
         maximum = max(level.volume for _, level in rows)

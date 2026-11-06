@@ -142,6 +142,59 @@ def test_outside_reference_lines_do_not_expand_chart_or_leak_into_tdw(app, card)
     assert widget.grab().toImage() != baseline
 
 
+@pytest.mark.parametrize("card", [False, True])
+@pytest.mark.parametrize("size", [(86, 64), (500, 240)])
+def test_high_low_labels_remain_in_opposite_corners_with_book_and_tdw(app, monkeypatch, card, size):
+    from PySide6.QtGui import QPainter
+
+    widget = Sparkline()
+    widget.resize(*size)
+    widget.set_card_style(card)
+    widget.set_series([442, 443], realtime_bars=[
+        Bar("2026-11-06 09:30:01", 442, 444.38, 440.27, 443, 100),
+    ])
+    widget.set_depth(DepthSnapshot("603986", available=True, full_depth=True, levels=(
+        DepthLevel("bid", 300, 200), DepthLevel("ask", 500, 100),
+    )))
+    widget.set_tdw_power([.5, 3.5], show_levels=True)
+    widget.set_annotations(None, [], show_signals=True, show_open_line=False,
+                           show_high_low=True, show_fill=False, grayscale=False)
+    labels = []
+    original = QPainter.drawText
+
+    def record(self, *args):
+        if args[-1] in {"444.38", "440.27"}:
+            labels.append(args)
+        return original(self, *args)
+
+    monkeypatch.setattr(QPainter, "drawText", record)
+    widget.grab()
+    high, low = labels[-2:]
+    assert high[-1] == "444.38" and low[-1] == "440.27"
+    assert high[1] & Qt.AlignLeft and high[1] & Qt.AlignTop
+    assert low[1] & Qt.AlignRight and low[1] & Qt.AlignBottom
+    assert high[0].top() == 0
+    assert high[0].bottom() <= low[0].top()
+    assert low[0].bottom() <= size[1]
+    labels.clear()
+    widget.set_annotation_options(show_signals=True, show_open_line=False,
+                                  show_high_low=False, show_fill=False, grayscale=False)
+    widget.grab()
+    assert not labels
+
+
+def test_first_candle_already_has_high_low_labels(app, monkeypatch):
+    from PySide6.QtGui import QPainter
+
+    widget = Sparkline()
+    widget.resize(300, 150)
+    widget.set_series([441], realtime_bars=[Bar("2026-11-06 09:30:01", 440, 442, 439, 441, 100)])
+    labels = []
+    monkeypatch.setattr(QPainter, "drawText", lambda self, *args: labels.append(args[-1]))
+    widget.grab()
+    assert "442.00" in labels and "439.00" in labels
+
+
 def _line_extent(image, x: int, color: QColor):
     """某一列上属于该颜色的像素跨度。"""
     rows = [
