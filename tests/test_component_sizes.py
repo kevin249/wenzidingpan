@@ -111,6 +111,8 @@ def drag_to_width(window, width):
         QMouseEvent.MouseButtonRelease, QPointF(grip.rect().center()), QPointF(target),
         Qt.LeftButton, Qt.NoButton, Qt.NoModifier,
     ))
+    # Window geometry is updated after the native grip callbacks return.
+    QApplication.processEvents()
     window.flush_bounds()
 
 

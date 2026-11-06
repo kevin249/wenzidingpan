@@ -316,6 +316,7 @@ class TickerWindow(QWidget):
         self._manual_size = False
         self._drag_start_size = QSize()
         self._drag_start_scale = 1.0
+        self._pending_card_scale: float | None = None
         # 手动外框下藏起标题栏时真正减掉的高度，开回来时原样加回去；同时记下
         # 当时的 sizeHint（藏着期间改了字号按它等比换算）和减完后的外框高度
         # （外框被任何路径改过，这份记账即作废）。
@@ -375,9 +376,11 @@ class TickerWindow(QWidget):
         # 缩放柄直接悬浮在主窗口右下角，不再用 footer 占据整条底部高度。
         # 视觉上默认透明，鼠标进入 20x20 热区才出现三条斜线。
         self.grip = ResizeGrip(self)
-        self.grip.drag_started.connect(self._on_grip_drag_started)
-        self.grip.dragged.connect(self._on_grip_dragged)
-        self.grip.drag_finished.connect(self._on_grip_drag_finished)
+        # Resizing also moves this grip and rebuilds its opacity-effect surface.
+        # Finish the grip's native mouse callback before changing that surface.
+        self.grip.drag_started.connect(self._on_grip_drag_started, Qt.QueuedConnection)
+        self.grip.dragged.connect(self._on_grip_dragged, Qt.QueuedConnection)
+        self.grip.drag_finished.connect(self._on_grip_drag_finished, Qt.QueuedConnection)
         self.grip.hide()
 
         layout = QVBoxLayout(self)
@@ -461,6 +464,8 @@ class TickerWindow(QWidget):
         previous = self._config
         theme_changed = previous.display_theme != config.display_theme
         if theme_changed:
+            self._pending_card_scale = None
+            self._scale_timer.stop()
             # 几何 profile 虽然由 app 最后 restore，但布局重算发生在它之前。
             # 先切换到目标主题自己的缩放/手动尺寸状态，避免拿旧主题 scale 算一遍字体。
             if config.bounds is None:
@@ -605,6 +610,11 @@ class TickerWindow(QWidget):
 
     def paintEvent(self, event) -> None:  # noqa: N802 - Qt 命名
         painter = QPainter(self)
+        # SourceOver with alpha zero cannot erase the previous background. Clear
+        # the backing store explicitly, including corners exposed by resizing.
+        painter.setCompositionMode(QPainter.CompositionMode_Source)
+        painter.fillRect(self.rect(), Qt.transparent)
+        painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
         painter.setRenderHint(QPainter.Antialiasing)
         path = QPainterPath()
         path.addRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 12, 12)
@@ -1079,6 +1089,7 @@ class TickerWindow(QWidget):
         """记录本次手势的外框与比例，配置重排后的实际尺寸就是新基准。"""
         self._drag_start_size = QSize(size)
         self._drag_start_scale = self._scale
+        self._pending_card_scale = None
         self._manual_size = True
 
     def _on_grip_dragged(self, size: QSize) -> None:
@@ -1094,15 +1105,28 @@ class TickerWindow(QWidget):
         # 只按本次高度变化缩放。自然高度随字号、组件宽高、换行变化，不能拿它
         # 反推比例，否则只改宽度也会放大文字，往返调整还会丢掉原来的字号。
         scale = _clamp(self._drag_start_scale * size.height() / start_height, 0.6, 3.0)
+        if self._config.display_theme == "theme3":
+            # Keep the active font/config stable while the large TDW card is
+            # being resized and receiving quotes. Apply its final scale once
+            # after release, outside the grip's native event handler.
+            self._pending_card_scale = scale
+            return
         if abs(scale - self._scale) > 1e-9:
             self._scale = scale
             self._scale_timer.start()
 
     def _on_grip_drag_finished(self) -> None:
-        if self._scale_timer.isActive():
+        pending_scale = self._pending_card_scale
+        self._pending_card_scale = None
+        card_scale_changed = pending_scale is not None and abs(pending_scale - self._scale) > 1e-9
+        if card_scale_changed:
+            self._scale = pending_scale
+        if self._scale_timer.isActive() or card_scale_changed:
             self._scale_timer.stop()
             self._apply_scale()
         self._drag_start_size = QSize()
+        self._save_timer.start()
+        self._schedule_layout_metrics()
 
     def resize_from_settings(self, dimensions: dict) -> None:
         """数字输入与右下角拖拽走同一条缩放路径，位置不变，0 保持当前轴。"""
@@ -1119,8 +1143,6 @@ class TickerWindow(QWidget):
             dimensions.get("width", 0) or self.width(),
             dimensions.get("height", 0) or self.height(),
         ))
-        self._scale_timer.stop()
-        self._apply_scale()
         self._on_grip_drag_finished()
         self.flush_bounds()
         self._schedule_layout_metrics()
