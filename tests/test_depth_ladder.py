@@ -285,12 +285,57 @@ def test_live_chart_quote_movement_and_short_data_keep_scale(app, mode):
     widget.set_quote(107.0, 7.0, QColor(220, 224, 234))
     mapper = widget._chart_values()[-1]
     baseline = mapper(101.0) - mapper(100.0)
+    original_y = mapper(100.0)
     for price in [100.0, 107.0] * 15:
         widget.set_quote(price, None, QColor(220, 224, 234))
         widget.set_intraday(Trend(prices=[99.99, 100.01], prev_close=100.0))
         mapper = widget._chart_values()[-1]
         assert mapper(101.0) - mapper(100.0) == pytest.approx(baseline)
-        assert mapper(price) == pytest.approx(widget.height() / 2.0)
+        assert mapper(100.0) == pytest.approx(original_y)
+
+
+@pytest.mark.parametrize("recent", [False, True])
+def test_intraday_scale_uses_candle_wicks_not_quote_or_session_extremes(app, recent):
+    widget = _widget()
+    widget.set_quote(180.0, None, QColor(220, 224, 234))
+    bars = [Bar("2026-11-06 09:30:01", 100, 102, 99, 101, 100)]
+    widget.set_intraday(Trend(
+        prices=[100, 101], realtime_bars=bars, recent_view=recent,
+        prev_close=60, open_price=50, low_price=30, high_price=200,
+    ))
+    widget.set_depth(DepthSnapshot("600000", available=True, levels=(
+        DepthLevel("bid", 1, 1000), DepthLevel("ask", 500, 1000),
+    )))
+    mapper = widget._chart_values()[-1]
+    assert 0 < mapper(102) < widget.height() * .1
+    assert widget.height() * .9 < mapper(99) < widget.height()
+    assert mapper(100.5) == pytest.approx(widget.height() / 2)
+
+
+def test_daily_scale_fits_candles_even_with_distant_current_quote(app):
+    widget = _widget()
+    widget.set_chart_mode(MODE_DAILY)
+    widget.set_kline(_kline())
+    widget.set_quote(1000, None, QColor(220, 224, 234))
+    mapper = widget._chart_values()[-1]
+    high = max(bar.high for bar in widget._kline.bars)
+    low = min(bar.low for bar in widget._kline.bars)
+    assert 0 < mapper(high) < widget.height() * .1
+    assert widget.height() * .9 < mapper(low) < widget.height()
+
+
+@pytest.mark.parametrize("side", ["left", "right"])
+def test_chart_guide_tracks_price_while_book_guide_remains_centered(app, side):
+    widget = _widget(theme2_side=side)
+    widget.set_intraday(Trend(prices=[100, 101, 102]))
+    widget.set_expanded(True)
+    image = _render(widget)
+    layout = widget._layout()
+    mapper = widget._chart_values()[-1]
+    chart_band = (layout.kline_left + 5, layout.kline_right - 5)
+    book_band = sorted((layout.depth_edge, layout.axis_x))
+    assert _guide_ratio(image, round(mapper(100)), *chart_band) > .4
+    assert _guide_ratio(image, widget.height() // 2, book_band[0] + 3, book_band[1] - 3) > .4
 
 
 def _trend() -> Trend:

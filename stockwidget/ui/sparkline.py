@@ -437,18 +437,13 @@ class Sparkline(SizedWidget):
             indicator_height = min(44, total_height // 3) if tdw_enabled and total_height >= 72 else 0
         height = total_height - indicator_height
 
-        # 纵向范围要把昨收算进去，基准线才不会跑到图外。
+        # Only plotted prices and candle wicks determine the price window.
         price_low, price_high = min(points), max(points)
         if self._realtime_bars:
             price_low = min(price_low, min(bar.low for bar in self._realtime_bars))
             price_high = max(price_high, max(bar.high for bar in self._realtime_bars))
-        low, high = price_low, price_high
-        if self._prev_close is not None and not self._recent_view:
-            low, high = min(low, self._prev_close), max(high, self._prev_close)
-        if self._show_open_line and self._open_price is not None and not self._recent_view:
-            low, high = min(low, self._open_price), max(high, self._open_price)
         scale = PriceScale() if self._recent_view else self._price_scale
-        low, high = scale.bounds(low, high)
+        low, high = scale.bounds(price_low, price_high)
         span = high - low
         label_height = QFontMetrics(self._annotation_font).height()
         price_inset = label_height if self._show_high_low and height >= 4 * label_height else 0
@@ -579,7 +574,8 @@ class Sparkline(SizedWidget):
             pen.setDashPattern([4, 3])
             painter.setPen(pen)
             y = y_of(self._prev_close)
-            painter.drawLine(QPointF(chart_left, y), QPointF(chart_right, y))
+            if 0 <= y < height:
+                painter.drawLine(QPointF(chart_left, y), QPointF(chart_right, y))
 
         # 开盘价使用区别于昨收的点虚线。
         if self._show_open_line and self._open_price is not None:
@@ -587,7 +583,8 @@ class Sparkline(SizedWidget):
                 QPen(self._paint_color(OPEN_LINE_COLOR, BASELINE_ALPHA), 1, Qt.DotLine)
             )
             y = y_of(self._open_price)
-            painter.drawLine(QPointF(chart_left, y), QPointF(chart_right, y))
+            if 0 <= y < height:
+                painter.drawLine(QPointF(chart_left, y), QPointF(chart_right, y))
 
         if not self._card_style and self._show_signals and self._tdw_power:
             painter.save()

@@ -9,8 +9,8 @@
   价格轴直接压在行外沿，空出来的宽度全给图表栏；
 * 点击价格列展开后，盘口的**另一侧**多出一栏：贴外沿的成交量轴 + 中间的分时
   曲线或日K 蜡烛；
-* 三栏共用同一条价格刻度，且当前价恒定落在控件垂直中点上，所以那条虚线在
-  折叠与展开两种状态下都恰好是整行的水平中心；
+* 图表纵轴只取图中价格与蜡烛高低值；独立盘口仍按档位顺序排列，中线固定。
+  展开后的图表当前价线按图表纵轴定位，不强制居中；
 * 股价与涨跌幅**水平居中在虚线线段的中点**，一上一下夹着那条线（用户口径：
   「显示到虚线中间」）；虚线本身那一行归红色 ``ERROR`` 角标用，一旦千档失败、
   角标出现，两块文字会自动再让开一点，所以价格永远在 ``ERROR`` 之上。
@@ -712,7 +712,7 @@ class DepthLadder(SizedWidget):
             QRectF(center_x - percent_width / 2.0, center_y + gap, percent_width, percent_height),
         )
 
-    def _draw_price_and_guide(self, painter: QPainter, layout: _Layout) -> None:
+    def _draw_price_and_guide(self, painter: QPainter, layout: _Layout, y_of=None) -> None:
         """股价在虚线上方、涨跌幅在下方，两块都以虚线线段的中点为水平中心。
 
         中线那一行本身留给红色 ``ERROR`` 角标（千档失败时出现），所以价格恒在
@@ -726,7 +726,7 @@ class DepthLadder(SizedWidget):
         guide_start, guide_end = self._guide_span(layout)
         align = Qt.AlignCenter
 
-        # 当前价虚线：从价格列内侧一路指到对侧外沿，本身就是整行的水平中心。
+        # The book keeps its centered guide; the chart uses its own price scale.
         guide = self._paint_color(GUIDE_COLOR, GUIDE_ALPHA)
         if guide_end - guide_start > 2.0:
             # 关掉抗锯齿单独画这根线：1px 虚线落在半像素上会被均摊成两行 32% 的
@@ -736,11 +736,17 @@ class DepthLadder(SizedWidget):
             pen = QPen(guide, 1.0, Qt.DashLine)
             pen.setDashPattern([4, 3])
             painter.setPen(pen)
-            guide_y = round(center_y) + 0.5
-            painter.drawLine(
-                QPointF(round(guide_start), guide_y),
-                QPointF(round(guide_end), guide_y),
-            )
+            if y_of is None:
+                segments = [(guide_start, guide_end, center_y)]
+            else:
+                segments = [(layout.depth_edge, layout.axis_x, center_y)]
+                if self._price is not None:
+                    chart_y = y_of(self._price)
+                    if INNER_PAD <= chart_y <= self.height() - INNER_PAD:
+                        segments.append((layout.chart_left, layout.chart_right, chart_y))
+            for start, end, y in segments:
+                guide_y = round(y) + 0.5
+                painter.drawLine(QPointF(round(start), guide_y), QPointF(round(end), guide_y))
             painter.restore()
 
         painter.setBrush(guide)
@@ -798,19 +804,16 @@ class DepthLadder(SizedWidget):
     # ------------------------------------------------------------ 绘制：图表
 
     def _price_mapper(self, values: list[float]):
-        """把价格映射到纵坐标；当前价恒定落在控件垂直中点上。"""
+        """Fit the chart prices independently of quotes and the order book."""
         top = INNER_PAD
         bottom = float(self.height()) - INNER_PAD
         inner = max(1.0, bottom - top)
-        center_y = float(self.height()) / 2.0
         low, high = min(values), max(values)
-        center = self._price if self._price and self._price > 0 else (low + high) / 2.0
         scale = PriceScale() if self._chart_mode == MODE_INTRADAY and self._recent_view() else self._price_scale
-        axis_low, axis_high = scale.bounds(low, high, center=center)
-        half = (axis_high - axis_low) / 2.0
+        axis_low, axis_high = scale.bounds(low, high)
 
         def y_of(value: float) -> float:
-            return center_y - (value - center) / (2.0 * half) * inner
+            return bottom - (value - axis_low) / (axis_high - axis_low) * inner
 
         return y_of
 
@@ -1062,10 +1065,10 @@ class DepthLadder(SizedWidget):
             values += [bar.high for bar in bars]
             values += [bar.low for bar in bars]
         if self._chart_mode == MODE_INTRADAY:
-            if self._prev_close and not self._recent_view():
-                values.append(self._prev_close)
             if self._trend and self._trend.realtime_bars:
-                values.extend(p for p in (self._trend.low_price, self._trend.high_price) if p is not None)
+                # Use the plotted candle wicks, not session-level quote metadata.
+                values.extend(bar.low for bar in self._trend.realtime_bars)
+                values.extend(bar.high for bar in self._trend.realtime_bars)
         y_of = self._price_mapper(values) if values else None
         return prices, volumes, levels, bars, y_of
 
@@ -1122,6 +1125,7 @@ class DepthLadder(SizedWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         layout = self._layout()
+        chart_mapper = None
 
         if self._expanded and self._component_visible("chart"):
             self._chart_rect = QRectF(
@@ -1132,6 +1136,7 @@ class DepthLadder(SizedWidget):
             )
             # 同一帧只更新一次缩放，成交量与曲线/蜡烛共用完全相同的价格映射。
             chart_values = self._chart_values()
+            chart_mapper = chart_values[-1]
             self._draw_chart_background(painter, layout, chart_values)
         else:
             self._chart_rect = QRectF()
@@ -1141,7 +1146,7 @@ class DepthLadder(SizedWidget):
         if self._expanded and self._component_visible("chart"):
             self._draw_chart_foreground(painter, layout, chart_values)
 
-        self._draw_price_and_guide(painter, layout)
+        self._draw_price_and_guide(painter, layout, chart_mapper)
 
     # ------------------------------------------------------------ 交互
 

@@ -14,6 +14,7 @@ from PySide6.QtGui import QColor, QImage, QRegion
 from PySide6.QtWidgets import QApplication, QWidget
 
 from stockwidget.mcp_depth import DepthLevel, DepthSnapshot
+from stockwidget.kline import Bar
 from stockwidget.ui.sparkline import (
     BUY_COLOR,
     DEPTH_BID_COLOR,
@@ -87,6 +88,58 @@ def test_flat_and_one_tick_keep_historical_curve_at_same_height(app):
         assert extent is not None
         heights.append(extent)
     assert len(set(heights)) == 1
+
+
+@pytest.mark.parametrize("card", [False, True])
+@pytest.mark.parametrize("recent", [False, True])
+def test_price_window_fits_candles_independently_of_book_and_reference_prices(app, monkeypatch, card, recent):
+    widget = Sparkline()
+    widget.resize(500, 240)
+    widget.set_card_style(card)
+    widget.set_display_options(show_tdw=False)
+    widget.set_series([100, 101], realtime_bars=[
+        Bar("2026-11-06 09:30:01", 100, 102, 99, 101, 100),
+    ], recent=recent)
+    widget.set_prev_close(60)
+    widget.set_annotations(180, [], show_signals=False, show_open_line=True,
+                           show_high_low=False, show_fill=False, grayscale=False)
+    mappings = []
+
+    def capture(_painter, _width, height, y_of, _book_width):
+        mappings.append((height, y_of(99), y_of(102)))
+
+    monkeypatch.setattr(widget, "_draw_depth", capture)
+    widget.grab()
+    widget.set_depth(DepthSnapshot("600000", available=True, levels=(
+        DepthLevel("bid", 1, 1000), DepthLevel("ask", 500, 1000),
+    )))
+    widget.set_prev_close(200)
+    widget.set_annotations(20, [], show_signals=False, show_open_line=True,
+                           show_high_low=False, show_fill=False, grayscale=False)
+    widget.grab()
+    assert len(mappings) == 2
+    assert mappings[0] == pytest.approx(mappings[1])
+    height, low_y, high_y = mappings[0]
+    assert 0 < high_y < height * .1
+    assert height * .9 < low_y < height
+
+
+@pytest.mark.parametrize("card", [False, True])
+def test_outside_reference_lines_do_not_expand_chart_or_leak_into_tdw(app, card):
+    widget = Sparkline()
+    widget.resize(500, 240)
+    widget.set_card_style(card)
+    widget.set_series([100, 101, 102])
+    widget.set_annotations(None, [], show_signals=True, show_open_line=True,
+                           show_high_low=False, show_fill=False, grayscale=False)
+    widget.set_tdw_power([], show_levels=True)
+    baseline = widget.grab().toImage()
+    widget.set_prev_close(99.5)
+    widget.set_annotations(99.4, [], show_signals=True, show_open_line=True,
+                           show_high_low=False, show_fill=False, grayscale=False)
+    assert widget.grab().toImage() == baseline
+    widget.set_prev_close(100.5)
+    assert widget.grab().toImage() != baseline
 
 
 def _line_extent(image, x: int, color: QColor):
