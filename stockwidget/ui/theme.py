@@ -87,15 +87,24 @@ def configured_text_color(setting: str, automatic: QColor) -> QColor:
     return QColor(automatic) if setting == "auto" else QColor(setting)
 
 
-def text_color(config: Config, setting: str, automatic: QColor) -> QColor:
+def with_opacity(color: QColor, opacity: float) -> QColor:
+    result = QColor(color)
+    result.setAlphaF(result.alphaF() * min(1.0, max(0.0, opacity)))
+    return result
+
+
+def region_text_color(config: Config, color: QColor, region: str) -> QColor:
+    return with_opacity(color, config.text_opacities.get(region, 1.0))
+
+
+def text_color(config: Config, setting: str, automatic: QColor, *, region: str = "") -> QColor:
     """文字字段的最终颜色，是 :func:`configured_text_color` 的灰度感知版。
 
     灰度显示时**连用户挑的固定色也一起变灰**：否则设置在「股票名称颜色」里的
     彩色会漏出灰度模式，整个组件就不是「一个灰」了。
     """
-    if config.grayscale:
-        return grayscale_color(config.grayscale_level)
-    return configured_text_color(setting, automatic)
+    color = grayscale_color(config.grayscale_level) if config.grayscale else configured_text_color(setting, automatic)
+    return region_text_color(config, color, region)
 
 
 def make_font(

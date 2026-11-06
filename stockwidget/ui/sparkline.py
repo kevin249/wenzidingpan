@@ -23,7 +23,7 @@ from ..mcp_depth import DEPTH_FULL, DepthSnapshot
 from . import tdw_overlay
 from .price_scale import PriceScale
 from .sizing import SizedWidget
-from .theme import display_color
+from .theme import display_color, with_opacity
 from .time_axis import SESSION_MINUTES, intraday_fraction, trading_minute
 
 FILL_ALPHA = 38  # 面积填充的透明度，压得比曲线淡很多
@@ -46,6 +46,11 @@ class Sparkline(SizedWidget):
         self._series: list[float] = []  # 当日分时，空则用采样点
         self._minutes: list[str] = []
         self._card_style = False
+        self._show_card_tdw = True
+        self._text_opacities = {}
+        self._depth_width = 0
+        self._chart_line_width = 1.4
+        self._depth_line_width = .8
         self._tdw_label_color = QColor("#f4f4f1")
         self._book_scheme = "cn"
         self._averages: list[tuple[str, float]] = []
@@ -76,6 +81,15 @@ class Sparkline(SizedWidget):
         self.setAttribute(Qt.WA_TransparentForMouseEvents)
 
     # ------------------------------------------------------------ 尺寸
+
+    def set_display_options(self, *, show_tdw=True, depth_width=0, text_opacities=None,
+                            chart_line_width=1.4, depth_line_width=.8):
+        self._show_card_tdw = show_tdw
+        self._depth_width = depth_width
+        self._text_opacities = dict(text_opacities or {})
+        self._chart_line_width = chart_line_width
+        self._depth_line_width = depth_line_width
+        self.update()
 
     def set_preferred_height(self, height: int) -> None:
         """曲线本身没有固有尺寸，想要多高由外层告诉它。
@@ -269,12 +283,18 @@ class Sparkline(SizedWidget):
     def _side_profile_width(self, width: int) -> float:
         """成交量与挂单使用完全相同的左右侧栏宽度。"""
         if self._card_style:
-            return width / 3
+            return min(self._depth_width or width * .55, width * .65)
         automatic = min(240.0, max(24.0, width * 0.28))
         target = float(self._configured_profile_width) if self._configured_profile_width > 0 else automatic
         # 至少给中间 K 线保留 80px，窗口太窄时两侧等比例收紧。
         maximum = max(24.0, (width - 80.0) / 2.0)
         return min(target, maximum)
+
+    def _book_width(self, width):
+        return min(self._depth_width, max(0, width * .65)) if self._depth_width else self._side_profile_width(width)
+
+    def _text_color(self, normal, region="chart", alpha=None):
+        return with_opacity(self._paint_color(normal, alpha), self._text_opacities.get(region, 1.0))
 
     def _draw_traded_volume(
         self,
@@ -307,7 +327,7 @@ class Sparkline(SizedWidget):
             painter.fillRect(QRectF(0.0, row - 0.7, bar_width, 1.4), color)
 
         painter.setFont(self._annotation_font)
-        painter.setPen(self._paint_color(ANNOTATION_COLOR))
+        painter.setPen(self._text_color(ANNOTATION_COLOR))
         painter.drawText(
             QRectF(2, 1, max(0.0, profile_width - 4), max(12, height / 4)),
             Qt.AlignLeft | Qt.AlignTop,
@@ -328,7 +348,7 @@ class Sparkline(SizedWidget):
             return
 
         # 只画当前 K 线价格窗口内可见的挂单；千档价格绝不能反向撑大 K 线 Y 轴。
-        buckets: dict[tuple[int, str], float] = {}
+        visible = []
         best_ask, best_bid = float("inf"), 0.0
         for level in snapshot.levels:
             if level.price <= 0 or level.volume <= 0:
@@ -339,65 +359,36 @@ class Sparkline(SizedWidget):
                 best_bid = max(best_bid, level.price)
             else:
                 continue
-            y = round(y_of(level.price))
+            y = y_of(level.price)
             if 0 <= y < height:
-                key = (y, level.side)
-                buckets[key] = buckets.get(key, 0.0) + level.volume
-        if not buckets:
+                visible.append((y, level))
+        if not visible:
             return
 
-        mid = None
-        spread_pixels = 0.0
-        if 0 < best_bid < best_ask < float("inf"):
-            ask_y, bid_y = y_of(best_ask), y_of(best_bid)
-            mid = round((ask_y + bid_y) / 2)
-            spread_pixels = bid_y - ask_y
-        occupied_rows = {y for y, side in buckets}
-        dense = len(occupied_rows) > height / 2
-        if dense:
-            # One 2 px bar + 1 px of space per price band. Never pool bid and ask.
-            bands = {}
-            for (y, side), volume in buckets.items():
-                if mid is None:
-                    center = 3 * (y // 3) + 1
-                else:
-                    offset = 2 + 3 * (max(0, abs(y - mid) - 1) // 3)
-                    center = mid - offset if side == "ask" else mid + offset
-                key = (max(0, min(height - 1, center)), side)
-                bands[key] = bands.get(key, 0.0) + volume
-            buckets = bands
-        maximum = max(buckets.values())
+        maximum = max(level.volume for _, level in visible)
         max_width = min(profile_width, width)
         right = float(width - 1)
-        # Draw the book with solid pixels; antialiased translucent rows merge into the backdrop.
-        alpha = 255 if self._grayscale else 215
         painter.save()
-        painter.setRenderHint(QPainter.Antialiasing, False)
-        for (row, side), volume in buckets.items():
-            bar_width = max(1.0, max_width * volume / maximum)
-            # Use two pixels for isolated levels and keep dense price rows distinct.
-            thickness = 1 if not dense and (row - 1 in occupied_rows or row + 1 in occupied_rows) else 2
-            top = row - thickness // 2
-            if (row, "ask") in buckets and (row, "bid") in buckets:
-                # Split a shared screen row around its center so both sides survive.
-                thickness = 1
-                top = row - 1 if side == "ask" else row
+        painter.setClipRect(QRectF(max(0, right - max_width), 0, max_width + 1, height), Qt.IntersectClip)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        # Each source price keeps its own floating-point Y and individual size.
+        # Never sum neighboring prices merely because they share a screen pixel.
+        # Thin strokes leave room between levels when the price range permits it.
+        for y, level in sorted(visible, key=lambda item: item[1].volume, reverse=True):
+            bar_width = max(1.0, max_width * level.volume / maximum)
             red_side = "ask" if self._card_style and self._book_scheme == "us" else "bid"
-            color = self._paint_color(DEPTH_BID_COLOR if side == red_side else DEPTH_ASK_COLOR, alpha)
-            painter.fillRect(QRectF(right - bar_width, top, bar_width, thickness), color)
+            color = self._paint_color(DEPTH_BID_COLOR if level.side == red_side else DEPTH_ASK_COLOR,
+                                      255 if self._grayscale else 215)
+            painter.setPen(QPen(color, self._depth_line_width, Qt.SolidLine, Qt.FlatCap))
+            painter.drawLine(QPointF(right - bar_width, y), QPointF(right, y))
 
-        if not self._card_style and mid is not None and 0 <= mid < height:
-            left = max(0.0, right - max_width)
-            ink = self._paint_color(ANNOTATION_COLOR)
-            if dense or spread_pixels >= 4:
-                painter.setPen(QPen(ink, 1, Qt.DotLine))
-                painter.drawLine(QPointF(left, mid), QPointF(right, mid))
-            # End markers remain readable when a one-tick spread is subpixel.
-            painter.setPen(Qt.NoPen)
-            painter.setBrush(ink)
-            for x, dx in ((left, -4.0), (right - 4.0, 4.0)):
-                painter.drawPolygon(QPolygonF([QPointF(x, mid), QPointF(x + dx, mid - 3),
-                                               QPointF(x + dx, mid + 3)]))
+        if 0 < best_bid < best_ask < float("inf"):
+            mid = (y_of(best_ask) + y_of(best_bid)) / 2
+            if 0 <= mid < height:
+                painter.setPen(QPen(self._paint_color(ANNOTATION_COLOR), 1, Qt.DotLine))
+                painter.drawLine(QPointF(max(0, right - max_width), mid), QPointF(right, mid))
+        painter.restore()
+        painter.save()
         status = []
         if snapshot.depth_mode != DEPTH_FULL and not snapshot.full_depth:
             status.append("降级")
@@ -405,7 +396,7 @@ class Sparkline(SizedWidget):
             status.append("延迟")
         if status:
             painter.setFont(self._annotation_font)
-            painter.setPen(self._paint_color(ANNOTATION_COLOR))
+            painter.setPen(self._text_color(ANNOTATION_COLOR))
             painter.drawText(QRectF(width - max_width, 1, max_width, height),
                              Qt.AlignRight | Qt.AlignTop, "·".join(status))
         painter.restore()
@@ -413,12 +404,20 @@ class Sparkline(SizedWidget):
     def paintEvent(self, event) -> None:  # noqa: N802 - Qt 命名
         points = self.points
         if len(points) < 2:
+            if self._card_style and self._show_card_tdw:
+                height = min(self.height() // 2, max(8, round(self.height() * .28)))
+                with QPainter(self) as painter:
+                    painter.translate(0, self.height() - height)
+                    painter.setFont(self._annotation_font)
+                    tdw_overlay.draw_power_panel(painter, [], [], lambda _: 0,
+                                                 self.width() - 1, self.width(), height,
+                                                 self._paint_color, self._text_color(self._tdw_label_color, "tdw"))
             return
 
         width = self.width() or 1
         total_height = self.height() or 1
         metrics = QFontMetrics(self._annotation_font)
-        axes = self._card_style and width >= 150 and total_height >= 60
+        axes = self._card_style and width >= 150 and total_height >= max(60, metrics.height() * 4 + 16)
         footer = []
         if axes:
             if self._minutes and total_height >= 115:
@@ -432,7 +431,7 @@ class Sparkline(SizedWidget):
         tdw_enabled = self._show_signals and self._show_tdw_levels
         # 大卡片给动力线独立的纵轴，小卡片保留原有叠加刻度。
         if self._card_style:
-            indicator_height = round(total_height * .28) if total_height >= 55 else 0
+            indicator_height = min(total_height // 2, max(8, round(total_height * .28))) if self._show_card_tdw else 0
         else:
             indicator_height = min(44, total_height // 3) if tdw_enabled and total_height >= 72 else 0
         height = total_height - indicator_height
@@ -459,7 +458,7 @@ class Sparkline(SizedWidget):
         profile_width = self._side_profile_width(width) if self._show_volume_profile else 0.0
         chart_left = profile_width + 2.0 if self._show_volume_profile else 0.0
         has_book = self._show_depth and self._depth and self._depth.available and self._depth.levels
-        book_width = self._side_profile_width(width) if has_book else profile_width
+        book_width = self._book_width(width) if has_book else profile_width
         chart_right = float(width - 1)
         if book_width and not self._card_style:
             chart_right = max(chart_left + 1.0, width - book_width - 6)
@@ -492,7 +491,7 @@ class Sparkline(SizedWidget):
                     continue
                 painter.setPen(QPen(grid_color, .8, Qt.DashLine))
                 painter.drawLine(QPointF(chart_left, y), QPointF(width, y))
-                painter.setPen(curve_color)
+                painter.setPen(self._text_color(self._color))
                 painter.drawText(QRectF(width + 2, y - label_height / 2, self.width() - width - 2,
                                         label_height), Qt.AlignRight | Qt.AlignVCenter, f"{price:.2f}")
 
@@ -517,11 +516,11 @@ class Sparkline(SizedWidget):
                 painter.drawLine(QPointF(x, 1), QPointF(x, height - 1))
                 if indicator_height > label_height + 15:
                     painter.drawLine(QPointF(x, height + label_height + 5), QPointF(x, total_height - 7))
-                painter.setPen(curve_color)
+                painter.setPen(self._text_color(self._color))
                 painter.drawText(QRectF(left, total_height + 2, label_width, label_height),
                                  Qt.AlignCenter, caption)
             if footer:
-                painter.setPen(self._paint_color(self._color, 182))
+                painter.setPen(self._text_color(self._color, alpha=182))
                 footer_rect = QRectF(0, total_height + label_height + 5, self.width(), label_height)
                 painter.drawText(footer_rect, Qt.AlignLeft | Qt.AlignVCenter, footer[0])
                 if len(footer) == 2 and metrics.horizontalAdvance("  ".join(footer)) <= self.width():
@@ -571,18 +570,9 @@ class Sparkline(SizedWidget):
         if self._show_volume_profile:
             self._draw_traded_volume(painter, height, y_of, profile_width)
         if self._show_depth:
-            self._draw_depth(painter, width, height, y_of, profile_width or self._side_profile_width(width))
+            self._draw_depth(painter, width, height, y_of, self._book_width(width))
 
-        if self._card_style and indicator_height:
-            painter.save()
-            painter.translate(0, height)
-            painter.setFont(self._annotation_font)
-            tdw_overlay.draw_power_panel(painter, self._tdw_power,
-                                         self._signals if self._show_signals else [], x_of,
-                                         chart_right, self.width(), indicator_height,
-                                         self._paint_color, self._paint_color(self._tdw_label_color))
-            painter.restore()
-        elif tdw_enabled and not self._card_style:
+        if tdw_enabled and not self._card_style:
             painter.save()
             if indicator_height:
                 painter.translate(0, height)
@@ -612,21 +602,33 @@ class Sparkline(SizedWidget):
             if indicator_height:
                 painter.translate(0, height)
             tdw_overlay.draw_power(painter, self._tdw_power, x_of, indicator_height or height,
-                                   self._paint_color(tdw_overlay.POWER_COLOR, 155))
+                                   self._paint_color(tdw_overlay.POWER_COLOR, 155),
+                                   text_opacity=self._text_opacities.get("tdw", 1.0))
             painter.restore()
-        pen = QPen(curve_color, 1.8 if self._card_style else (1 if self._realtime_bars else 1.4))
+        pen = QPen(curve_color, self._chart_line_width)
         pen.setJoinStyle(Qt.RoundJoin)
         pen.setCapStyle(Qt.RoundCap)
         painter.setPen(pen)
         painter.drawPath(curve)
         if not self._card_style:
-            tdw_overlay.draw_realtime_candles(painter, self._realtime_bars, prefix, x_of, y_of, curve_color)
+            tdw_overlay.draw_realtime_candles(painter, self._realtime_bars, prefix, x_of, y_of, curve_color,
+                                               line_width=self._chart_line_width)
 
         if not self._card_style and self._show_signals and self._tdw_power:
             for index, kind in tdw_overlay.visible_events(self._signals, len(points), x_of):
                 color = self._paint_color(BUY_COLOR if kind.startswith("B") else SELL_COLOR)
                 tdw_overlay.draw_event(painter, x_of(index), y_of(points[index]), kind, height,
                                        width, color, None)
+
+        if self._card_style and indicator_height:
+            painter.save()
+            painter.translate(0, height)
+            painter.setFont(self._annotation_font)
+            tdw_overlay.draw_power_panel(painter, self._tdw_power,
+                                         self._signals if self._show_signals else [], x_of,
+                                         chart_right, self.width(), indicator_height,
+                                         self._paint_color, self._text_color(self._tdw_label_color, "tdw"))
+            painter.restore()
 
         if self._show_high_low:
             painter.setFont(self._annotation_font)
@@ -635,7 +637,7 @@ class Sparkline(SizedWidget):
                 chart_right - chart_left < 2 * painter.fontMetrics().horizontalAdvance(f"{price_high:.2f}") + 8
             ):
                 return
-            painter.setPen(curve_color)
+            painter.setPen(self._text_color(self._color, "high_low"))
             label_x = round(chart_left + 2)
             painter.drawText(label_x, painter.fontMetrics().ascent() + 1, f"{price_high:.2f}")
             painter.drawText(label_x, height - 2, f"{price_low:.2f}")

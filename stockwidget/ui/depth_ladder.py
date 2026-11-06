@@ -48,6 +48,7 @@ from ..mcp_depth import (
     DEPTH_TEN,
     DepthSnapshot,
 )
+from .theme import region_text_color
 from . import tdw_overlay
 from .price_scale import PriceScale
 from .sizing import SizedWidget
@@ -567,6 +568,9 @@ class DepthLadder(SizedWidget):
             alpha=alpha,
         )
 
+    def _text_color(self, normal, region="chart"):
+        return region_text_color(self._config, self._paint_color(normal), region)
+
     def _draw_depth(self, painter: QPainter, layout: _Layout) -> None:
         snapshot = self._depth
         if snapshot is None or not snapshot.available or not snapshot.levels:
@@ -587,50 +591,33 @@ class DepthLadder(SizedWidget):
         top = INNER_PAD
         bottom = float(self.height()) - INNER_PAD
 
-        ask_by_price: dict[float, float] = {}
-        bid_by_price: dict[float, float] = {}
-        for row in levels:
-            if row.side == "ask" and row.price >= mid_price:
-                ask_by_price[row.price] = ask_by_price.get(row.price, 0.0) + row.volume
-            elif row.side == "bid" and row.price <= mid_price:
-                bid_by_price[row.price] = bid_by_price.get(row.price, 0.0) + row.volume
+        asks = sorted((row for row in levels if row.side == "ask" and row.price >= mid_price),
+                      key=lambda row: row.price)
+        bids = sorted((row for row in levels if row.side == "bid" and row.price <= mid_price),
+                      key=lambda row: row.price, reverse=True)
 
-        # 主窗口按档位顺序平均占满上下半区，不按绝对价差压缩。
-        asks = sorted(ask_by_price.items(), key=lambda item: item[0])  # 近 -> 远
-        bids = sorted(bid_by_price.items(), key=lambda item: item[0], reverse=True)  # 近 -> 远
-
-        def distributed_y(index: int, count: int, *, upper: bool) -> int:
+        def distributed_y(index, count, upper):
             near = center_y - LEVEL_GAP if upper else center_y + LEVEL_GAP
             far = top if upper else bottom
-            if count <= 1:
-                return round((near + far) / 2.0)
-            return round(near + (far - near) * index / (count - 1))
+            return (near + far) / 2 if count <= 1 else near + (far - near) * index / (count - 1)
 
-        buckets: dict[tuple[int, str], float] = {}
-        for index, (_price, volume) in enumerate(asks):
-            y = distributed_y(index, len(asks), upper=True)
-            buckets[(y, "ask")] = buckets.get((y, "ask"), 0.0) + volume
-        for index, (_price, volume) in enumerate(bids):
-            y = distributed_y(index, len(bids), upper=False)
-            buckets[(y, "bid")] = buckets.get((y, "bid"), 0.0) + volume
-        if not buckets:
+        rows = [(distributed_y(i, len(side), upper), level)
+                for side, upper in ((asks, True), (bids, False)) for i, level in enumerate(side)]
+        if not rows:
             return
-
-        maximum = max(buckets.values()) or 1.0
+        maximum = max(level.volume for _, level in rows)
         painter.setPen(QPen(self._paint_color(AXIS_COLOR, AXIS_ALPHA), 1.0))
         painter.drawLine(round(layout.axis_x), round(top), round(layout.axis_x), round(bottom))
-
         bid_color, ask_color = book_colors(self._config)
-        for (y, side), volume in buckets.items():
-            length = max(1.0, span * volume / maximum)
-            # 彩色模式下买红卖绿（A 股），灰度模式下两者同灰、只剩上下半区的区别。
-            is_bid = side == "bid"
-            color = self._paint_color(bid_color if is_bid else ask_color, DEPTH_ALPHA)
-            painter.setPen(QPen(color, 2.0))
-            if layout.mirror:
-                painter.drawLine(round(layout.axis_x), y, round(layout.axis_x + length), y)
-            else:
-                painter.drawLine(round(layout.axis_x - length), y, round(layout.axis_x), y)
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        for y, level in sorted(rows, key=lambda item: item[1].volume, reverse=True):
+            length = max(1.0, span * level.volume / maximum)
+            color = self._paint_color(bid_color if level.side == "bid" else ask_color, DEPTH_ALPHA)
+            painter.setPen(QPen(color, self._config.depth_line_width, Qt.SolidLine, Qt.FlatCap))
+            edge = layout.axis_x + length if layout.mirror else layout.axis_x - length
+            painter.drawLine(QPointF(layout.axis_x, y), QPointF(edge, y))
+        painter.restore()
 
     # ------------------------------------------------------------ 绘制：价格与虚线
 
@@ -765,7 +752,7 @@ class DepthLadder(SizedWidget):
             error_metrics = QFontMetricsF(error_font)
             error_width = error_metrics.horizontalAdvance("ERROR") + 6.0
             error_center = (guide_start + guide_end) / 2.0
-            painter.setPen(self._paint_color(ERROR_COLOR))
+            painter.setPen(self._text_color(ERROR_COLOR))
             painter.setFont(error_font)
             painter.drawText(
                 QRectF(
@@ -783,7 +770,7 @@ class DepthLadder(SizedWidget):
         self._price_rect = self._price_hit_rect()
 
         if self._error and self._component_visible("price"):
-            painter.setPen(self._paint_color(MUTED))
+            painter.setPen(self._text_color(MUTED, "price"))
             painter.setFont(
                 make_font(config, pixel_size=max(8, config.stock_percent_font_size))
             )
@@ -793,15 +780,18 @@ class DepthLadder(SizedWidget):
         if self._expanded and self._show_tdw_levels and self._config.grayscale:
             # The quote shares the same gray as the chart. Back only the text glyph area.
             background = QColor(18, 18, 18) if self._config.grayscale_level >= 120 else QColor(244, 244, 244)
-            painter.setBackground(background)
             painter.setBackgroundMode(Qt.OpaqueMode)
         if self._component_visible("price"):
-            painter.setPen(self._paint_color(self._price_color))
+            if self._expanded and self._show_tdw_levels and config.grayscale:
+                painter.setBackground(region_text_color(config, background, "price"))
+            painter.setPen(self._text_color(self._price_color, "price"))
             painter.setFont(price_font)
             painter.drawText(price_rect, align, price_text)
 
         if self._component_visible("percent"):
-            painter.setPen(self._paint_color(self._percent_color))
+            if self._expanded and self._show_tdw_levels and config.grayscale:
+                painter.setBackground(region_text_color(config, background, "percent"))
+            painter.setPen(self._text_color(self._percent_color, "percent"))
             painter.setFont(self._percent_font())
             painter.drawText(percent_rect, align, percent_text)
 
@@ -861,7 +851,7 @@ class DepthLadder(SizedWidget):
         )
 
         painter.setFont(self._popup_font())
-        painter.setPen(self._paint_color(ANNOTATION_COLOR))
+        painter.setPen(self._text_color(ANNOTATION_COLOR))
         label_width = max(0.0, layout.volume_span - 2)
         painter.drawText(
             QRectF(
@@ -953,25 +943,27 @@ class DepthLadder(SizedWidget):
 
         if self._show_signals and self._minute_power:
             tdw_overlay.draw_power(painter, self._minute_power, x_of, self.height(),
-                                   self._paint_color(tdw_overlay.POWER_COLOR, 180))
+                                   self._paint_color(tdw_overlay.POWER_COLOR, 180),
+                                   text_opacity=self._config.text_opacities.get("tdw", 1.0))
         bars = self._trend.realtime_bars if self._trend else []
         prefix = count - len(bars)
         curve = tdw_overlay.series_path(prices, x_of, y_of, 4 if bars else 0)
 
-        pen = QPen(self._paint_color(CURVE_COLOR), 1 if bars else 1.4)
+        pen = QPen(self._paint_color(CURVE_COLOR), self._config.chart_line_width)
         pen.setJoinStyle(Qt.RoundJoin)
         pen.setCapStyle(Qt.RoundCap)
         painter.setPen(pen)
         painter.drawPath(curve)
         tdw_overlay.draw_realtime_candles(painter, bars, prefix, x_of,
-                                          y_of, self._paint_color(CURVE_COLOR))
+                                          y_of, self._paint_color(CURVE_COLOR), line_width=self._config.chart_line_width)
 
         if self._show_signals and self._minute_power:
             labels = []
             for index, kind in tdw_overlay.visible_events(self._signals, count, x_of):
                 color = self._paint_color(BS_BUY_COLOR if kind.startswith("B") else BS_SELL_COLOR)
                 tdw_overlay.draw_event(painter, x_of(index), y_of(prices[index]), kind,
-                                       self.height(), self.width(), color, labels)
+                                       self.height(), self.width(), color, labels,
+                                       text_opacity=self._config.text_opacities.get("tdw", 1.0))
 
     def _draw_candles(
         self, painter: QPainter, layout: _Layout, y_of, bars: list[Bar]
@@ -988,7 +980,7 @@ class DepthLadder(SizedWidget):
             x = layout.plot_left + (index + 0.5) * step
             rising = bar.close >= bar.open
             color = self._paint_color(up if rising else down)
-            painter.setPen(QPen(color, 1.0))
+            painter.setPen(QPen(color, self._config.chart_line_width))
             painter.drawLine(QPointF(x, y_of(bar.high)), QPointF(x, y_of(bar.low)))
             top = min(y_of(bar.open), y_of(bar.close))
             height = max(1.0, abs(y_of(bar.open) - y_of(bar.close)))
@@ -996,14 +988,16 @@ class DepthLadder(SizedWidget):
 
         if self._show_signals and self._daily_power:
             tdw_overlay.draw_power(painter, self._daily_power, lambda i: layout.plot_left + (i + 0.5) * step,
-                                   self.height(), self._paint_color(tdw_overlay.POWER_COLOR, 180))
+                                   self.height(), self._paint_color(tdw_overlay.POWER_COLOR, 180),
+                                   text_opacity=self._config.text_opacities.get("tdw", 1.0))
             labels = []
             for index, kind in self._daily_signals:
                 buying = kind.startswith("B")
                 bar = bars[index]
                 tdw_overlay.draw_event(painter, layout.plot_left + (index + 0.5) * step,
                                        y_of(bar.low if buying else bar.high), kind, self.height(), self.width(),
-                                       self._paint_color(BS_BUY_COLOR if buying else BS_SELL_COLOR), labels)
+                                       self._paint_color(BS_BUY_COLOR if buying else BS_SELL_COLOR), labels,
+                                       text_opacity=self._config.text_opacities.get("tdw", 1.0))
             return
 
         # B/S 属于对应交易日，不能拿分钟横坐标直接绘在日期横轴上。
@@ -1024,6 +1018,7 @@ class DepthLadder(SizedWidget):
                               max(INNER_PAD + 1.0, anchor + (5.0 if buying else -18.0)))
                 painter.setPen(QPen(color, 1.3))
                 painter.drawLine(QPointF(x, anchor), QPointF(x, label_y + (1.0 if buying else 12.0)))
+                painter.setPen(self._text_color(color, "tdw"))
                 painter.drawText(QRectF(x - 13.0, label_y, 26.0, 13.0), Qt.AlignCenter, kind)
             painter.restore()
 
@@ -1044,14 +1039,14 @@ class DepthLadder(SizedWidget):
         painter.setPen(Qt.NoPen)
         painter.setBrush(self._paint_color(BADGE_BACKDROP, BADGE_BACKDROP.alpha()))
         painter.drawRoundedRect(rect, 3.0, 3.0)
-        painter.setPen(self._paint_color(MUTED))
+        painter.setPen(self._text_color(MUTED))
         painter.drawText(rect, Qt.AlignCenter, label)
 
     def _draw_chart_message(self, painter: QPainter, layout: _Layout, text: str) -> None:
         if not text:
             return
         painter.setFont(self._popup_font())
-        painter.setPen(self._paint_color(MUTED))
+        painter.setPen(self._text_color(MUTED))
         painter.drawText(
             QRectF(layout.kline_left, 0.0, max(0.0, layout.kline_right - layout.kline_left),
                    float(self.height())),
@@ -1117,7 +1112,8 @@ class DepthLadder(SizedWidget):
             self._draw_candles(painter, layout, y_of, bars)
         else:
             self._draw_intraday(painter, layout, y_of, prices)
-        tdw_overlay.draw_level_labels(painter, level_labels)
+        tdw_overlay.draw_level_labels(painter, level_labels,
+                                      text_opacity=self._config.text_opacities.get("tdw", 1.0))
         self._draw_chart_badge(painter, layout)
 
     # ------------------------------------------------------------ 绘制：入口

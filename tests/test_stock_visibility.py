@@ -44,7 +44,8 @@ def test_theme3_header_and_chart_survive_switching_from_depth_theme(app):
     assert [row.layout().getItemPosition(row.layout().indexOf(w))[:2] for w in fields] == [
         (0, 0), (0, 1), (0, 2), (0, 3),
     ]
-    assert row.sparkline._card_style and row.sparkline._side_profile_width(360) == 120
+    # Theme 3 now defaults to longer bars, capped by the available chart width.
+    assert row.sparkline._card_style and row.sparkline._side_profile_width(360) == 234
     row.apply_config(Config())
     assert not row.sparkline._card_style
     row.close()

@@ -13,7 +13,27 @@
         <p class="sub">改动即时生效，同时写入本地 JSON 配置文件。</p>
       </header>
 
-      <section class="card">
+      <section class="card settings-navigation">
+        <h2>选择设置区域</h2>
+        <button type="button" id="common-settings" aria-pressed="false">公共设置 · 行情 / 自选 / MCP</button>
+        <fieldset class="theme-picker" id="theme-picker" disabled>
+          <legend>显示主题 · 独立设置</legend>
+          <input type="hidden" id="display_theme" value="{{ config.display_theme }}" />
+          <div class="theme-cards">
+            {% for key, title in [('theme1', '经典网格'), ('theme2', '千档竖列'), ('theme3', '分时＋TDW')] %}
+              <label class="theme-card">
+                <input type="radio" name="theme-choice" value="{{ key }}"
+                       {% if config.display_theme == key %}checked{% endif %} />
+                <img src="{{ url_for('static', filename=key ~ '-preview.png') }}" alt="" />
+                <span>主题 {{ loop.index }} · {{ title }}</span>
+              </label>
+            {% endfor %}
+          </div>
+        </fieldset>
+        <p class="hint">选择主题会切换桌面主题，并打开它自己的设置。字号、透明度、线宽和显示开关各自保存。</p>
+      </section>
+      <section class="card" data-settings-scope="common">
+        <h2>公共设置 · 行情与自选</h2>
         <div class="field">
           <label for="provider">数据源</label>
           <select id="provider" name="provider">
@@ -38,6 +58,21 @@
             不经过 MCP；固定成单一源后不再降级。新浪不支持 1 分钟与周 / 月 K，且仅提供不复权。</p>
         </div>
 
+        <div class="grid">
+          <div class="field">
+            <label for="refresh_seconds">行情刷新间隔（秒）</label>
+            <input id="refresh_seconds" name="refresh_seconds" type="number" min="0.1" max="3600"
+                   step="0.1" value="{{ config.refresh_seconds }}" />
+            <p class="hint">控制股价数字的更新，最小 0.1 秒；与分时图刷新间隔分别设置。</p>
+          </div>
+          <div class="field">
+            <label for="chart_refresh_seconds">K 线刷新间隔（秒）</label>
+            <input id="chart_refresh_seconds" name="chart_refresh_seconds" type="number" min="0.1" max="3600"
+                   step="0.1" value="{{ config.chart_refresh_seconds }}" />
+            <p class="hint">分时图独立刷新，最小 0.1 秒；实际更新速度取决于接口响应和数据源更新频率。</p>
+          </div>
+        </div>
+
         <div class="field">
           <label for="stock-search">自选股票</label>
           <div class="search">
@@ -51,8 +86,8 @@
         </div>
       </section>
 
-      <section class="card">
-        <h2>运行模式</h2>
+      <section class="card" data-settings-scope="common">
+        <h2>公共设置 · 运行模式</h2>
         <div class="checks">
           <label><input id="debug_mode" name="debug_mode" type="checkbox"
                         {% if config.debug_mode %}checked{% endif %} />
@@ -61,66 +96,53 @@
         <p class="hint">默认关闭。关闭时，行情在 A 股活跃窗口（上海时区，周一至周五 09:15–11:30、13:00–15:00）按下方设置的刷新间隔独立更新，不依赖 MCP 连接；千档和 B/S 的调度不变。MCP 推送到达仍会立即刷新行情与分时。打开程序、手动刷新和修改自选股等取数设置时仍会无条件请求一次。Debug 模式用于收盘后联调。</p>
       </section>
 
-      <section class="card">
-        <h2>显示</h2>
-        <fieldset class="theme-picker" id="theme-picker" disabled>
-          <legend>显示主题</legend>
-          <input type="hidden" id="display_theme" value="{{ config.display_theme }}" />
-          <div class="theme-cards">
-            {% for key, title in [('theme1', '经典网格'), ('theme2', '千档竖列'), ('theme3', '分时＋TDW')] %}
-              <label class="theme-card">
-                <input type="radio" name="theme-choice" value="{{ key }}"
-                       {% if config.display_theme == key %}checked{% endif %} />
-                <img src="{{ url_for('static', filename=key ~ '-preview.png') }}" alt="" />
-                <span>主题 {{ loop.index }} · {{ title }}</span>
-              </label>
-            {% endfor %}
-          </div>
-        </fieldset>
+      <section class="card" id="theme-settings" data-settings-scope="theme">
+        <h2 id="theme-settings-heading">当前主题设置</h2>
+
         <div class="grid">
-          <div class="field">
+          <div class="field" data-themes="theme2">
             <label for="theme2_side">主题 2 停靠侧</label>
             <select id="theme2_side" name="theme2_side">
               <option value="right" {% if config.theme2_side == 'right' %}selected{% endif %}>靠右 · 盘口在右</option>
               <option value="left" {% if config.theme2_side == 'left' %}selected{% endif %}>靠左 · 镜像</option>
             </select>
           </div>
-          <div class="field">
+          <div class="field" data-themes="theme2">
             <label for="theme2_depth_width">主题 2 千档柱长度（px）</label>
             <input id="theme2_depth_width" name="theme2_depth_width" type="number"
                    min="40" max="600" step="4" value="{{ config.theme2_depth_width }}" />
           </div>
-          <div class="field">
+          <div class="field" data-themes="theme2">
             <label for="theme2_popup_font_size">主题 2 代码与图注字号（px）</label>
             <input id="theme2_popup_font_size" name="theme2_popup_font_size" type="number"
                    min="7" max="48" step="1" value="{{ config.theme2_popup_font_size }}" />
           </div>
-          <div class="field">
+          <div class="field" data-themes="theme1">
             <label for="layout">显示模式</label>
             <select id="layout" name="layout">
               <option value="multi" {% if config.layout == 'multi' %}selected{% endif %}>多行列表</option>
               <option value="single" {% if config.layout == 'single' %}selected{% endif %}>单行滚动</option>
             </select>
           </div>
-          <div class="field">
+          <div class="field" data-themes="theme1 theme3">
             <label for="visible_rows">网格行数</label>
             <input id="visible_rows" name="visible_rows" type="number" min="1" max="30" step="1"
                    value="{{ config.visible_rows }}" />
           </div>
         </div>
-        <p class="hint" id="layout-hint"></p>
+        <p class="hint" id="layout-hint" data-themes="theme1 theme3"></p>
         <p class="hint" id="display-theme-hint"></p>
 
-        <div class="checks">
+        <div class="checks" data-themes="theme2">
           <label><input id="theme2_always_expanded" name="theme2_always_expanded" type="checkbox"
                         aria-describedby="theme2-always-expanded-hint"
                         {% if config.theme2_always_expanded %}checked{% endif %} />
             主题 2 始终展开</label>
         </div>
-        <p class="hint" id="theme2-always-expanded-hint">开启后，所有股票的详情和图表始终显示，无需点击；点击价格或窗口外部也不会收起。关闭后恢复点击展开。此选项会记住，重启后仍生效。</p>
+        <p class="hint" id="theme2-always-expanded-hint" data-themes="theme2">开启后，所有股票的详情和图表始终显示，无需点击；点击价格或窗口外部也不会收起。关闭后恢复点击展开。此选项会记住，重启后仍生效。</p>
 
         <div class="grid">
-          <div class="field">
+          <div class="field" data-themes="theme1">
             <label for="row_style">行内样式</label>
             <select id="row_style" name="row_style">
               <option value="sides" {% if config.row_style == 'sides' %}selected{% endif %}>左中右</option>
@@ -129,7 +151,7 @@
             </select>
           </div>
         </div>
-        <p class="hint" id="row_style-hint"></p>
+        <p class="hint" id="row_style-hint" data-themes="theme1"></p>
         <p class="hint">K 线高度填 0 表示按字号自动推算；填了具体像素就固定成该高度，并随窗口拖拽等比缩放。
           行数多到窗口放不下时，走势图会自动压扁，保证每只股票都还在可视区里。</p>
 
@@ -148,7 +170,7 @@
                 <td><output id="size-current-window">等待桌面窗口</output></td>
               </tr>
               {% for region, label in component_regions %}
-              <tr>
+              <tr {% if region == "canvas" %}data-themes="theme2"{% elif region == "chart" %}data-themes="theme1 theme3"{% endif %}>
                 <th scope="row">{{ label }}</th>
                 {% for axis, axis_label in [('width', '宽度'), ('height', '高度')] %}
                 {% if region == 'chart' and axis == 'height' %}
@@ -219,7 +241,7 @@
 
         <div class="grid">
           <div class="field">
-            <label for="chart_label_font_size">走势图 / 主题 2 高低价字号（px）</label>
+            <label id="chart-label-font-heading" for="chart_label_font_size">走势图图注字号（px）</label>
             <input id="chart_label_font_size" name="chart_label_font_size" type="number"
                    min="7" max="48" step="1" value="{{ config.chart_label_font_size }}" />
           </div>
@@ -272,7 +294,7 @@
                             {% if config.dark_trade_bold %}checked{% endif %} /> 加粗</label>
             </div>
           </div>
-          <div class="font-style-field" id="tdw-label-field" {% if config.display_theme != 'theme3' %}hidden{% endif %}>
+          <div class="font-style-field" id="tdw-label-field" data-themes="theme3" {% if config.display_theme != 'theme3' %}hidden{% endif %}>
             <label for="tdw_label_color">TDW 图注</label>
             <input id="tdw_label_color" type="color" value="{{ config.tdw_label_color }}" />
           </div>
@@ -280,24 +302,42 @@
 
         <div class="grid">
           <div class="field">
-            <label for="refresh_seconds">行情刷新间隔（秒）</label>
-            <input id="refresh_seconds" name="refresh_seconds" type="number" min="0.1" max="3600"
-                   step="0.1" value="{{ config.refresh_seconds }}" />
-            <p class="hint">控制股价数字的更新，最小 0.1 秒；与分时图刷新间隔分别设置。</p>
-          </div>
-          <div class="field">
-            <label for="chart_refresh_seconds">K 线刷新间隔（秒）</label>
-            <input id="chart_refresh_seconds" name="chart_refresh_seconds" type="number" min="0.1" max="3600"
-                   step="0.1" value="{{ config.chart_refresh_seconds }}" />
-            <p class="hint">分时图独立刷新，最小 0.1 秒；实际更新速度取决于接口响应和数据源更新频率。</p>
-          </div>
-          <div class="field">
             <label for="color_scheme">涨跌配色</label>
             <select id="color_scheme" name="color_scheme">
               <option value="cn" {% if config.color_scheme == 'cn' %}selected{% endif %}>红涨绿跌（A 股）</option>
               <option value="us" {% if config.color_scheme == 'us' %}selected{% endif %}>绿涨红跌（欧美）</option>
             </select>
           </div>
+        </div>
+
+        <h3>图表与千档挂单</h3>
+        <div class="checks" data-themes="theme3">
+          <label><input id="theme3_show_tdw" type="checkbox" {% if config.theme3_show_tdw %}checked{% endif %} /> 显示 TDW 副图（动力线、四条参考线与信号箭头）</label>
+        </div>
+        <div class="grid">
+          <div class="field" data-themes="theme1 theme3">
+            <label for="chart_depth_width">千档挂单条最长长度（px）</label>
+            <input id="chart_depth_width" type="number" min="0" max="1200" step="10" value="{{ config.chart_depth_width }}" />
+            <p class="hint">0 表示自动；窗口不足时按可用宽度收紧。</p>
+          </div>
+          {% for key, label in [('chart_line_width', 'K 线线宽'), ('depth_line_width', '千档挂单线宽')] %}
+          <div class="field">
+            <label for="{{ key }}">{{ label }}（px）</label>
+            <input id="{{ key }}" type="number" min="0.3" max="6" step="0.1" value="{{ config[key] }}" />
+          </div>
+          {% endfor %}
+        </div>
+        <p class="hint">挂单逐价位绘制，不合并相邻价位或累加同屏幕行的量。线宽支持小数像素；价位过密时可以增加窗口高度。</p>
+
+        <h3>各区域文字透明度</h3>
+        <p class="hint">0% 完全透明，100% 完全显示。只调整文字，不影响曲线、挂单条或背景；最终显示还受整窗透明度影响。</p>
+        <div class="grid">
+          {% for region, label in text_regions %}
+          <div class="field" {% if region == 'code' %}data-themes="theme2"{% endif %}>
+            <label for="text-opacity-{{ region }}">{{ label }} · 不透明度 <output id="text-opacity-{{ region }}-value"></output></label>
+            <input id="text-opacity-{{ region }}" type="range" min="0" max="1" step="0.05" value="{{ config.text_opacities.get(region, 1) }}" />
+          </div>
+          {% endfor %}
         </div>
 
         <div class="field">
@@ -333,19 +373,19 @@
             显示右上角按钮（刷新 / 设置 / 灰度 / 退出；关掉后整条标题栏收起，在组件上点右键或从托盘菜单都能开回来）</label>
           <label><input id="show_dark_trade" name="show_dark_trade" type="checkbox"
                         {% if config.show_dark_trade %}checked{% endif %} /> 显示东方财富暗盘资金</label>
-          <label><input id="show_sparkline" name="show_sparkline" type="checkbox"
+          <label data-themes="theme1 theme3"><input id="show_sparkline" name="show_sparkline" type="checkbox"
                         {% if config.show_sparkline %}checked{% endif %} /> 显示走势图</label>
-          <label><input id="show_chart_depth" name="show_chart_depth" type="checkbox"
+          <label data-themes="theme1 theme3"><input id="show_chart_depth" name="show_chart_depth" type="checkbox"
                         {% if config.show_chart_depth %}checked{% endif %} /> 在 K 线内显示千档挂单分布（主题 1、3）</label>
           <label><input id="chart_fill_width" name="chart_fill_width" type="checkbox"
                         {% if config.chart_fill_width %}checked{% endif %} /> K 线按已有数据铺满宽度</label>
           <label><input id="tdw_recent_five" name="tdw_recent_five" type="checkbox"
                         {% if config.tdw_recent_five %}checked{% endif %} /> 实时 TDW 只显示最近 5 分钟（秒 K）</label>
-          <label><input id="show_sparkline_fill" name="show_sparkline_fill" type="checkbox"
+          <label data-themes="theme1 theme3"><input id="show_sparkline_fill" name="show_sparkline_fill" type="checkbox"
                         {% if config.show_sparkline_fill %}checked{% endif %} /> 填充走势图下方颜色</label>
           <label><input id="show_bs_points" name="show_bs_points" type="checkbox"
                         {% if config.show_bs_points %}checked{% endif %} /> 显示 B/S 波动点（B 红线、S 蓝线）</label>
-          <label><input id="show_open_line" name="show_open_line" type="checkbox"
+          <label data-themes="theme1 theme3"><input id="show_open_line" name="show_open_line" type="checkbox"
                         {% if config.show_open_line %}checked{% endif %} /> 显示开盘价横向虚线</label>
           <label><input id="show_high_low" name="show_high_low" type="checkbox"
                         {% if config.show_high_low %}checked{% endif %} /> 显示 mini K 最高价 / 最低价</label>
@@ -357,7 +397,7 @@
                         {% if config.grayscale %}checked{% endif %} /> 灰度显示（所有颜色统一成一个灰，灰阶见下方「灰度值」）</label>
           <label><input id="intraday_chart" name="intraday_chart" type="checkbox"
                         {% if config.intraday_chart %}checked{% endif %} /> 走势图使用当日分时数据</label>
-          <label><input id="compact" name="compact" type="checkbox"
+          <label data-themes="theme1 theme3"><input id="compact" name="compact" type="checkbox"
                         {% if config.compact %}checked{% endif %} /> 紧凑模式</label>
         </div>
         <p class="hint">「K 线按已有数据铺满宽度」默认关闭：分时横轴固定为 09:30–15:00（压缩午休），未交易的时间留白；
@@ -374,8 +414,8 @@
         </div>
       </section>
 
-      <section class="card">
-        <h2>MCP 通信提醒</h2>
+      <section class="card" data-settings-scope="common">
+        <h2>公共设置 · MCP 通信提醒</h2>
         <div class="checks">
           <label><input id="mcp_notifications_enabled" name="mcp_notifications_enabled"
                         type="checkbox" {% if config.mcp_notifications_enabled %}checked{% endif %} />

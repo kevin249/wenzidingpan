@@ -22,6 +22,8 @@ class Element {
     if (!this.selectors.has(selector)) this.selectors.set(selector, new Element());
     return this.selectors.get(selector);
   }
+  setAttribute(name, value) { this[name] = value; }
+  focus() {}
   addEventListener(name, callback) { this.listeners[name] = callback; }
   dispatch(name, extra = {}) { this.listeners[name]({ target: this, ...extra }); }
 }
@@ -29,21 +31,31 @@ class Element {
 function setup() {
   const elements = new Map();
   const requests = [];
+  const configRequests = [];
   const timers = new Map();
   let nextTimer = 0;
   const el = (id) => {
     if (!elements.has(id)) elements.set(id, new Element());
     return elements.get(id);
   };
+  const choices = ['theme1', 'theme2', 'theme3'].map(value => Object.assign(new Element(), {value}));
+  const commonSection = Object.assign(new Element(), {dataset: {settingsScope: 'common'}});
+  const themeSection = Object.assign(new Element(), {dataset: {settingsScope: 'theme'}});
+  const secondOnly = Object.assign(new Element(), {dataset: {themes: 'theme2'}});
+  const thirdOnly = Object.assign(new Element(), {dataset: {themes: 'theme3'}});
   const context = vm.createContext({
     document: {
       body: { dataset: { token: 'test-token' } },
       getElementById: el,
-      querySelectorAll: () => [],
+      querySelectorAll: selector => selector === '[name="theme-choice"]' ? choices
+        : selector === '[data-settings-scope]' ? [commonSection, themeSection]
+        : selector === '[data-themes]' ? [secondOnly, thirdOnly] : [],
+      querySelector: selector => selector === 'main' ? el('main') : choices.find(choice => choice.checked),
       createElement: () => new Element(),
       addEventListener() {},
     },
     AbortController,
+    structuredClone,
     setTimeout: (callback) => { timers.set(++nextTimer, callback); return nextTimer; },
     clearTimeout: (id) => timers.delete(id),
     setInterval() {},
@@ -51,11 +63,12 @@ function setup() {
       // Ignore cancellation deliberately: even a response already in flight
       // must not overwrite a newer query or reopen dismissed suggestions.
       if (url.startsWith('/api/search')) requests.push({ url, options, resolve, reject });
+      if (url.startsWith('/api/config') && options?.method === 'POST') configRequests.push({url, options, resolve, reject});
     }),
   });
   const source = fs.readFileSync(path.join(__dirname, '../stockwidget/webui/static/settings.js'), 'utf8');
   vm.runInContext(source, context);
-  return { el, context, requests, timers };
+  return { el, context, requests, timers, configRequests, commonSection, themeSection, secondOnly, thirdOnly, choices };
 }
 
 function answer(request, code) {
@@ -126,4 +139,53 @@ test('HTTP failures clear old suggestions and show a useful error', async () => 
   await pending;
   assert.equal(el('suggestions').hidden, true);
   assert.match(el('search-hint').textContent, /HTTP 503/);
+});
+
+
+test('common and per-theme forms expose and submit only their own settings', () => {
+  const {context, el, commonSection, themeSection, secondOnly, thirdOnly} = setup();
+  context.fill({display_theme: 'theme3', symbols: [], opacity: 1, background_alpha: .5,
+    text_opacities: {name: .4}, theme3_show_tdw: false, chart_line_width: 2.3, depth_line_width: .6});
+  assert.equal(commonSection.hidden, true);
+  assert.equal(themeSection.hidden, false);
+  assert.equal(secondOnly.hidden, true);
+  assert.equal(thirdOnly.hidden, false);
+  let patch = context.collect();
+  assert.equal(patch.theme3_show_tdw, false);
+  assert.equal(patch.chart_line_width, 2.3);
+  assert.equal(patch.text_opacities.name, .4);
+  assert.equal('mcp_url' in patch, false);
+  assert.equal('symbols' in patch, false);
+  el('common-settings').dispatch('click');
+  assert.equal(commonSection.hidden, false);
+  assert.equal(themeSection.hidden, true);
+  el('mcp_url').value = 'http://localhost:8802/mcp';
+  patch = context.collect();
+  assert.equal(patch.mcp_url, 'http://localhost:8802/mcp');
+  assert.equal('chart_line_width' in patch, false);
+  assert.equal('text_opacities' in patch, false);
+});
+
+test('switching from common settings saves common fields before loading a theme profile', async () => {
+  const {context, el, configRequests, commonSection, thirdOnly} = setup();
+  const first = {display_theme: 'theme1', symbols: [], text_opacities: {price: .2}};
+  context.fill(first);
+  el('common-settings').dispatch('click');
+  el('mcp_url').value = 'http://localhost:8802/mcp';
+  const pending = context.switchTheme('theme3');
+  await new Promise(resolve => setImmediate(resolve));
+  const oldPatch = JSON.parse(configRequests[0].options.body);
+  assert.equal(oldPatch.mcp_url, 'http://localhost:8802/mcp');
+  assert.equal('text_opacities' in oldPatch, false);
+  configRequests[0].resolve({ok: true, json: async () => ({config: first})});
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(JSON.parse(configRequests[1].options.body), {display_theme: 'theme3'});
+  configRequests[1].resolve({ok: true, json: async () => ({config: {...first, display_theme: 'theme3',
+    text_opacities: {price: .8}, chart_line_width: 3, theme3_show_tdw: false}})});
+  await pending;
+  assert.equal(commonSection.hidden, true);
+  assert.equal(thirdOnly.hidden, false);
+  assert.equal(context.collect().text_opacities.price, .8);
+  assert.equal(context.collect().theme3_show_tdw, false);
+  assert.equal(el('main').inert, false);
 });

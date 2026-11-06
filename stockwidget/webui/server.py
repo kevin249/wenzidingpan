@@ -17,6 +17,7 @@ from flask import Flask, abort, jsonify, render_template, request
 from .. import mcp_bs, providers
 from ..config import (
     COMPONENT_REGIONS,
+    TEXT_REGIONS,
     GRAYSCALE_LEVEL_MAX,
     GRAYSCALE_LEVEL_MIN,
     MIN_OPACITY,
@@ -75,6 +76,7 @@ class SettingsServer:
                 providers=providers.listing(),
                 config=self.store.get().to_dict(),
                 component_regions=COMPONENT_REGIONS,
+                text_regions=TEXT_REGIONS,
                 min_opacity=MIN_OPACITY,
                 grayscale_level_min=GRAYSCALE_LEVEL_MIN,
                 grayscale_level_max=GRAYSCALE_LEVEL_MAX,

@@ -69,7 +69,7 @@ class Marquee(QWidget):
                 segments.append(
                     Segment(
                         quote.name or quote.symbol,
-                        text_color(config, config.stock_name_color, color),
+                        text_color(config, config.stock_name_color, color, region="name"),
                         config.stock_name_font_size,
                         config.stock_name_bold,
                     )
@@ -84,7 +84,7 @@ class Marquee(QWidget):
                     segments.append(
                         Segment(
                             fmt_price(quote.price),
-                            text_color(config, config.stock_price_color, color),
+                            text_color(config, config.stock_price_color, color, region="price"),
                             config.stock_price_font_size,
                             config.stock_price_bold,
                         )
@@ -99,7 +99,7 @@ class Marquee(QWidget):
                     segments.append(
                         Segment(
                             percent,
-                            text_color(config, config.stock_percent_color, color),
+                            text_color(config, config.stock_percent_color, color, region="percent"),
                             config.stock_percent_font_size,
                             config.stock_percent_bold,
                         )
@@ -108,7 +108,7 @@ class Marquee(QWidget):
                     dark_color = text_color(
                         config,
                         config.dark_trade_color,
-                        direction_color(config, quote.dark_fund),
+                        direction_color(config, quote.dark_fund), region="dark",
                     )
                     segments.append(
                         Segment(
