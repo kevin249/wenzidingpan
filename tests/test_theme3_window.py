@@ -152,3 +152,37 @@ def test_background_paint_erases_old_pixels_including_rounded_corners(app, card,
     window.paintEvent(None)
     assert image.pixelColor(30, 30).alpha() == 0
     assert image.pixelColor(0, 0).alpha() == 0
+
+
+@pytest.mark.parametrize("size", [(220, 200), (440, 400)])
+def test_real_card_window_renders_both_price_labels_and_short_dark_caption(app, card, monkeypatch, size):
+    window, store, quote, trend = card
+    window.resize(*size)
+    window.apply_config(store.update({"show_high_low": True, "text_opacities": {"high_low": 1}}))
+    window._sync_rows([quote], {quote.symbol: trend})
+    app.processEvents()
+    row = window._rows[quote.symbol]
+    assert row.dark_label.text() == "暗"
+    chart = row.sparkline
+    captions = []
+    original = QPainter.drawText
+
+    def record(self, *args):
+        if args[-1] in {"高 10.20", "低 10.00"}:
+            captions.append((args[0], self.fontMetrics().boundingRect(args[-1])))
+        return original(self, *args)
+
+    monkeypatch.setattr(QPainter, "drawText", record)
+    before = window.grab().toImage()
+    assert len(captions) == 2
+    origin = chart.mapTo(window, QPoint())
+    glyph_rects = [rect.translated(round(point.x()) + origin.x(), round(point.y()) + origin.y())
+                   for point, rect in captions]
+    window.apply_config(store.update({"text_opacities": {"high_low": 0}}))
+    app.processEvents()
+    after = window.grab().toImage()
+    for rect in glyph_rects:
+        assert window.rect().contains(rect)
+        assert sum(before.pixel(x, y) != after.pixel(x, y)
+                   for x in range(rect.left(), rect.right() + 1)
+                   for y in range(rect.top(), rect.bottom() + 1)) > 10

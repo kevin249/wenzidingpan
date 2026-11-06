@@ -325,6 +325,39 @@ def test_daily_scale_fits_candles_even_with_distant_current_quote(app):
 
 
 @pytest.mark.parametrize("side", ["left", "right"])
+@pytest.mark.parametrize("mode", [MODE_INTRADAY, MODE_DAILY])
+def test_expanded_chart_has_visible_high_low_corner_labels(app, monkeypatch, side, mode):
+    from PySide6.QtGui import QPainter
+
+    widget = _widget(theme2_side=side, show_high_low=False)
+    widget.set_expanded(True)
+    widget.set_chart_mode(mode)
+    bars = [Bar("2026-11-06 09:30:01", 100, 102.34, 98.76, 101, 100)]
+    widget.set_intraday(Trend(prices=[100, 101], realtime_bars=bars))
+    widget.set_kline(replace(_kline(), bars=bars))
+    widget.set_depth(_depth())
+    before = _render(widget)
+    captions = []
+    original = QPainter.drawText
+
+    def record(self, *args):
+        if args[-1] in {"高 102.34", "低 98.76"}:
+            captions.append(args)
+        return original(self, *args)
+
+    monkeypatch.setattr(QPainter, "drawText", record)
+    widget.apply_config(replace(widget._config, show_high_low=True))
+    after = _render(widget)
+    assert [item[-1] for item in captions] == ["高 102.34", "低 98.76"]
+    layout = widget._layout()
+    corners = [(int(layout.kline_left + 2), 1, 80, 24),
+               (int(layout.kline_right - 82), widget.height() - 25, 80, 24)]
+    for x, y, width, height in corners:
+        assert sum(before.pixel(px, py) != after.pixel(px, py)
+                   for px in range(x, x + width) for py in range(y, y + height)) > 15
+
+
+@pytest.mark.parametrize("side", ["left", "right"])
 def test_chart_guide_tracks_price_while_book_guide_remains_centered(app, side):
     widget = _widget(theme2_side=side)
     widget.set_intraday(Trend(prices=[100, 101, 102]))

@@ -253,7 +253,7 @@ class QuoteRow(SizedWidget):
                                            text_opacities=config.text_opacities,
                                            chart_line_width=config.chart_line_width,
                                            depth_line_width=config.depth_line_width)
-        self.dark_label.setText("暗盘" if config.display_theme == "theme3" else "暗")
+        self.dark_label.setText("暗")
         self.sparkline.set_show_depth(config.show_chart_depth)
         self.name_label.setVisible(self._visible("name"))
         self.price_label.setVisible(self._visible("price"))

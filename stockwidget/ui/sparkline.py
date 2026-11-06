@@ -22,6 +22,7 @@ from ..market_hours import SHANGHAI_TZ
 from ..mcp_depth import DEPTH_FULL, DepthSnapshot
 from . import tdw_overlay
 from .price_scale import PriceScale
+from .price_labels import draw_price_labels
 from .depth_layout import depth_rows
 from .sizing import SizedWidget
 from .theme import display_color, with_opacity
@@ -616,21 +617,6 @@ class Sparkline(SizedWidget):
             painter.restore()
 
         if self._show_high_low:
-            # Separate corners need only one label's width; never hide them for TDW.
-            high_text, low_text = f"{price_high:.2f}", f"{price_low:.2f}"
-            label_left = chart_left + 2
-            label_width = max(1.0, width - label_left - 2)
-            font = QFont(self._annotation_font)
-            metrics = QFontMetrics(font)
-            fit = min(1.0, label_width / max(1, metrics.horizontalAdvance(high_text),
-                                           metrics.horizontalAdvance(low_text)),
-                      height / max(1, 2 * metrics.height()))
-            if fit < 1:
-                font.setPixelSize(max(1, int(metrics.height() * .75 * fit)))
-            painter.setFont(font)
-            label_height = min(height / 2, painter.fontMetrics().height())
-            painter.setPen(self._text_color(self._color, "high_low"))
-            painter.drawText(QRectF(label_left, 0, label_width, label_height),
-                             Qt.AlignLeft | Qt.AlignTop, high_text)
-            painter.drawText(QRectF(label_left, height - label_height, label_width, label_height),
-                             Qt.AlignRight | Qt.AlignBottom, low_text)
+            draw_price_labels(painter, QRectF(chart_left, 0, width - chart_left, height),
+                              price_low, price_high, self._annotation_font,
+                              self._text_color(self._color, "high_low"))

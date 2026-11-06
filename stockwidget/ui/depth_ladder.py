@@ -51,6 +51,7 @@ from ..mcp_depth import (
 from .theme import region_text_color
 from . import tdw_overlay
 from .price_scale import PriceScale
+from .price_labels import draw_price_labels
 from .depth_layout import depth_rows
 from .sizing import SizedWidget
 from .sparkline import ANNOTATION_COLOR
@@ -1009,7 +1010,11 @@ class DepthLadder(SizedWidget):
             x = layout.kline_left + 1.0
         else:
             x = layout.kline_right - width - 1.0
-        rect = QRectF(x, INNER_PAD + 1.0, width, height)
+        y = INNER_PAD + 1.0
+        if self._config.show_high_low:
+            label_font = make_font(self._config, pixel_size=self._config.chart_label_font_size)
+            y += QFontMetricsF(label_font).height() + 2
+        rect = QRectF(x, y, width, height)
 
         painter.setPen(Qt.NoPen)
         painter.setBrush(self._paint_color(BADGE_BACKDROP, BADGE_BACKDROP.alpha()))
@@ -1029,9 +1034,8 @@ class DepthLadder(SizedWidget):
             text,
         )
 
-    def _chart_values(self) -> _ChartValues:
-        """图表区一次绘制所需的全部数据，供「背景层 / 前景层」两次绘制共用。"""
-        prices, volumes, levels, bars = self._chart_series()
+    def _chart_price_values(self, prices, bars):
+        """Use the same candle extremes for the scale and its corner labels."""
         values = list(prices)
         if bars:
             values += [bar.high for bar in bars]
@@ -1041,6 +1045,12 @@ class DepthLadder(SizedWidget):
                 # Use the plotted candle wicks, not session-level quote metadata.
                 values.extend(bar.low for bar in self._trend.realtime_bars)
                 values.extend(bar.high for bar in self._trend.realtime_bars)
+        return values
+
+    def _chart_values(self) -> _ChartValues:
+        """图表区一次绘制所需的全部数据，供「背景层 / 前景层」两次绘制共用。"""
+        prices, volumes, levels, bars = self._chart_series()
+        values = self._chart_price_values(prices, bars)
         y_of = self._price_mapper(values) if values else None
         return prices, volumes, levels, bars, y_of
 
@@ -1119,6 +1129,14 @@ class DepthLadder(SizedWidget):
             self._draw_chart_foreground(painter, layout, chart_values)
 
         self._draw_price_and_guide(painter, layout, chart_mapper)
+        if chart_mapper is not None and self._config.show_high_low and layout.has_chart_band:
+            prices, _volumes, _levels, bars, _mapper = chart_values
+            values = self._chart_price_values(prices, bars)
+            draw_price_labels(painter, QRectF(layout.kline_left, 0,
+                                             layout.kline_right - layout.kline_left, self.height()),
+                              min(values), max(values),
+                              make_font(self._config, pixel_size=self._config.chart_label_font_size),
+                              self._text_color(ANNOTATION_COLOR, "high_low"))
 
     # ------------------------------------------------------------ 交互
 
