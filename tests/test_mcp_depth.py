@@ -258,11 +258,11 @@ def test_full_thousand_never_requests_fallback():
 
 def test_poll_interval_is_five_seconds_until_thousand_recovers():
     assert mcp_depth._poll_seconds(False) == 5.0
-    assert mcp_depth._poll_seconds(True) == 60.0
+    assert mcp_depth._poll_seconds(True) == 5.0
     assert "串行" in mcp_depth._status_text(False)
     assert "5s" in mcp_depth._status_text(False)
     assert "串行" in mcp_depth._status_text(True)
-    assert "60s" in mcp_depth._status_text(True)
+    assert "5s" in mcp_depth._status_text(True)
 
 
 def test_active_bs_fetch_requests_all_today_markers(monkeypatch):
@@ -331,7 +331,7 @@ def test_serial_scheduler_does_not_double_wait_after_long_batch():
     assert poller._next_wake_seconds(poller._config, now=160.0) == pytest.approx(0.1)
 
 
-def test_depth_state_keeps_cached_thousand_until_full_depth_recovers():
+def test_fresh_ten_level_replaces_old_full_book_until_full_depth_recovers():
     full = parse_depth_payload(
         "600000",
         {
@@ -366,10 +366,11 @@ def test_depth_state_keeps_cached_thousand_until_full_depth_recovers():
         display, cache, failures = mcp_depth._merge_depth_state(
             ten, cache, failures
         )
-        assert display.depth_mode == DEPTH_FULL
-        assert display.levels == full.levels
-        assert display.received_at == full.received_at
-        assert display.using_cached_full_depth is True
+        assert display.depth_mode == DEPTH_TEN
+        assert display.levels == ten.levels
+        assert display.received_at == ten.received_at
+        assert display.using_cached_full_depth is False
+        assert cache is None
         assert display.latest_depth_mode == DEPTH_TEN
         assert display.full_depth_failures == expected_failures
         assert failures == expected_failures
@@ -417,11 +418,14 @@ def test_depth_state_uses_fallback_only_before_any_thousand_cache_exists():
     assert display.full_depth_failures == 1
 
 
-def test_non_debug_stays_passive_until_an_explicit_request():
-    """非 Debug 模式全天不主动拉千档；启动首帧与手动刷新仍要放行一次。"""
+def test_non_debug_polls_during_market_hours_and_explicit_refresh_bypasses_close():
+    from datetime import datetime
     config = Config(debug_mode=False)
-    assert mcp_depth.McpDepthPoller._should_poll(config, explicit=False) is False
-    assert mcp_depth.McpDepthPoller._should_poll(config, explicit=True) is True
+    market = datetime(2026, 11, 6, 10, 0)
+    lunch = datetime(2026, 11, 6, 12, 0)
+    assert mcp_depth.McpDepthPoller._should_poll(config, False, market) is True
+    assert mcp_depth.McpDepthPoller._should_poll(config, False, lunch) is False
+    assert mcp_depth.McpDepthPoller._should_poll(config, True, lunch) is True
 
 
 def test_debug_mode_polls_depth_around_the_clock():
@@ -447,9 +451,153 @@ def test_bs_synchronization_is_independent_of_passive_depth():
     market = datetime(2026, 10, 9, 10, 0, tzinfo=tz)
     closed = datetime(2026, 10, 11, 10, 0, tzinfo=tz)
 
-    assert poller._should_poll(config, explicit=False) is False
+    assert poller._should_poll(config, explicit=False, now=closed) is False
     assert poller._should_fetch_bs(config, False, 59.0, market) is False
     assert poller._should_fetch_bs(config, False, 60.0, market) is True
     assert poller._should_fetch_bs(config, False, 600.0, closed) is False
     assert poller._should_fetch_bs(config, True, 0.0, closed) is True
     assert poller._should_fetch_bs(Config(debug_mode=True), False, 60.0, closed) is True
+
+
+def test_total_failure_keeps_full_book_with_original_timestamp_and_stale_flag():
+    full = parse_depth_payload('600000', {
+        'available': True, 'full_depth_verified': True, 'levels': _levels(20),
+    }, received_at=100.0)
+    display, cache, failures = mcp_depth._merge_depth_state(
+        mcp_depth.DepthSnapshot('600000', received_at=120.0), full, 0,
+    )
+    assert display.levels == full.levels
+    assert display.received_at == 100.0
+    assert display.using_cached_full_depth
+    assert failures == 1
+
+
+def test_normal_worker_keeps_polling_after_startup_without_debug(monkeypatch):
+    import time
+    monkeypatch.setattr(mcp_depth, 'active_updates_allowed', lambda *_: True)
+    monkeypatch.setattr(mcp_depth, 'is_a_share_active_time', lambda *_: True)
+    monkeypatch.setattr(mcp_depth, 'DEPTH_POLL_SECONDS', .01)
+    worker = mcp_depth.McpDepthPoller(Config(
+        symbols=['600000'], mcp_api_key='test', debug_mode=False,
+    ))
+    calls = []
+
+    async def cycle(config, **kwargs):
+        calls.append(kwargs)
+        worker._next_depth_due['600000'] = time.monotonic() + .01
+        if len(calls) == 3:
+            worker.stop()
+        return True
+
+    monkeypatch.setattr(worker, '_fetch_cycle', cycle)
+    worker.start()
+    try:
+        assert worker.wait(1500), 'depth stopped after the startup snapshot'
+    finally:
+        worker.stop()
+        assert worker.wait(3000)
+    assert [call['fetch_depth'] for call in calls] == [True, True, True]
+    assert [call['force_depth'] for call in calls] == [True, False, False]
+    assert [call['fetch_bs'] for call in calls] == [True, False, False]
+
+
+def test_bs_push_during_request_is_coalesced_and_does_not_force_depth(monkeypatch):
+    monkeypatch.setattr(mcp_depth, 'active_updates_allowed', lambda *_: False)
+    monkeypatch.setattr(mcp_depth, 'is_a_share_active_time', lambda *_: False)
+    worker = mcp_depth.McpDepthPoller(Config(symbols=['600000'], mcp_api_key='test'))
+    calls = []
+
+    async def cycle(config, **kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            for _ in range(20):
+                worker.refresh_bs_now()
+            assert not worker._changed.is_set()
+        else:
+            worker.stop()
+        return True
+
+    monkeypatch.setattr(worker, '_fetch_cycle', cycle)
+    worker.start()
+    try:
+        assert worker.wait(1500), 'pending B/S notification was lost after the request'
+    finally:
+        worker.stop()
+        assert worker.wait(3000)
+    assert len(calls) == 2
+    assert calls[1] == dict(fetch_bs=True, fetch_depth=False, force_depth=False)
+
+
+def test_bs_failure_retries_without_waiting_one_minute_even_after_close(monkeypatch):
+    monkeypatch.setattr(mcp_depth, 'active_updates_allowed', lambda *_: False)
+    monkeypatch.setattr(mcp_depth, 'is_a_share_active_time', lambda *_: False)
+    monkeypatch.setattr(mcp_depth, 'DEPTH_RETRY_SECONDS', .01)
+    worker = mcp_depth.McpDepthPoller(Config(symbols=['600000'], mcp_api_key='test'))
+    calls = []
+
+    async def cycle(config, **kwargs):
+        calls.append(kwargs)
+        worker._bs_sync_ok = len(calls) > 1
+        if len(calls) == 2:
+            worker.stop()
+        return True
+
+    monkeypatch.setattr(worker, '_fetch_cycle', cycle)
+    worker.start()
+    try:
+        assert worker.wait(1500), 'failed B/S synchronization did not retry'
+    finally:
+        worker.stop()
+        assert worker.wait(3000)
+    assert len(calls) == 2
+    assert calls[1]['fetch_bs'] is True
+    assert calls[1]['fetch_depth'] is False
+
+
+def test_mcp_bs_sync_stays_enabled_without_a_visible_chart():
+    config = Config(mcp_api_key='test', show_sparkline=False, intraday_chart=False)
+    assert mcp_depth.McpDepthPoller._enabled(config)
+    assert not mcp_depth.McpDepthPoller._depth_enabled(config)
+
+
+def test_push_during_real_fetch_loop_does_not_drop_remaining_symbols(monkeypatch):
+    from contextlib import asynccontextmanager
+    from PySide6.QtCore import Qt
+    worker = mcp_depth.McpDepthPoller(Config(
+        symbols=['600000', '000001'], mcp_api_key='test',
+    ))
+    fetched, delivered = [], []
+    worker.depth_ready.connect(delivered.append, Qt.DirectConnection)
+
+    @asynccontextmanager
+    async def client(**kwargs):
+        yield object()
+
+    @asynccontextmanager
+    async def transport(*args, **kwargs):
+        yield None, None
+
+    class Session:
+        def __init__(self, *args, **kwargs):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            pass
+        async def initialize(self):
+            pass
+        async def call_tool(self, name, arguments):
+            fetched.append(arguments['symbol'])
+            if len(fetched) == 1:
+                worker.refresh_bs_now()
+            return _result({'available': True, 'full_depth_verified': True,
+                            'levels': _levels(20)})
+
+    monkeypatch.setattr(mcp_depth.httpx2, 'AsyncClient', client)
+    monkeypatch.setattr(mcp_depth, 'streamable_http_client', transport)
+    monkeypatch.setattr(mcp_depth, 'ClientSession', Session)
+    monkeypatch.setattr(mcp_depth, 'DEPTH_INTER_SYMBOL_GAP_SECONDS', 0)
+    assert asyncio.run(worker._fetch_cycle(worker._config, fetch_bs=False))
+    assert fetched == ['600000', '000001']
+    assert [snapshot.symbol for snapshot in delivered] == fetched
+    assert worker._bs_explicit

@@ -517,7 +517,7 @@ def test_classic_full_book_and_tdw_markers_have_no_text(app, monkeypatch):
     assert captions == []
 
 
-def test_card_axes_follow_session_and_recent_time_range(app, monkeypatch):
+def test_card_has_no_time_tick_row_in_session_or_recent_view(app, monkeypatch):
     from PySide6.QtGui import QPainter
 
     chart = Sparkline()
@@ -528,9 +528,9 @@ def test_card_axes_follow_session_and_recent_time_range(app, monkeypatch):
     captions = []
     monkeypatch.setattr(QPainter, "drawText", lambda self, *args: captions.append(args[-1]))
     chart.grab()
-    assert {"09:30", "11:30/13:00", "15:00"} <= set(captions)
+    assert not {"09:30", "10:30", "11:30/13:00", "14:00", "15:00"} & set(captions)
     captions.clear()
     chart.set_series([10., 11.], times, recent=True)
     chart.grab()
-    assert set(times) <= set(captions)
+    assert not set(times) & set(captions)
     assert "15:00" not in captions

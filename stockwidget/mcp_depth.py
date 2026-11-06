@@ -14,7 +14,7 @@ from mcp.client.streamable_http import streamable_http_client
 from PySide6.QtCore import QThread, Signal
 
 from .config import Config
-from .market_hours import OFF_HOURS_WAKE_SECONDS, is_a_share_active_time
+from .market_hours import OFF_HOURS_WAKE_SECONDS, is_a_share_active_time, active_updates_allowed
 from .mcp_bs import record_volatility_bs
 from .mcp_notifications import (
     REQUEST_TIMEOUT_SECONDS, SSE_TIMEOUT, _api_key, _bounded, _describe_error, _tool_payload,
@@ -22,7 +22,7 @@ from .mcp_notifications import (
 from .mcp_runtime import McpConnection
 from .symbols import classify
 
-DEPTH_POLL_SECONDS = 60.0
+DEPTH_POLL_SECONDS = 5.0
 DEPTH_RETRY_SECONDS = 5.0
 # 多股票严格串行：上一只深度链完成后至少留这个间隔，再请求下一只。
 DEPTH_INTER_SYMBOL_GAP_SECONDS = 0.75
@@ -263,7 +263,7 @@ def _merge_depth_state(
     cached_full_depth: DepthSnapshot | None,
     consecutive_failures: int,
 ) -> tuple[DepthSnapshot, DepthSnapshot | None, int]:
-    """稳定 UI 深度：失败时保留最近一次千档，只累计失败状态。"""
+    """Prefer fresh fallback data; retain a full book only if every source failed."""
     if snapshot.full_depth:
         fresh = replace(
             snapshot,
@@ -274,7 +274,7 @@ def _merge_depth_state(
         return fresh, fresh, 0
 
     failures = max(0, int(consecutive_failures)) + 1
-    if cached_full_depth is not None and cached_full_depth.full_depth:
+    if not snapshot.available and cached_full_depth is not None and cached_full_depth.full_depth:
         display = replace(
             cached_full_depth,
             full_depth_failures=failures,
@@ -306,14 +306,14 @@ def _serial_depth_delay(previous_finished_at: float, now: float | None = None) -
 
 def _status_text(all_full_depth: bool) -> str:
     return (
-        "已连接 · 千档串行 60s"
+        "已连接 · 千档串行 5s"
         if all_full_depth
         else "已连接 · 深度降级 · 千档串行 5s 重试"
     )
 
 
 class McpDepthPoller(QThread):
-    """深度采集：正常千档低频，降级后 5 秒主动恢复。"""
+    """Poll depth during market hours; synchronize pushed B/S independently."""
 
     depth_ready = Signal(object)
     bs_ready = Signal(str)
@@ -323,11 +323,14 @@ class McpDepthPoller(QThread):
         super().__init__(parent)
         self._config = config
         self._wake = threading.Event()
+        self._changed = threading.Event()
         self._stopping = threading.Event()
         self._lock = threading.Lock()
         self._connection = McpConnection()
-        # 显式刷新请求（启动首帧 / 手动刷新）：非 Debug 下唯一允许主动拉千档的入口。
+        # Explicit requests also work outside market hours.
         self._explicit = True
+        self._bs_explicit = False
+        self._bs_sync_ok = True
         self._last_status = ""
         self._last_bs_fetch_at = 0.0
         self._depth_modes: dict[str, str] = {}
@@ -337,10 +340,12 @@ class McpDepthPoller(QThread):
 
     @staticmethod
     def _enabled(config: Config) -> bool:
+        return bool(config.symbols and _api_key(config))
+
+    @staticmethod
+    def _depth_enabled(config: Config) -> bool:
         return bool(
-            config.symbols
-            and _api_key(config)
-            and (config.display_theme == "theme2" or (config.show_sparkline and config.intraday_chart))
+            config.display_theme in {"theme2", "theme3"} or config.show_sparkline
         )
 
     def apply_config(self, config: Config) -> None:
@@ -363,24 +368,32 @@ class McpDepthPoller(QThread):
                 self._config.debug_mode,
             )
             self._config = config
-        if changed:
-            with self._lock:
+            if changed:
                 self._depth_modes.clear()
                 self._next_depth_due.clear()
                 self._last_full_depth.clear()
                 self._full_depth_failures.clear()
                 self._explicit = True
-            self._wake.set()
+                self._changed.set()
+                self._wake.set()
+        if changed:
             self._connection.cancel()
 
     def refresh_now(self) -> None:
-        """显式刷新：绕过非 Debug 休眠，立刻拉一次千档。"""
+        """Refresh both data channels, including outside market hours."""
         with self._lock:
             self._explicit = True
-        self._wake.set()
+            self._wake.set()
+
+    def refresh_bs_now(self) -> None:
+        """Coalesce notification bursts without forcing another depth request."""
+        with self._lock:
+            self._bs_explicit = True
+            self._wake.set()
 
     def stop(self) -> None:
         self._stopping.set()
+        self._changed.set()
         self._wake.set()
         self._connection.cancel()
 
@@ -390,9 +403,8 @@ class McpDepthPoller(QThread):
             self.status_changed.emit(status)
 
     @staticmethod
-    def _should_poll(config: Config, explicit: bool) -> bool:
-        """本轮是否允许主动拉千档：显式意图优先，否则只有 Debug 模式才轮询。"""
-        return bool(explicit) or bool(config.debug_mode)
+    def _should_poll(config: Config, explicit: bool, now=None) -> bool:
+        return bool(explicit) or active_updates_allowed(config.debug_mode, now)
 
     @staticmethod
     def _should_fetch_bs(
@@ -404,71 +416,78 @@ class McpDepthPoller(QThread):
 
     def run(self) -> None:  # noqa: D102
         while not self._stopping.is_set():
-            self._wake.clear()
             with self._lock:
+                self._wake.clear()
+                self._changed.clear()
                 config = self._config
                 explicit = self._explicit
                 self._explicit = False
+                bs_explicit, self._bs_explicit = self._bs_explicit, False
 
             if not self._enabled(config):
                 self._emit_status("已关闭")
                 self._wake.wait(3600)
-                self._wake.clear()
                 continue
 
-            # 千档继续遵循非 Debug 被动模式；只读的 B/S markers 独立以
-            # 60 秒低频同步（仅交易时段，启动/手动刷新不受限制）。
-            fetch_depth = McpDepthPoller._should_poll(config, explicit)
+            fetch_depth = self._depth_enabled(config) and self._should_poll(config, explicit)
             started = time.monotonic()
-            bs_allowed = bool(explicit or config.debug_mode or is_a_share_active_time())
+            bs_allowed = bool(explicit or bs_explicit or active_updates_allowed(config.debug_mode))
             fetch_bs = self._should_fetch_bs(
-                config, explicit, started - self._last_bs_fetch_at
+                config, explicit or bs_explicit, started - self._last_bs_fetch_at
             )
             if not fetch_depth and not fetch_bs:
-                self._emit_status("已休眠 · 千档被动 / B/S 等待同步窗口")
+                self._emit_status("已休眠 · 等待交易时段或手动刷新")
                 self._wake.wait(OFF_HOURS_WAKE_SECONDS if not bs_allowed else
                                 max(0.5, BS_POLL_SECONDS - (started - self._last_bs_fetch_at)))
-                self._wake.clear()
                 continue
 
             all_full_depth = False
             try:
+                self._bs_sync_ok = True
                 all_full_depth = asyncio.run(self._connection.run(
                     lambda: self._fetch_cycle(
                         config, fetch_bs=fetch_bs, fetch_depth=fetch_depth,
                         force_depth=explicit,
-                    ), self._stopping, self._wake,
+                    ), self._stopping, self._changed,
                 ))
                 if fetch_bs:
-                    self._last_bs_fetch_at = time.monotonic()
+                    self._last_bs_fetch_at = time.monotonic() - (
+                        0 if self._bs_sync_ok else BS_POLL_SECONDS - DEPTH_RETRY_SECONDS
+                    )
+                    if not self._bs_sync_ok:
+                        with self._lock:
+                            self._bs_explicit = True
                 if not self._stopping.is_set():
                     self._emit_status(
-                        _status_text(all_full_depth) if fetch_depth
-                        else "已连接 · B/S 同步（千档被动）"
+                        "B/S 同步失败 · 5 秒后重试" if not self._bs_sync_ok
+                        else _status_text(all_full_depth) if fetch_depth
+                        else "已连接 · B/S 同步"
                     )
             except BaseException as exc:  # noqa: BLE001
                 if self._stopping.is_set():
                     break
-                if isinstance(exc, asyncio.CancelledError) and self._wake.is_set():
+                if isinstance(exc, asyncio.CancelledError) and self._changed.is_set():
                     continue
                 self._emit_status(f"MCP 读取失败：{_describe_error(exc)} · 5 秒后重试")
                 # Finish the interrupted explicit request even outside trading hours.
                 with self._lock:
                     self._explicit = self._explicit or fetch_depth
+                    self._bs_explicit = self._bs_explicit or fetch_bs
                 self._wake.wait(DEPTH_RETRY_SECONDS)
                 continue
 
             remaining = (
-                self._next_wake_seconds(config) if config.debug_mode
+                self._next_wake_seconds(config) if active_updates_allowed(config.debug_mode)
                 else OFF_HOURS_WAKE_SECONDS if not is_a_share_active_time()
                 else max(0.5, BS_POLL_SECONDS - (time.monotonic() - self._last_bs_fetch_at))
             )
+            if not self._bs_sync_ok:
+                remaining = min(remaining, DEPTH_RETRY_SECONDS)
             if not self._stopping.is_set():
                 self._wake.wait(remaining)
-                self._wake.clear()
 
     def _next_wake_seconds(self, config: Config, now: float | None = None) -> float:
-        """按每只股票真实 next_due 唤醒，避免串行耗时把 60s 变成约 120s。"""
+        """Wake at the earliest due symbol without adding a second batch delay."""
         current = time.monotonic() if now is None else float(now)
         codes = [
             item.code
@@ -483,13 +502,15 @@ class McpDepthPoller(QThread):
             depth_wait = DEPTH_RETRY_SECONDS
         else:
             depth_wait = max(0.0, min(float(value) for value in due_values) - current)
+        if not self._depth_enabled(config):
+            depth_wait = BS_POLL_SECONDS
 
         if self._last_bs_fetch_at <= 0:
             bs_wait = DEPTH_RETRY_SECONDS
         else:
             bs_wait = max(0.0, self._last_bs_fetch_at + BS_POLL_SECONDS - current)
 
-        # 最短保留一点睡眠，防止异常/边界条件形成空转；最长不超过正常 60s。
+        # Avoid a busy loop while still honoring the earliest due request.
         return min(DEPTH_POLL_SECONDS, max(0.1, min(depth_wait, bs_wait)))
 
     async def _fetch_cycle(
@@ -500,7 +521,6 @@ class McpDepthPoller(QThread):
         if not key:
             return False
         headers = {"Authorization": f"Bearer {key}"}
-        now = time.monotonic()
         last_depth_finished_at = 0.0
         valid_codes = [
             item.code
@@ -518,14 +538,14 @@ class McpDepthPoller(QThread):
                 ) as session:
                     await _bounded(session.initialize())
                     for raw_symbol in config.symbols:
-                        if self._stopping.is_set() or self._wake.is_set():
+                        if self._stopping.is_set() or self._changed.is_set():
                             return False
                         symbol = classify(raw_symbol)
                         if symbol is None:
                             continue
 
                         due = self._next_depth_due.get(symbol.code, 0.0)
-                        depth_due = fetch_depth and (force_depth or now >= due)
+                        depth_due = fetch_depth and (force_depth or time.monotonic() >= due)
                         if not depth_due and not fetch_bs:
                             continue
 
@@ -535,6 +555,7 @@ class McpDepthPoller(QThread):
                                 # 独立通知 UI：不能等待下一次行情快照才出现标记。
                                 self.bs_ready.emit(symbol.code)
                             except Exception as exc:
+                                self._bs_sync_ok = False
                                 # B/S 与盘口恢复独立，失败可诊断但不影响千档。
                                 self.status_changed.emit(
                                     f"B/S {symbol.code} 读取失败：{type(exc).__name__}: {str(exc)[:80]}"
@@ -556,14 +577,15 @@ class McpDepthPoller(QThread):
                             )
                             if cached_full is not None:
                                 self._last_full_depth[symbol.code] = cached_full
+                            else:
+                                self._last_full_depth.pop(symbol.code, None)
                             self._full_depth_failures[symbol.code] = failures
 
                             # 每只股票独立计时：降级后至少 5 秒再尝试它自己的千档。
                             self._next_depth_due[symbol.code] = (
                                 last_depth_finished_at + _poll_seconds(snapshot.full_depth)
                             )
-                            # 千档短暂失败时继续显示本地缓存，避免 UI 突然切到十档/五档。
-                            # 连续失败次数随快照下发，UI 达到阈值后在价格虚线上显示 ERROR。
+                            # Fresh ten/five-level books must replace an older full book.
                             self.depth_ready.emit(display_snapshot)
 
         # 未抓过的股票也视为未恢复；它们会在下一轮立刻到期。

@@ -353,7 +353,9 @@ function refreshHints() {
   for (const choice of document.querySelectorAll('[name="theme-choice"]')) {
     choice.checked = settingsScope !== 'common' && choice.value === activeTheme;
   }
-  for (const section of document.querySelectorAll('[data-settings-scope]')) {
+  // body also stores the current scope for dynamically inserted MCP cards.
+  // Only hide cards: including body makes the whole page blank on a scope switch.
+  for (const section of document.querySelectorAll('section[data-settings-scope]')) {
     section.hidden = section.dataset.settingsScope !== settingsScope;
   }
   for (const field of document.querySelectorAll('[data-themes]')) {

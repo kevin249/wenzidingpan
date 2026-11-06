@@ -479,3 +479,32 @@ def test_snapshot_prints_only_new_enabled_local_bs(monkeypatch, capsys, source, 
         app_module.WidgetApp._on_snapshot(stub, snapshot)
     assert len(updates) == 3
     assert capsys.readouterr().out.count("[本地B/S]") == expected
+
+
+def test_bs_notification_refreshes_authoritative_markers_immediately(dispatch):
+    synced = []
+    stub = SimpleNamespace(
+        config=Config(mcp_bell_terminal=False, mcp_bell_toast=False,
+                      mcp_bell_tray_icon=False, mcp_bell_window=False),
+        window=_FakeWindow(), tray=None, poller=_FakePoller(),
+        depth_poller=SimpleNamespace(refresh_bs_now=lambda: synced.append(True)),
+    )
+    app_module.WidgetApp._on_mcp_notification(stub, McpNotification(
+        event_id='new-bs', title='B', body='', event_type='trading.holding_t_signal',
+    ))
+    assert synced == [True]
+    assert stub.poller.refreshes == 1
+
+
+def test_notification_baseline_refreshes_chart_without_ringing_alerts():
+    updated = []
+    stub = SimpleNamespace(window=SimpleNamespace(refresh_bs_signals=lambda: updated.append(True)))
+    app_module.WidgetApp._on_mcp_cache_updated(stub)
+    assert updated == [True]
+
+
+def test_manual_refresh_includes_notification_stream():
+    workers = [_FakePoller() for _ in range(3)]
+    stub = SimpleNamespace(poller=workers[0], depth_poller=workers[1], notification_listener=workers[2])
+    app_module.WidgetApp.refresh(stub)
+    assert [worker.refreshes for worker in workers] == [1, 1, 1]

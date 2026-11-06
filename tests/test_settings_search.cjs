@@ -43,12 +43,15 @@ function setup() {
   const themeSection = Object.assign(new Element(), {dataset: {settingsScope: 'theme'}});
   const secondOnly = Object.assign(new Element(), {dataset: {themes: 'theme2'}});
   const thirdOnly = Object.assign(new Element(), {dataset: {themes: 'theme3'}});
+  const body = Object.assign(new Element(), {hidden: false, dataset: {token: 'test-token'}});
   const context = vm.createContext({
     document: {
-      body: { dataset: { token: 'test-token' } },
+      body,
       getElementById: el,
       querySelectorAll: selector => selector === '[name="theme-choice"]' ? choices
-        : selector === '[data-settings-scope]' ? [commonSection, themeSection]
+        : selector === '[data-settings-scope]' ? [
+            ...('settingsScope' in body.dataset ? [body] : []), commonSection, themeSection]
+        : selector === 'section[data-settings-scope]' ? [commonSection, themeSection]
         : selector === '[data-themes]' ? [secondOnly, thirdOnly] : [],
       querySelector: selector => selector === 'main' ? el('main') : choices.find(choice => choice.checked),
       createElement: () => new Element(),
@@ -68,7 +71,7 @@ function setup() {
   });
   const source = fs.readFileSync(path.join(__dirname, '../stockwidget/webui/static/settings.js'), 'utf8');
   vm.runInContext(source, context);
-  return { el, context, requests, timers, configRequests, commonSection, themeSection, secondOnly, thirdOnly, choices };
+  return { el, context, requests, timers, configRequests, commonSection, themeSection, secondOnly, thirdOnly, choices, body };
 }
 
 function answer(request, code) {
@@ -143,7 +146,7 @@ test('HTTP failures clear old suggestions and show a useful error', async () => 
 
 
 test('common and per-theme forms expose and submit only their own settings', () => {
-  const {context, el, commonSection, themeSection, secondOnly, thirdOnly} = setup();
+  const {context, el, commonSection, themeSection, secondOnly, thirdOnly, body} = setup();
   context.fill({display_theme: 'theme3', symbols: [], opacity: 1, background_alpha: .5,
     text_opacities: {name: .4}, theme3_show_tdw: false, chart_line_width: 2.3, depth_line_width: .6});
   assert.equal(commonSection.hidden, true);
@@ -157,6 +160,7 @@ test('common and per-theme forms expose and submit only their own settings', () 
   assert.equal('mcp_url' in patch, false);
   assert.equal('symbols' in patch, false);
   el('common-settings').dispatch('click');
+  assert.equal(body.hidden, false, 'opening MCP settings must never hide the entire page');
   assert.equal(commonSection.hidden, false);
   assert.equal(themeSection.hidden, true);
   el('mcp_url').value = 'http://localhost:8802/mcp';
@@ -164,6 +168,12 @@ test('common and per-theme forms expose and submit only their own settings', () 
   assert.equal(patch.mcp_url, 'http://localhost:8802/mcp');
   assert.equal('chart_line_width' in patch, false);
   assert.equal('text_opacities' in patch, false);
+  context.fill({display_theme: 'theme3', symbols: [], mcp_url: patch.mcp_url});
+  assert.equal(body.hidden, false, 'saving MCP settings must leave the page visible');
+  context.switchTheme('theme3');
+  assert.equal(body.hidden, false, 'returning to the current theme must leave navigation visible');
+  el('common-settings').dispatch('click');
+  assert.equal(body.hidden, false);
 });
 
 test('switching from common settings saves common fields before loading a theme profile', async () => {

@@ -27,7 +27,7 @@ from .mcp_runtime import McpConnection
 MCP_API_KEY_ENV = "GUPIAO_MCP_API_KEY"
 RECONNECT_SECONDS = 3
 SSE_TIMEOUT = httpx2.Timeout(30.0, read=300.0)
-POLL_SECONDS = 60
+POLL_SECONDS = 5
 REQUEST_TIMEOUT_SECONDS = 15.0
 CLEANUP_TIMEOUT_SECONDS = 2.0
 
@@ -157,6 +157,7 @@ def _notifications(payload: dict[str, Any]) -> list[McpNotification]:
 
 class McpNotificationListener(QThread):
     notification_ready = Signal(object)
+    cache_updated = Signal()
     status_changed = Signal(str)
 
     def __init__(self, config: Config, parent=None) -> None:
@@ -194,6 +195,11 @@ class McpNotificationListener(QThread):
 
     def stop(self) -> None:
         self._stopping.set()
+        self._wake.set()
+        self._cancel_connection()
+
+    def refresh_now(self) -> None:
+        """Reconnect and reconcile the resource without replaying old alerts."""
         self._wake.set()
         self._cancel_connection()
 
@@ -377,6 +383,7 @@ class McpNotificationListener(QThread):
             self._remember(item.event_id)
         with self._lock:
             self._baseline_ready = True
+        self.cache_updated.emit()
         return 0
 
     async def _deliver_resource(
@@ -433,8 +440,8 @@ class McpNotificationListener(QThread):
                     await self._deliver_resource(session, uri, cancel_event)
                 continue
 
-            # 即使推送流表面还活着，也每分钟读一次 sequence。这个读取很轻，只用于
-            # 检测“资源已经前进但 ResourceUpdated 没到”的静默失效，并补回缓冲里的事件。
+            # Even a seemingly healthy stream can silently lose resource updates.
+            # Read the lightweight resource every five seconds to reconcile it.
             await self._deliver_resource(session, uri, cancel_event)
 
     def _emit_delivery_status(self, missing: int, mode: str = "实时订阅") -> None:
@@ -477,6 +484,7 @@ class McpNotificationListener(QThread):
             record_notification(notification)
             if self._remember(notification.event_id):
                 self.notification_ready.emit(notification)
+        self.cache_updated.emit()
 
     def _remember(self, event_id: str) -> bool:
         with self._lock:

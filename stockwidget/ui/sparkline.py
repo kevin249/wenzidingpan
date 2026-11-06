@@ -390,6 +390,8 @@ class Sparkline(SizedWidget):
         painter.restore()
         painter.save()
         status = []
+        if snapshot.using_cached_full_depth:
+            status.append("缓存")
         if snapshot.depth_mode != DEPTH_FULL and not snapshot.full_depth:
             status.append("降级")
         if snapshot.received_at and time.time() - snapshot.received_at > DEPTH_STALE_SECONDS:
@@ -426,7 +428,6 @@ class Sparkline(SizedWidget):
                     stamp = datetime.fromtimestamp(self._depth.received_at, SHANGHAI_TZ)
                     footer.append(f"盘口采样 {stamp:%H:%M:%S}")
                 total_height -= metrics.height() + 4
-            total_height -= metrics.height() + 4
             width -= metrics.horizontalAdvance(f"{max(points):.2f}") + 6
         tdw_enabled = self._show_signals and self._show_tdw_levels
         # 大卡片给动力线独立的纵轴，小卡片保留原有叠加刻度。
@@ -504,24 +505,15 @@ class Sparkline(SizedWidget):
                 last = minutes[-1] if minutes else ""
                 start, end = trading_minute(first), trading_minute(last)
                 ticks = [(0, first), (1, last)] if start is not None and end is not None and end > start else []
-            last_right = -1
-            for fraction, caption in ticks:
+            for fraction, _caption in ticks:
                 x = chart_left + fraction * (chart_right - chart_left)
-                label_width = metrics.horizontalAdvance(caption) + 2
-                left = max(chart_left, min(x - label_width / 2, chart_right - label_width))
-                if left <= last_right:
-                    continue
-                last_right = left + label_width + 2
                 painter.setPen(QPen(grid_color, .8, Qt.DashLine))
                 painter.drawLine(QPointF(x, 1), QPointF(x, height - 1))
                 if indicator_height > label_height + 15:
                     painter.drawLine(QPointF(x, height + label_height + 5), QPointF(x, total_height - 7))
-                painter.setPen(self._text_color(self._color))
-                painter.drawText(QRectF(left, total_height + 2, label_width, label_height),
-                                 Qt.AlignCenter, caption)
             if footer:
                 painter.setPen(self._text_color(self._color, alpha=182))
-                footer_rect = QRectF(0, total_height + label_height + 5, self.width(), label_height)
+                footer_rect = QRectF(0, total_height + 2, self.width(), label_height)
                 painter.drawText(footer_rect, Qt.AlignLeft | Qt.AlignVCenter, footer[0])
                 if len(footer) == 2 and metrics.horizontalAdvance("  ".join(footer)) <= self.width():
                     painter.drawText(footer_rect, Qt.AlignRight | Qt.AlignVCenter, footer[1])

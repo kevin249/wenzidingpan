@@ -112,6 +112,7 @@ class WidgetApp:
             self._on_mcp_notification, Qt.QueuedConnection
         )
         self.notification_listener.status_changed.connect(self._on_mcp_status, Qt.QueuedConnection)
+        self.notification_listener.cache_updated.connect(self._on_mcp_cache_updated, Qt.QueuedConnection)
 
         if QSystemTrayIcon.isSystemTrayAvailable():
             self.tray = Tray(config)
@@ -151,6 +152,7 @@ class WidgetApp:
     def refresh(self) -> None:
         self.poller.refresh_now()
         self.depth_poller.refresh_now()
+        self.notification_listener.refresh_now()
 
     def open_settings(self) -> None:
         QDesktopServices.openUrl(QUrl(self.server.url))
@@ -334,6 +336,11 @@ class WidgetApp:
         self._local_bs_notifier = LocalBsNotifier()
         self.window.refresh_bs_signals()
         self.poller.refresh_now()
+        self.depth_poller.refresh_bs_now()
+
+    def _on_mcp_cache_updated(self) -> None:
+        """Baseline loads and resource reads must repaint even without a new alert."""
+        self.window.refresh_bs_signals()
 
     def _on_bs_updated(self, symbol: str) -> None:
         """由 MCP 线程通知图形线程刷新 B/S，不等行情轮询。"""
@@ -356,6 +363,10 @@ class WidgetApp:
         # 行情也会独立按设置间隔轮询。千档不在此列——它本身来自 MCP，
         # 推送密集时再叠加深度请求只会放大服务端开销。
         self.poller.refresh_now()
+        if notification.event_type == mcp_bs.BS_EVENT_TYPE:
+            # The full-day marker snapshot takes precedence over notifications.
+            # Refresh it immediately; notification bursts coalesce in the worker.
+            self.depth_poller.refresh_bs_now()
         timestamp = notification.created_at or "时间未知"
         print("\n======\n", flush=True)
         print(f"[MCP提醒] {timestamp} | {notification.title}", flush=True)

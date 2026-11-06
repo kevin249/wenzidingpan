@@ -723,3 +723,40 @@ def test_legacy_cleanup_timeout_does_not_hide_original_disconnect(monkeypatch):
 
     asyncio.run(asyncio.wait_for(scenario(), timeout=1))
     assert cancelled == [True]
+
+
+def test_baseline_and_reconnect_update_cache_without_replaying_alerts(monkeypatch):
+    import json
+    from PySide6.QtCore import Qt
+    listener = McpNotificationListener(Config())
+    caches, alerts, recorded = [], [], []
+    listener.cache_updated.connect(lambda: caches.append(True), Qt.DirectConnection)
+    listener.notification_ready.connect(alerts.append, Qt.DirectConnection)
+    monkeypatch.setattr(mcp_notifications, 'record_notification', recorded.append)
+
+    class Session:
+        async def read_resource(self, uri):
+            return SimpleNamespace(contents=[SimpleNamespace(text=json.dumps({
+                'latest_sequence': 1,
+                'notifications': [{'event_id': 'old', 'title': 'B', 'body': '',
+                                   'event_type': 'trading.holding_t_signal'}],
+            }))])
+
+    asyncio.run(listener._establish_baseline(Session(), 'uri://test'))
+    asyncio.run(listener._establish_baseline(Session(), 'uri://test'))
+    assert caches == [True, True]
+    assert alerts == []
+    assert recorded
+
+
+def test_manual_refresh_reconnects_without_resetting_event_deduplication(monkeypatch):
+    listener = McpNotificationListener(Config())
+    listener._baseline_ready = True
+    listener._remember('old')
+    canceled = []
+    monkeypatch.setattr(listener, '_cancel_connection', lambda: canceled.append(True))
+    listener.refresh_now()
+    assert canceled == [True]
+    assert listener._wake.is_set()
+    assert listener._baseline_ready
+    assert not listener._remember('old')

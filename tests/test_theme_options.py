@@ -178,7 +178,8 @@ def test_plot_line_width_and_chart_text_alpha_reach_the_painter(app, monkeypatch
     monkeypatch.setattr(QPainter, "drawPath", record_path)
     chart.grab()
     assert 3.2 in paths
-    assert ("09:30", 51) in texts
+    assert not any(caption == "09:30" for caption, _ in texts)
+    assert any(alpha == 51 for caption, alpha in texts)
     assert ("11.00", 102) in texts
     assert any(caption.startswith("TDW") and alpha == 153 for caption, alpha in texts)
     chart.close()
