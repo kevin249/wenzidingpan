@@ -51,11 +51,12 @@ def draw_levels(painter, left, right, height, color, *, label_inset=0, mirror=Fa
     return (font, color, labels) if labels else None
 
 
-def draw_level_labels(painter, captions):
+def draw_level_labels(painter, captions, *, text_opacity=1.0):
     if captions is None:
         return
     font, color, labels = captions
     painter.save()
+    painter.setOpacity(painter.opacity() * text_opacity)
     ink = QColor(color)
     ink.setAlpha(255)
     backing = QColor(18, 18, 18, 242) if ink.lightness() >= 120 else QColor(246, 246, 246, 242)
@@ -67,12 +68,12 @@ def draw_level_labels(painter, captions):
     painter.restore()
 
 
-def draw_realtime_candles(painter, bars, offset, x_of, y_of, color):
+def draw_realtime_candles(painter, bars, offset, x_of, y_of, color, *, line_width=1):
     """Group only for painting when several real-time bars share four screen pixels."""
     if not bars:
         return
     painter.save()
-    painter.setPen(QPen(color, 1))
+    painter.setPen(QPen(color, line_width))
     i = 0
     while i < len(bars):
         x = x_of(offset + i)
@@ -131,7 +132,7 @@ def visible_events(events, count, x_of):
     return reversed(retained)
 
 
-def draw_power(painter, power, x_of, height, color):
+def draw_power(painter, power, x_of, height, color, *, text_opacity=1.0):
     span = x_of(len(power) - 1) - x_of(0) if power else 0
     spacing = 9 if len(power) > max(1, span) else 0
     path = series_path(power, x_of, lambda value: _power_y(value, height), spacing)
@@ -144,6 +145,7 @@ def draw_power(painter, power, x_of, height, color):
             font = painter.font()
             font.setPixelSize(10)
             painter.setFont(font)
+            painter.setOpacity(painter.opacity() * text_opacity)
             painter.drawText(QPointF(x_of(0) + 132, height - 3), f"TDW {latest:.2f}")
     painter.restore()
 
@@ -158,26 +160,33 @@ def draw_power_panel(painter, power, events, x_of, right, width, height, paint_c
     painter.setPen(QPen(paint_color(LEVEL_COLOR, 85), 1))
     painter.drawLine(QPointF(0, 0), QPointF(width, 0))
     painter.setPen(text_color)
+    if height < 4 or right < 1:
+        painter.restore()
+        return
+    # Guides take priority over captions in a compact panel.
     caption = f"TDW  {latest:.2f}" if latest is not None else "TDW  等待成交数据"
-    painter.drawText(QRectF(0, 1, width, caption_h), Qt.AlignLeft | Qt.AlignVCenter, caption)
-    if height < caption_h + 12:
-        painter.restore()
-        return
-
-    margin = max(8, caption_h / 2)
-    top, bottom = caption_h + margin, height - margin
-    if bottom <= top:
-        painter.restore()
-        return
+    show_caption = height >= caption_h + 36 and width >= metrics.horizontalAdvance(caption)
+    if show_caption:
+        painter.drawText(QRectF(0, 1, width, caption_h), Qt.AlignLeft | Qt.AlignVCenter, caption)
+    top, bottom = (caption_h + 4 if show_caption else 0), height - 1
 
     def y_of(value):
         return bottom - (bottom - top) * value / 4
 
     guides = {"S2": "#bf65b5", "S1": "#2fa9b1", "B2": "#d2ae38", "B1": "#71a75d"}
-    for tag, value in LEVELS:
-        painter.setPen(QPen(paint_color(QColor(guides[tag]), 195), 0.9))
-        painter.drawLine(QPointF(0, y_of(value)), QPointF(right, y_of(value)))
-    if latest is not None:
+    # Recompute the 0–4 mapping for every paint. Distinct source levels retain
+    # distinct rows even when rounding would collapse the upper/lower pairs.
+    ordered = sorted(LEVELS, key=lambda item: item[1], reverse=True)
+    previous_row = int(top) - 1
+    painter.save()
+    painter.setRenderHint(QPainter.Antialiasing, False)
+    for index, (tag, value) in enumerate(ordered):
+        row = max(previous_row + 1, min(round(y_of(value)), int(bottom) - (3 - index)))
+        previous_row = row
+        painter.setPen(QPen(paint_color(QColor(guides[tag]), 220), 1))
+        painter.drawLine(QPointF(0, row), QPointF(right, row))
+    painter.restore()
+    if latest is not None and height >= 80:
         painter.setPen(QPen(paint_color(QColor("#83c95d"), 195), 1, Qt.DotLine))
         painter.drawLine(QPointF(0, y_of(latest)), QPointF(right, y_of(latest)))
 
@@ -209,13 +218,14 @@ def draw_power_panel(painter, power, events, x_of, right, width, height, paint_c
             QPointF(x+1, tail), QPointF(x+1, base), QPointF(x+3, base),
         ]))
     painter.setPen(text_color)
-    for value in (0, 2, 4):
-        painter.drawText(QRectF(right + 2, y_of(value) - caption_h / 2, width - right - 2, caption_h),
-                         Qt.AlignRight | Qt.AlignVCenter, f"{value:.1f}")
+    if height >= 3 * caption_h and width - right >= metrics.horizontalAdvance("4.0") + 2:
+        for value in (0, 2, 4):
+            painter.drawText(QRectF(right + 2, y_of(value) - caption_h / 2, width - right - 2, caption_h),
+                             Qt.AlignRight | Qt.AlignVCenter, f"{value:.1f}")
     painter.restore()
 
 
-def draw_event(painter, x, y, text, height, width, color, labels):
+def draw_event(painter, x, y, text, height, width, color, labels, *, text_opacity=1.0):
     buying = text.startswith("B")
     y = max(1.0, min(height - 1.0, y))
     # Preserve triangle direction at frame edges and connect back to the price.
@@ -241,6 +251,7 @@ def draw_event(painter, x, y, text, height, width, color, labels):
         top = max(0, min(height - 13, base if delta > 0 else base - 13))
         rect = QRectF(left, top, text_width, 13)
         if not any(rect.intersects(other) for other in labels):
+            painter.setOpacity(painter.opacity() * text_opacity)
             painter.drawText(rect, Qt.AlignCenter, text)
             labels.append(rect)
     painter.restore()

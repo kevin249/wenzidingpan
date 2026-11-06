@@ -248,6 +248,11 @@ class QuoteRow(SizedWidget):
         self.sparkline.setVisible(self._visible("chart"))
         self.sparkline.set_fill_width(config.chart_fill_width)
         self.sparkline.set_card_style(config.display_theme == "theme3", config.tdw_label_color, config.color_scheme)
+        self.sparkline.set_display_options(show_tdw=config.theme3_show_tdw,
+                                           depth_width=config.chart_depth_width,
+                                           text_opacities=config.text_opacities,
+                                           chart_line_width=config.chart_line_width,
+                                           depth_line_width=config.depth_line_width)
         self.dark_label.setText("暗盘" if config.display_theme == "theme3" else "暗")
         self.sparkline.set_show_depth(config.show_chart_depth)
         self.name_label.setVisible(self._visible("name"))
@@ -797,14 +802,14 @@ class QuoteRow(SizedWidget):
         self.name_label.setToolTip(self.name_label.full_text() if card else "")
         card_ink = QColor("#f6f1e7") if QColor(config.background_color).lightness() < 128 else QColor("#24272c")
         primary_color = card_ink if card else color
-        name_color = text_color(config, config.stock_name_color, color)
+        name_color = text_color(config, config.stock_name_color, color, region="name")
         self.name_label.setStyleSheet(
             _color_style(name_color)
         )
 
         if quote.error:
             self.price_label.setText(quote.error)
-            self.price_label.setStyleSheet(_color_style(MUTED))
+            self.price_label.setStyleSheet(_color_style(text_color(config, "auto", MUTED, region="price")))
             self.percent_label.setText("")
             # 报价错误只更新错误文字，不把已经画出的曲线清空后重画。
             if trend:
@@ -817,7 +822,7 @@ class QuoteRow(SizedWidget):
 
         self.price_label.setText(fmt_price(quote.price))
         self.price_label.setStyleSheet(
-            _color_style(text_color(config, config.stock_price_color, color))
+            _color_style(text_color(config, config.stock_price_color, color, region="price"))
         )
         percent_sign = "+" if quote.change_percent is not None and quote.change_percent > 0 else ""
         self.percent_label.setText(
@@ -826,7 +831,7 @@ class QuoteRow(SizedWidget):
             else ""
         )
         self.percent_label.setStyleSheet(
-            _color_style(text_color(config, config.stock_percent_color, color))
+            _color_style(text_color(config, config.stock_percent_color, color, region="percent"))
         )
 
         self._update_sparkline_data(quote, config, trend, primary_color)
@@ -857,9 +862,9 @@ class QuoteRow(SizedWidget):
         # 涨跌色**，名称、代码、高低价一律中性色。所以「涨=红」时不会整行飘红。
         # 设置页里的固定色照旧生效；选「跟随涨跌」时在主题2 落到中性灰白（``TEXT``）。
         # 名字与代码仍同一个颜色（用户先前选择），字号分主次。
-        name_color = text_color(config, config.stock_name_color, TEXT)
+        name_color = text_color(config, config.stock_name_color, TEXT, region="name")
         self.theme2_name_label.setStyleSheet(_color_style(name_color))
-        self.theme2_code_label.setStyleSheet(_color_style(name_color))
+        self.theme2_code_label.setStyleSheet(_color_style(text_color(config, config.stock_name_color, TEXT, region="code")))
 
         dark = fmt_money(quote.dark_fund)
         main = fmt_money(quote.dark_main_net_inflow)
@@ -874,7 +879,7 @@ class QuoteRow(SizedWidget):
                 text_color(
                     config,
                     config.dark_trade_color,
-                    direction_color(config, quote.dark_fund),
+                    direction_color(config, quote.dark_fund), region="dark",
                 )
             )
         )
@@ -891,7 +896,7 @@ class QuoteRow(SizedWidget):
         self.theme2_high_low_label.setText(f"高 {high_text}  低 {low_text}")
         # 高低价是次要信息，主题2 一律中性灰（与走势图里的高低价标注同色），
         # 不再跟着涨跌染色——否则一只上涨的股票整行只剩红。
-        self.theme2_high_low_label.setStyleSheet(_color_style(text_color(config, "auto", MUTED)))
+        self.theme2_high_low_label.setStyleSheet(_color_style(text_color(config, "auto", MUTED, region="high_low")))
 
         # 股价 / 涨跌幅各自走设置页里的颜色（固定色或跟随涨跌），与主题1 同一条路径；
         # 它们也是整个主题2 行里**唯一**两块带涨跌色的文字，分时曲线固定走中性色。
@@ -974,10 +979,10 @@ class QuoteRow(SizedWidget):
         dark_color = text_color(
             config,
             config.dark_trade_color,
-            direction_color(config, dark_fund),
+            direction_color(config, dark_fund), region="dark",
         )
         style = _color_style(dark_color)
-        self.dark_label.setStyleSheet(_color_style(text_color(config, config.dark_trade_color, MUTED))
+        self.dark_label.setStyleSheet(_color_style(text_color(config, config.dark_trade_color, MUTED, region="dark"))
                                      if config.display_theme == "theme3" else style)
         self.dark_value.setStyleSheet(style)
         self.dark_box.setVisible(text is not None)

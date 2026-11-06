@@ -29,6 +29,8 @@ THEME3_DEFAULTS = {
     "stock_name_color": "#f4f4f1", "stock_price_color": "#f4f4f1", "dark_trade_color": "auto",
     "stock_name_bold": True, "stock_percent_bold": True, "visible_rows": 2,
     "show_open_line": False,
+    "chart_depth_width": 240,
+    "chart_line_width": 1.8,
 }
 # K 线（日 K / 分钟 K）数据源。元组顺序即 auto 的降级顺序，
 # stockwidget/kline.py 直接读它，两边不会再各写一份。
@@ -43,8 +45,13 @@ COMPONENT_REGIONS = (
     ("price", "股价"),
     ("percent", "涨跌幅"),
     ("dark", "暗盘"),
-    ("chart", "K 线（经典主题）"),
+    ("chart", "走势图（主题 1、3）"),
     ("canvas", "千档与 K 线画布（主题 2）"),
+)
+TEXT_REGIONS = (
+    ("name", "股票名称"), ("code", "股票代码"), ("price", "现价"),
+    ("percent", "涨跌幅"), ("dark", "暗盘"), ("high_low", "最高 / 最低价"),
+    ("chart", "图表坐标与状态文字"), ("tdw", "TDW 图注与信号文字"),
 )
 
 # 只把“显示/窗口外观”按主题隔离。数据源、自选、刷新频率、Debug、
@@ -70,6 +77,11 @@ THEME_SCOPED_FIELDS = (
     "intraday_chart",
     "chart_fill_width",
     "tdw_recent_five",
+    "theme3_show_tdw",
+    "chart_depth_width",
+    "chart_line_width",
+    "depth_line_width",
+    "text_opacities",
     "show_dark_trade",
     "compact",
     "theme2_side",
@@ -194,6 +206,11 @@ class Config:
     intraday_chart: bool = True
     chart_fill_width: bool = False  # 默认完整交易日横轴；开启后已有分时数据铺满宽度
     tdw_recent_five: bool = False
+    theme3_show_tdw: bool = True
+    chart_depth_width: int = 0  # 主题 1、3 挂单条最长长度；0 自动
+    chart_line_width: float = 1.4
+    depth_line_width: float = .8
+    text_opacities: dict[str, float] = field(default_factory=dict)
     show_dark_trade: bool = True
     compact: bool = False
     display_theme: str = "theme1"  # 经典网格 / 千档竖列 / 分时＋TDW
@@ -365,6 +382,19 @@ def sanitize(raw: Any, *, _include_theme_profiles: bool = True) -> Config:
     depth_width = _as_number(raw.get("theme2_depth_width"))
     if depth_width is not None:
         out.theme2_depth_width = int(_clamp(round(depth_width), 40, 600))
+    depth_width = _as_number(raw.get("chart_depth_width"))
+    if depth_width is not None:
+        out.chart_depth_width = int(_clamp(round(depth_width), 0, 1200))
+    for key in ("chart_line_width", "depth_line_width"):
+        value = _as_number(raw.get(key))
+        if value is not None:
+            setattr(out, key, round(_clamp(value, .3, 6), 1))
+    opacities = raw.get("text_opacities")
+    if isinstance(opacities, dict):
+        for region, _ in TEXT_REGIONS:
+            value = _as_number(opacities.get(region))
+            if value is not None:
+                out.text_opacities[region] = round(_clamp(value, 0, 1), 2)
 
     component_sizes = raw.get("component_sizes")
     if isinstance(component_sizes, dict):
@@ -461,6 +491,7 @@ def sanitize(raw: Any, *, _include_theme_profiles: bool = True) -> Config:
         "show_chart_depth",
         "show_sparkline_fill",
         "show_bs_points",
+        "theme3_show_tdw",
         "show_open_line",
         "show_high_low",
         "show_stock_name",

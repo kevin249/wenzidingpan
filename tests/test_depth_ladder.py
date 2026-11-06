@@ -766,7 +766,9 @@ def test_theme2_depth_width_controls_natural_width(app):
 
 
 def test_theme2_depth_levels_are_evenly_distributed_over_window_height(app):
-    widget = _widget()
+    # This raster color-threshold test needs an opaque core; subpixel widths
+    # are covered by the per-price stroke/volume regression instead.
+    widget = _widget(depth_line_width=2)
     widget.resize(260, 240)
     widget.set_depth(_depth())
     image = _render(widget)

@@ -385,3 +385,37 @@ def test_recent_seconds_view_is_an_opt_in_persisted_setting(server):
     assert saved["tdw_recent_five"] and Store(server.store.path).get().tdw_recent_five
     body = client.get(f"/?token={server.token}").get_data(as_text=True)
     assert "checked" in body.split('id="tdw_recent_five"')[1].split("</label>")[0]
+
+
+def test_shared_controls_and_theme_controls_have_separate_sections(server):
+    from html.parser import HTMLParser
+    from stockwidget.config import TEXT_REGIONS
+
+    class Scopes(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.stack, self.controls = [], {}
+
+        def handle_starttag(self, tag, attributes):
+            attributes = dict(attributes)
+            if tag in ("input", "select") and attributes.get("id"):
+                scopes = [attrs.get("data-settings-scope") for _, attrs in self.stack
+                          if attrs.get("data-settings-scope")]
+                self.controls[attributes["id"]] = scopes[-1] if scopes else None
+            if tag not in ("input", "img", "link", "meta", "br", "hr"):
+                self.stack.append((tag, attributes))
+
+        def handle_endtag(self, tag):
+            for i in range(len(self.stack) - 1, -1, -1):
+                if self.stack[i][0] == tag:
+                    del self.stack[i:]
+                    break
+
+    parser = Scopes()
+    parser.feed(_client(server).get(f"/?token={server.token}").get_data(as_text=True))
+    for field in ("provider", "kline_source", "refresh_seconds", "chart_refresh_seconds", "mcp_url", "debug_mode"):
+        assert parser.controls[field] == "common"
+    for field in ("theme3_show_tdw", "chart_depth_width", "chart_line_width", "depth_line_width", "background_alpha"):
+        assert parser.controls[field] == "theme"
+    for region, _ in TEXT_REGIONS:
+        assert parser.controls[f"text-opacity-{region}"] == "theme"

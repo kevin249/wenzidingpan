@@ -9,8 +9,10 @@
 
   const card = document.createElement('section');
   card.className = 'card';
+  card.dataset.settingsScope = 'common';
+  card.hidden = document.body.dataset.settingsScope !== 'common';
   card.innerHTML = `
-    <h2>B/S 波动点来源</h2>
+    <h2>公共设置 · B/S 波动点来源</h2>
     <div class="grid">
       <div class="field">
         <label for="bs-source-select">B/S 计算来源（二选一）</label>
@@ -18,7 +20,7 @@
           <option value="local">本地计算 · 逃顶王 TDW</option>
           <option value="mcp">MCP 订阅</option>
         </select>
-        <p class="hint">两个主题的实时图都用东财或腾讯成交明细计算 TDW。同一秒的成交合成一根 K 线，B/S 标在对应秒。空心三角与 * 表示最新一根的暂定信号，确认后显示实心三角。主题 2 手动切到日 K 时按日线计算。</p>
+        <p class="hint">各主题的实时图都用东财或腾讯成交明细计算 TDW。同一秒的成交合成一根 K 线，B/S 标在对应秒。空心三角与 * 表示最新一根的暂定信号，确认后显示实心三角。主题 2 手动切到日 K 时按日线计算。</p>
       </div>
       <div class="field">
         <label for="mcp-event-sort">当日 MCP 信息排序</label>

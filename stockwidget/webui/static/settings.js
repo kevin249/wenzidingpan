@@ -23,6 +23,7 @@ const CHECKBOXES = [
   'intraday_chart',
   'chart_fill_width',
   'tdw_recent_five',
+  'theme3_show_tdw',
   'compact',
   'stock_name_bold',
   'stock_price_bold',
@@ -48,6 +49,9 @@ const NUMBERS = [
   'visible_rows',
   'chart_height',
   'theme2_depth_width',
+  'chart_depth_width',
+  'chart_line_width',
+  'depth_line_width',
   ...FONT_SIZES,
   'refresh_seconds',
   'chart_refresh_seconds',
@@ -81,6 +85,11 @@ const FONT_COLOR_FALLBACKS = {
   stock_percent_color: '#f04f5a',
   dark_trade_color: '#000000',
 };
+const TEXT_REGIONS = ['name', 'code', 'price', 'percent', 'dark', 'high_low', 'chart', 'tdw'];
+const COMMON_FIELDS = new Set(['provider', 'kline_source', 'symbols', 'stock_visibility', 'debug_mode',
+  'refresh_seconds', 'chart_refresh_seconds', 'mcp_url', 'mcp_api_key', 'mcp_notifications_enabled',
+  'mcp_bell_terminal', 'mcp_bell_toast', 'mcp_bell_tray_icon', 'mcp_bell_window', 'tray_unread_font_size']);
+let settingsScope = 'theme';
 const MAX_SYMBOLS = 50;
 const STOCK_COMPONENTS = [
   ['name', '股票名称'], ['price', '股价'], ['percent', '涨跌幅'],
@@ -293,7 +302,9 @@ function collect() {
   for (const id of FONT_COLORS) {
     patch[id] = el(`${id}_auto`).checked ? 'auto' : el(id).value;
   }
-  return patch;
+  patch.text_opacities = Object.fromEntries(TEXT_REGIONS.map(region => [region, Number(el(`text-opacity-${region}`).value)]));
+  return Object.fromEntries(Object.entries(patch).filter(([key]) =>
+    key === 'display_theme' || COMMON_FIELDS.has(key) === (settingsScope === 'common')));
 }
 
 function fill(config) {
@@ -314,6 +325,10 @@ function fill(config) {
     el(`${id}_auto`).checked = automatic;
     el(id).value = automatic ? FONT_COLOR_FALLBACKS[id] : config[id];
     el(id).disabled = automatic;
+  }
+  for (const region of TEXT_REGIONS) {
+    el(`text-opacity-${region}`).value = config.text_opacities?.[region] ?? 1;
+    el(`text-opacity-${region}-value`).textContent = `${Math.round(Number(el(`text-opacity-${region}`).value) * 100)}%`;
   }
   el('opacity-value').textContent = `${Math.round(config.opacity * 100)}%`;
   el('background_alpha-value').textContent = `${Math.round(config.background_alpha * 100)}%`;
@@ -336,8 +351,17 @@ function refreshHints() {
   const theme2 = el('display_theme').value === 'theme2';
   const theme3 = activeTheme === 'theme3';
   for (const choice of document.querySelectorAll('[name="theme-choice"]')) {
-    choice.checked = choice.value === activeTheme;
+    choice.checked = settingsScope !== 'common' && choice.value === activeTheme;
   }
+  for (const section of document.querySelectorAll('[data-settings-scope]')) {
+    section.hidden = section.dataset.settingsScope !== settingsScope;
+  }
+  for (const field of document.querySelectorAll('[data-themes]')) {
+    field.hidden = !field.dataset.themes.split(' ').includes(activeTheme);
+  }
+  el('common-settings').setAttribute('aria-pressed', String(settingsScope === 'common'));
+  document.body.dataset.settingsScope = settingsScope;
+  el('theme-settings-heading').textContent = `主题 ${activeTheme.slice(-1)} · 独立设置`;
   el('theme-font-heading').textContent = `主题 ${activeTheme.slice(-1)} 的字体颜色与字重`;
   el('tdw-label-field').hidden = !theme3;
   const mirrorLeft = el('theme2_side').value === 'left';
@@ -366,11 +390,11 @@ function refreshHints() {
       : '多行列表：自选按这个行数铺成网格——填 1 就全部横向排开，填 2 就铺两行，窗口宽度随之变宽。';
 
   el('display-theme-hint').textContent = theme2
-    ? mirrorLeft
-      ? '主题 2 靠左：股价列贴最左，当前价虚线横贯整行；千档从股价轴向右长，最右是成交量轴。名称、代码、高低价和图表可以点击展开，也可开启「主题 2 始终展开」持续显示。顶栏字号与颜色跟主题 1 用同一套设置（股票名称 / 现价 / 涨跌幅 / 暗盘 / 高低价），股票代码与图注用「主题 2 代码与图注字号」。盘口柱长只由下面的宽度决定——点击展开 K 线时柱长一个像素都不变，且两侧的柱都不越过行的水平中点。分时横轴默认固定为完整交易日（9:30→15:00，午休压缩）；打开「K 线按已有数据铺满宽度」后按数据首末时刻展开。半小时竖线随当前时间范围定位，首末两条压在两根竖轴上。'
-      : '主题 2 靠右：股价列贴最右，当前价虚线横贯整行；千档从股价轴向左长，最左是成交量轴。名称、代码、高低价和图表可以点击展开，也可开启「主题 2 始终展开」持续显示。顶栏字号与颜色跟主题 1 用同一套设置（股票名称 / 现价 / 涨跌幅 / 暗盘 / 高低价），股票代码与图注用「主题 2 代码与图注字号」。盘口柱长只由下面的宽度决定——点击展开 K 线时柱长一个像素都不变，且两侧的柱都不越过行的水平中点。分时横轴默认固定为完整交易日（9:30→15:00，午休压缩）；打开「K 线按已有数据铺满宽度」后按数据首末时刻展开。半小时竖线随当前时间范围定位，首末两条压在两根竖轴上。'
-    : theme3 ? '主题 3 在分时图右侧叠加千档挂单，下方显示本地 TDW 动力线。箭头标记指标的买卖信号。'
-             : '主题 1 支持经典网格和单行滚动。';
+    ? `股价轴靠${mirrorLeft ? '左' : '右'}，盘口条向内延伸。可以点击价格展开详情，或开启始终展开。字号、线宽、文字透明度和窗口尺寸只保存到主题 2。`
+    : theme3 ? '上方分时图与下方 TDW 共用时间轴。TDW 副图可单独关闭，关闭后分时图自动扩展。挂单条逐价位绘制。'
+             : '经典网格支持左中右、上中下、上下布局，也可选择单行滚动。所有显示参数只保存到主题 1。';
+  el('chart-label-font-heading').textContent = theme2 ? '高低价字号（px）'
+    : theme3 ? '走势图 / TDW 图注字号（px）' : '走势图图注字号（px）';
 
   el('row_style-hint').textContent = theme2
     ? '主题 2 不使用行内样式。'
@@ -415,7 +439,7 @@ async function apply(label = '已保存') {
     const config = await postConfig(patch);
     if (sequence !== applySequence) return;
     fill(config);
-    await applyWindowSize();
+    if (settingsScope !== 'common') await applyWindowSize();
     note(label);
   } catch (error) {
     note(`保存失败：${error.message}`);
@@ -423,6 +447,8 @@ async function apply(label = '已保存') {
 }
 
 async function switchTheme(nextTheme) {
+  const previousScope = settingsScope;
+  settingsScope = 'theme';
   if (nextTheme === activeTheme) {
     refreshHints();
     return;
@@ -435,7 +461,9 @@ async function switchTheme(nextTheme) {
   main.inert = true;
   try {
     // 先保存当前页，再只提交主题标识，防止旧主题的字号和颜色写入新主题。
+    settingsScope = previousScope;
     const currentPatch = collect();
+    settingsScope = 'theme';
     currentPatch.display_theme = activeTheme;
     await postConfig(currentPatch);
 
@@ -520,6 +548,7 @@ for (const axis of ['width', 'height']) {
 for (const id of [...CHECKBOXES, 'provider', 'kline_source', 'theme2_side', 'layout', 'row_style', 'color_scheme', 'background_color']) {
   el(id).addEventListener('change', () => apply('已应用'));
 }
+el('common-settings').addEventListener('click', () => { settingsScope = 'common'; refreshHints(); });
 for (const choice of document.querySelectorAll('[name="theme-choice"]')) {
   choice.addEventListener('change', () => switchTheme(choice.value));
 }
@@ -542,6 +571,14 @@ el('grayscale_level').addEventListener('input', () => {
   el('grayscale_level-value').textContent = el('grayscale_level').value;
 });
 el('grayscale_level').addEventListener('change', () => apply('已应用'));
+for (const id of ['chart_depth_width', 'chart_line_width', 'depth_line_width']) {
+  el(id).addEventListener('change', () => apply('已应用'));
+}
+for (const region of TEXT_REGIONS) {
+  const id = `text-opacity-${region}`;
+  el(id).addEventListener('input', () => { el(`${id}-value`).textContent = `${Math.round(Number(el(id).value) * 100)}%`; });
+  el(id).addEventListener('change', () => apply('已应用'));
+}
 for (const id of FONT_SIZES) {
   el(id).addEventListener('input', () => {
     clearTimeout(fontApplyTimer);
