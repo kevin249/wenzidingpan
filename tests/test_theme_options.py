@@ -62,11 +62,12 @@ def test_four_tdw_guides_have_distinct_rows_at_every_panel_size(app, width, heig
         font = QFont()
         font.setPixelSize(11)
         painter.setFont(font)
-        tdw_overlay.draw_power_panel(painter, [], [], lambda _: 0, width - 1, width, height,
-                                     ink, QColor(Qt.transparent))
+        guide_rows = tdw_overlay.draw_power_panel(painter, [], lambda _: 0, width - 1, width, height,
+                                                  ink, QColor(Qt.transparent))
     rows = [y for y in range(height) if image.pixelColor(width // 2, y).alpha() >= 200]
     assert len(rows) == 4
     assert len(set(rows)) == 4
+    assert rows == [guide_rows[tag] for tag in ("S2", "S1", "B2", "B1")]
     assert rows[0] < height / 2 < rows[-1]
 
 
@@ -79,7 +80,7 @@ def test_card_tdw_toggle_returns_space_to_price_and_guides_resize(app, monkeypat
     calls = []
     original = tdw_overlay.draw_power_panel
     def panel(*args, **kwargs):
-        calls.append(args[6])  # actual panel height after axes/footer reservations
+        calls.append(args[5])  # actual panel height after axes/footer reservations
         return original(*args, **kwargs)
     monkeypatch.setattr(tdw_overlay, "draw_power_panel", panel)
     for width, height in ((400, 300), (80, 16), (200, 100), (100, 8), (600, 400)):

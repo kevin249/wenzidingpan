@@ -11,7 +11,7 @@ from datetime import datetime
 import math
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPen, QPolygonF
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QWidget
 
 from ..config import DEFAULT_GRAYSCALE_LEVEL
@@ -25,7 +25,7 @@ from .price_labels import draw_price_labels
 from .depth_layout import depth_rows
 from .sizing import SizedWidget
 from .theme import display_color, with_opacity
-from .time_axis import SESSION_MINUTES, intraday_fraction, trading_minute
+from .time_axis import average_points, SESSION_MINUTES, intraday_fraction, trading_minute
 
 FILL_ALPHA = 38  # 面积填充的透明度，压得比曲线淡很多
 BASELINE_ALPHA = 110
@@ -54,6 +54,9 @@ class Sparkline(SizedWidget):
         self._depth_width = 0
         self._split_depth = False
         self._chart_line_width = 1.4
+        self._chart_line_color = QColor("#000000")
+        self._average_line_color = QColor("#ffff00")
+        self._average_line_width = 1.5
         self._depth_line_width = .8
         self._tdw_label_color = QColor("#f4f4f1")
         self._book_scheme = "cn"
@@ -98,11 +101,15 @@ class Sparkline(SizedWidget):
     # ------------------------------------------------------------ 尺寸
 
     def set_display_options(self, *, show_tdw=True, depth_width=0, text_opacities=None,
-                            chart_line_width=1.4, depth_line_width=.8):
+                            chart_line_width=1.4, depth_line_width=.8,
+                            chart_line_color="#000000", average_line_color="#ffff00", average_line_width=1.5):
         self._show_card_tdw = show_tdw
         self._depth_width = depth_width
         self._text_opacities = dict(text_opacities or {})
         self._chart_line_width = chart_line_width
+        self._chart_line_color = QColor(chart_line_color)
+        self._average_line_color = QColor(average_line_color)
+        self._average_line_width = average_line_width
         self._depth_line_width = depth_line_width
         self.update()
 
@@ -488,7 +495,7 @@ class Sparkline(SizedWidget):
                 if indicator_height:
                     painter.translate(0, self.height() - indicator_height)
                     painter.setFont(self._annotation_font)
-                    tdw_overlay.draw_power_panel(painter, [], [], lambda _: 0,
+                    tdw_overlay.draw_power_panel(painter, [], lambda _: 0,
                                                  self.width() - 1, self.width(), indicator_height,
                                                  self._paint_color, self._text_color(self._tdw_label_color, "tdw"))
             return
@@ -498,15 +505,8 @@ class Sparkline(SizedWidget):
         metrics = QFontMetrics(self._annotation_font)
         axes = self._card_style and width >= 150 and total_height >= max(60, metrics.height() * 4 + 16)
         axis_width = 0
-        footer = []
         if axes:
-            if self._minutes and total_height >= 115:
-                footer.append(f"分时 {self._minutes[-1]}")
-                total_height -= metrics.height() + 4
             axis_width = metrics.horizontalAdvance(f"{max(points):.2f}") + 6
-            if self._card_style and self._show_live_price and self._live_price is not None:
-                axis_width = max(axis_width, QFontMetrics(self._live_price_font).horizontalAdvance(
-                    f"{self._live_price:.2f}") + 6)
             width -= axis_width
         tdw_enabled = self._show_signals and self._show_tdw_levels
         # 大卡片给动力线独立的纵轴，小卡片保留原有叠加刻度。
@@ -535,7 +535,6 @@ class Sparkline(SizedWidget):
 
         live_y = (y_of(self._live_price) if self._card_style and self._show_live_price
                   and self._live_price is not None else None)
-        live_label_height = QFontMetrics(self._live_price_font).height()
 
         profile_width = self._side_profile_width(width) if self._show_volume_profile else 0.0
         chart_left = profile_width + 2.0 if self._show_volume_profile else 0.0
@@ -564,9 +563,8 @@ class Sparkline(SizedWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
 
-        # 曲线色（＝设置里的股价涨跌色）在这里过一次灰度：外部就算塞了彩色进来，
-        # 灰度模式下画出来也只有一个灰。
-        curve_color = self._paint_color(self._color)
+        # 曲线使用独立颜色；开启灰度时仍统一为用户指定的灰阶。
+        curve_color = self._paint_color(self._chart_line_color)
         if axes:
             painter.setFont(self._annotation_font)
             grid_color = self._paint_color(self._color, 65)
@@ -589,8 +587,6 @@ class Sparkline(SizedWidget):
                     continue
                 painter.setPen(QPen(grid_color, .8, Qt.DashLine))
                 painter.drawLine(QPointF(chart_left, y), QPointF(self.width() - 1 if split else width, y))
-                if live_y is not None and abs(y - live_y) < (label_height + live_label_height) / 2 + 2:
-                    continue
                 painter.setPen(self._text_color(self._color))
                 painter.drawText(QRectF(axis_x + 2, y - label_height / 2,
                                         axis_width - 2 if split else self.width() - width - 2,
@@ -611,26 +607,20 @@ class Sparkline(SizedWidget):
                 painter.drawLine(QPointF(x, 1), QPointF(x, height - 1))
                 if indicator_height > label_height + 15:
                     painter.drawLine(QPointF(x, height + label_height + 5), QPointF(x, total_height - 7))
-            if footer:
-                painter.setPen(self._text_color(self._color, alpha=182))
-                footer_rect = QRectF(0, total_height + 2, self.width(), label_height)
-                painter.drawText(footer_rect, Qt.AlignLeft | Qt.AlignVCenter, footer[0])
-            if start is not None and end is not None and end > start and self._averages:
-                average_path = QPainterPath()
-                for clock, price in self._averages:
-                    minute = trading_minute(clock)
-                    if minute is not None and start <= minute <= end:
-                        x = chart_left + (minute - start) / (end - start) * (chart_right - chart_left)
-                        if not average_path.elementCount():
-                            average_path.moveTo(x, y_of(price))
-                        else:
-                            average_path.lineTo(x, y_of(price))
-                painter.save()
-                painter.setClipRect(QRectF(chart_left, 0, chart_right - chart_left + 1, height))
-                painter.setPen(QPen(self._paint_color(QColor("#f7be49")), 1.5,
-                                    Qt.DashLine if self._grayscale else Qt.SolidLine))
-                painter.drawPath(average_path)
-                painter.restore()
+        average_path = QPainterPath()
+        for fraction, price in average_points(self._averages, minutes,
+                                              fill_width=self._fill_width or self._recent_view):
+            x = chart_left + fraction * (chart_right - chart_left)
+            if not average_path.elementCount():
+                average_path.moveTo(x, y_of(price))
+            else:
+                average_path.lineTo(x, y_of(price))
+        painter.save()
+        painter.setClipRect(QRectF(chart_left, 0, chart_right - chart_left + 1, height))
+        painter.setPen(QPen(self._paint_color(self._average_line_color), self._average_line_width,
+                            Qt.DashLine if self._grayscale else Qt.SolidLine))
+        painter.drawPath(average_path)
+        painter.restore()
 
         # B/S 波动转折：B 红线从底部向上画到曲线，S 蓝线从顶部向下画到曲线，
         # 两者都停在转折点上，不穿过曲线。
@@ -719,23 +709,27 @@ class Sparkline(SizedWidget):
                 tdw_overlay.draw_event(painter, x_of(index), y_of(points[index]), kind, height,
                                        width, color, None)
 
-        if self._card_style and self._show_signals:
-            for index, kind in self._signals:
-                if not 0 <= index < len(points):
-                    continue
-                color = self._paint_color(BUY_COLOR if kind.startswith("B") else SELL_COLOR)
-                tdw_overlay.draw_event(painter, x_of(index), y_of(points[index]), kind, height,
-                                       width, color, None)
-
+        guide_rows = {}
         if self._card_style and indicator_height:
             painter.save()
             painter.translate(0, height)
             painter.setFont(self._annotation_font)
-            tdw_overlay.draw_power_panel(painter, self._tdw_power,
-                                         self._tdw_events if self._show_signals else [], x_of,
-                                         chart_right, self.width(), indicator_height,
-                                         self._paint_color, self._text_color(self._tdw_label_color, "tdw"))
+            guide_rows = tdw_overlay.draw_power_panel(
+                painter, self._tdw_power, x_of,
+                chart_right, self.width(), indicator_height,
+                self._paint_color, self._text_color(self._tdw_label_color, "tdw"),
+            )
             painter.restore()
+
+        if self._show_signals and (guide_rows or not self._card_style):
+            power_top = height if indicator_height else 0
+            tags = tdw_overlay.MARKER_TAGS if self._card_style else tdw_overlay.EXIT_TAGS
+            for index, value, tag in tdw_overlay.connector_points(
+                self._tdw_events, self._tdw_power, len(points), tags=tags
+            ):
+                x, price_y = x_of(index), y_of(points[index])
+                source_y = guide_rows[tag] if guide_rows else tdw_overlay.power_y(value, indicator_height or height)
+                tdw_overlay.draw_tdw_exit(painter, x, price_y, power_top + source_y, self._paint_color)
 
         if live_y is not None:
             ink = self._paint_color(self._live_price_color, self._live_price_color.alpha())
@@ -746,10 +740,3 @@ class Sparkline(SizedWidget):
                               (chart_right if split else width) - chart_left, height),
                               price_low, price_high, self._annotation_font,
                               self._text_color(self._color, "high_low"), card=self._card_style)
-        if live_y is not None:
-            painter.setFont(self._live_price_font)
-            painter.setPen(ink)
-            painter.drawText(QRectF(axis_x + 2,
-                                    max(0.0, min(height - live_label_height, live_y - live_label_height / 2)),
-                                    axis_width - 2 if split else self.width() - width - 2, live_label_height),
-                             Qt.AlignLeft | Qt.AlignVCenter, f"{self._live_price:.2f}")

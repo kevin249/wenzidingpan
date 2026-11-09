@@ -9,35 +9,10 @@
   <body data-token="{{ token }}">
     <main>
       <header class="page-header">
-        <h1>行情工作台</h1>
-        <p class="sub">公共数据与主题外观独立配置 · 改动即时生效</p>
+        <h1>行情组件设置</h1>
+        <p class="sub">公共设置 → 公共主题设置 → 主题独立设置 · 改动即时生效</p>
       </header>
 
-      <section class="card settings-navigation">
-        <h2>工作台导航</h2>
-        <button type="button" id="common-settings" aria-pressed="false">公共设置 · 行情 / 自选 / MCP</button>
-        <fieldset class="theme-picker" id="theme-picker" disabled>
-          <legend>显示主题 · 独立设置</legend>
-          <input type="hidden" id="display_theme" value="{{ config.display_theme }}" />
-          <div class="theme-cards">
-            {% for key, title, preview in [('depth', '价格深度', 'depth-preview.png'), ('radar', '多股雷达', 'radar-preview.png'), ('theme3', '分时＋TDW', 'theme3-preview.png')] %}
-              <label class="theme-card">
-                <input type="radio" name="theme-choice" value="{{ key }}"
-                       {% if config.display_theme == key %}checked{% endif %} />
-                <img src="{{ url_for('static', filename=preview) }}" alt="" />
-                <span>主题 {{ loop.index }} · {{ title }}</span>
-              </label>
-            {% endfor %}
-          </div>
-        </fieldset>
-        <p class="hint">切换主题后，窗口尺寸、字号和图表参数分别保存。旧主题配置仍可读取。</p>
-      </section>
-      <aside class="card live-preview" aria-label="主题预览">
-        <h2>主题预览</h2>
-        <img id="active-theme-preview" alt="当前主题布局示意" src="{{ url_for('static', filename='depth-preview.png') }}" />
-        <p id="preview-caption" class="hint"></p>
-        <p class="hint">预览为布局示意；实时行情以桌面窗口为准。</p>
-      </aside>
       <section class="card" data-settings-scope="common">
         <h2>公共设置 · 行情与自选</h2>
         <div class="field">
@@ -102,8 +77,103 @@
         <p class="hint">默认关闭。关闭时，行情在 A 股活跃窗口（上海时区，周一至周五 09:15–11:30、13:00–15:00）按下方设置的刷新间隔独立更新，不依赖 MCP 连接；千档在活跃时段每轮完成约 5 秒后继续取数，B/S 约每 60 秒同步，B/S 通知会立即触发同步。MCP 推送到达仍会立即刷新行情与分时。打开程序、手动刷新和修改自选股等取数设置时仍会无条件请求一次。Debug 模式用于收盘后联调。</p>
       </section>
 
+      <section class="card" data-settings-scope="common">
+        <h2>公共设置 · MCP 通信提醒</h2>
+        <div class="checks">
+          <label><input id="mcp_notifications_enabled" name="mcp_notifications_enabled"
+                        type="checkbox" {% if config.mcp_notifications_enabled %}checked{% endif %} />
+            接收 gupiao_ztfx MCP 通道实时提醒</label>
+        </div>
+        <div class="sub-checks">
+          <p class="sub-checks-title">提醒到达时</p>
+          <div class="checks">
+            <label><input id="mcp_bell_terminal" name="mcp_bell_terminal" type="checkbox"
+                          {% if config.mcp_bell_terminal %}checked{% endif %} />
+              敲响终端铃铛（响一声，并让终端去闪任务栏）</label>
+            <label><input id="mcp_bell_toast" name="mcp_bell_toast" type="checkbox"
+                          {% if config.mcp_bell_toast %}checked{% endif %} />
+              弹出系统通知</label>
+            <label><input id="mcp_bell_tray_icon" name="mcp_bell_tray_icon" type="checkbox"
+                          {% if config.mcp_bell_tray_icon %}checked{% endif %} />
+              任务栏通知区图标转告警色，挂住未读数；点托盘、把行情窗口或运行 Python 的终端切到前台后清零</label>
+            <label><input id="mcp_bell_window" name="mcp_bell_window" type="checkbox"
+                          {% if config.mcp_bell_window %}checked{% endif %} />
+              在窗口 BELL 按钮上累计未读数</label>
+          </div>
+        </div>
+        <div class="grid">
+          <div class="field">
+            <label for="tray_unread_font_size">托盘未读数字字号（px）</label>
+            <input id="tray_unread_font_size" name="tray_unread_font_size" type="number"
+                   min="7" max="32" step="1" value="{{ config.tray_unread_font_size }}" />
+            <p class="hint">只调整通知区图标里的未读数字，不影响行情窗口字体。</p>
+          </div>
+        </div>
+        <div class="grid">
+          <div class="field">
+            <label for="mcp_url">MCP 地址</label>
+            <input id="mcp_url" name="mcp_url" type="url" value="{{ config.mcp_url }}" />
+          </div>
+          <div class="field">
+            <label for="mcp_api_key">MCP API Key</label>
+            <input id="mcp_api_key" name="mcp_api_key" type="password"
+                   autocomplete="off" value="{{ config.mcp_api_key }}" />
+          </div>
+        </div>
+        <p class="hint">默认连接本机 8801 端口。Key 也可通过 GUPIAO_MCP_API_KEY 环境变量提供；事件通过 MCP 实时订阅直达，正文始终打印到启动程序的 CMD，上面四路提示可分别开关，全关就只剩 CMD 里的正文。想在任务栏上看到动静，认准「通知区图标」这一路——它归组件自己管，装没装 Windows Terminal 都一样。终端铃铛只是附带的一路，且仅 Windows Terminal 能闪任务栏：要在它的「铃声」里勾上「任务栏」，并且窗口不在前台时才会闪（这是 Windows 的规矩）；传统控制台和 MobaXterm 等终端只会响一声，没有任何设置能让它们闪。</p>
+      </section>
+
+      <section class="card" id="common-theme-settings" data-settings-scope="common-theme">
+        <h2>公共主题设置</h2>
+        <p class="hint">以下开关对三个主题统一生效。字号、透明度、颜色和布局在下方按主题分别设置。Ctrl+F2 一键隐藏 / 恢复。</p>
+        <div class="checks">
+          <label><input id="always_on_top" name="always_on_top" type="checkbox"
+                        {% if config.always_on_top %}checked{% endif %} /> 最前显示（始终置于所有窗口之上）</label>
+          <label><input id="click_through" name="click_through" type="checkbox"
+                        {% if config.click_through %}checked{% endif %} />
+            鼠标穿透（点击落到下层程序，只留左上角把手可拖动）</label>
+          <label><input id="show_dark_trade" name="show_dark_trade" type="checkbox"
+                        {% if config.show_dark_trade %}checked{% endif %} /> 显示东方财富暗盘资金</label>
+          <label><input id="show_sparkline" name="show_sparkline" type="checkbox"
+                        {% if config.show_sparkline %}checked{% endif %} /> 显示走势图</label>
+          <label><input id="show_bs_points" name="show_bs_points" type="checkbox"
+                        {% if config.show_bs_points %}checked{% endif %} /> 显示 TDW 穿线箭头</label>
+          <label><input id="show_stock_name" name="show_stock_name" type="checkbox"
+                        {% if config.show_stock_name %}checked{% endif %} /> 显示左侧股票名称</label>
+          <label><input id="show_stock_price" name="show_stock_price" type="checkbox"
+                        {% if config.show_stock_price %}checked{% endif %} /> 显示右侧股价与涨跌</label>
+        </div>
+        <p class="hint">图上仅标记 TDW 上穿最高紫线、下穿最低绿线。主题 3 用竖直虚线箭头从对应参考线指向触发时刻的 K 线，主题 1/2 在悬停详情中显示箭头。选择本地来源时，此开关也控制本地提醒。</p>
+      </section>
+
+      <section class="card theme-selection">
+        <h2>主题选择</h2>
+        <fieldset class="theme-picker" id="theme-picker" disabled>
+          <legend>显示主题 · 独立设置</legend>
+          <input type="hidden" id="display_theme" value="{{ config.display_theme }}" />
+          <div class="theme-cards">
+            {% for key, title, preview in [('depth', '一行文字', 'depth-preview.png'), ('radar', '贴边小列', 'radar-preview.png'), ('theme3', '分时＋TDW', 'theme3-preview.png')] %}
+              <label class="theme-card">
+                <input type="radio" name="theme-choice" value="{{ key }}"
+                       {% if config.display_theme == key %}checked{% endif %} />
+                <img src="{{ url_for('static', filename=preview) }}" alt="" />
+                <span>主题 {{ loop.index }} · {{ title }}</span>
+              </label>
+            {% endfor %}
+          </div>
+        </fieldset>
+        <p class="hint">各主题独立保存字号、透明度和位置。Ctrl+F2 一键隐藏 / 恢复。</p>
+      </section>
       <section class="card" id="theme-settings" data-settings-scope="theme">
         <h2 id="theme-settings-heading">当前主题设置</h2>
+      <aside class="live-preview" aria-label="主题预览">
+        <h2>主题预览</h2>
+        <img id="active-theme-preview" alt="当前主题布局示意" src="{{ url_for('static', filename='depth-preview.png') }}" />
+        <p id="preview-caption" class="hint"></p>
+        <p class="hint">预览为布局示意；实时行情以桌面窗口为准。</p>
+      </aside>
+
+        <p class="hint" data-themes="depth radar">平时只显示小字行情；鼠标悬停查看分时、暗盘和 B/S，移开即收起。拖动文字可移动窗口，右键打开设置。Ctrl+F2 同时隐藏悬浮条和详情。</p>
 
         <div class="grid">
           <div class="field" data-themes="theme2">
@@ -158,14 +228,14 @@
           </div>
         </div>
         <p class="hint" id="row_style-hint" data-themes="theme1"></p>
-        <p class="hint">K 线高度填 0 表示按字号自动推算；填了具体像素就固定成该高度，并随窗口拖拽等比缩放。
+        <p class="hint" data-stealth-hide>K 线高度填 0 表示按字号自动推算；填了具体像素就固定成该高度，并随窗口拖拽等比缩放。
           行数多到窗口放不下时，走势图会自动压扁，保证每只股票都还在可视区里。</p>
 
-        <h3>显示区域宽高</h3>
-        <p class="hint">单位为 px；窗口填 0 保持该方向的当前尺寸，其余区域填 0 自动适配。
+        <h3 data-stealth-hide>显示区域宽高</h3>
+        <p class="hint" data-stealth-hide>单位为 px；窗口填 0 保持该方向的当前尺寸，其余区域填 0 自动适配。
           当前实际宽高取第一张股票卡片并自动更新；未显示的区域会标记为隐藏。
           区域尺寸按当前主题保存，经典主题随右下角拖拽缩放，空间不足时自动压缩。</p>
-        <div class="dimensions-wrap">
+        <div class="dimensions-wrap" data-stealth-hide>
           <table class="dimensions-table">
             <thead><tr><th scope="col">显示区域</th><th scope="col">宽度</th><th scope="col">高度</th><th scope="col">当前实际宽 × 高</th></tr></thead>
             <tbody>
@@ -193,9 +263,9 @@
             </tbody>
           </table>
         </div>
-        <p class="hint" id="size-scale-hint"></p>
-        <button type="button" id="reset-window-scale">恢复 100% 缩放</button>
-        <p class="hint">恢复设置中的字号和区域尺寸，保留窗口位置与各项设置。
+        <p class="hint" id="size-scale-hint" data-stealth-hide></p>
+        <button type="button" id="reset-window-scale" data-stealth-hide>恢复 100% 缩放</button>
+        <p class="hint" data-stealth-hide>恢复设置中的字号和区域尺寸，保留窗口位置与各项设置。
           仅调整窗口宽度不会改变字号；调整高度时按本次变化比例缩放。</p>
 
         <div class="grid">
@@ -217,7 +287,16 @@
                    value="{{ config.font_size }}" />
           </div>
         </div>
-        <p class="hint">字体留空表示跟随系统；以下字号会按各自设置的比例随窗口拖拽统一缩放。</p>
+        <p class="hint" data-stealth-hide>字体留空表示跟随系统；以下字号会按各自设置的比例随窗口拖拽统一缩放。</p>
+        <p class="hint" data-themes="depth radar">悬浮条和详情统一按上方字号调整；窗口随文字自动适配大小。建议 11–13 px。</p>
+
+        <div class="field">
+          <label for="opacity">窗口透明度 <span class="value" id="opacity-value"></span></label>
+          <input id="opacity" name="opacity" type="range" min="{{ min_opacity }}" max="1" step="0.01"
+                 value="{{ config.opacity }}" />
+          <p class="hint">整个窗口一起变淡，文字也会跟着淡；最低 {{ (min_opacity * 100) | round | int }}%。
+            Ctrl+F2 可完全隐藏 / 恢复。窗口太淡时，从托盘菜单进入设置调回来。</p>
+        </div>
 
         <div class="grid">
           <div class="field">
@@ -316,24 +395,39 @@
           </div>
         </div>
 
-        <h3>图表与千档挂单</h3>
-        <div class="checks" data-themes="theme3 depth radar">
+        <h3>K 线与均线</h3>
+        <div class="grid">
+          {% for prefix, label in [('chart', 'K 线'), ('average', '均线')] %}
+          <div class="field">
+            <label for="{{ prefix }}_line_color">{{ label }}颜色</label>
+            <input id="{{ prefix }}_line_color" type="color" value="{{ config[prefix + '_line_color'] }}" />
+          </div>
+          <div class="field">
+            <label for="{{ prefix }}_line_width">{{ label }}线宽（px）</label>
+            <input id="{{ prefix }}_line_width" type="number" min="0.3" max="6" step="0.1" value="{{ config[prefix + '_line_width'] }}" />
+          </div>
+          {% endfor %}
+        </div>
+        <p class="hint">默认 K 线为黑色、均线为黄色，颜色和线宽按当前主题独立保存。均线使用行情源提供的分时均价数据；开启灰度显示时，两条线仍使用设定的灰度值。</p>
+
+        <h3 data-stealth-hide>图表与千档挂单</h3>
+        <div class="checks" data-themes="theme3">
           <label><input id="theme3_show_tdw" type="checkbox" {% if config.theme3_show_tdw %}checked{% endif %} /> 显示 TDW 副图（动力线、四条参考线与信号箭头）</label>
         </div>
         <div class="grid">
-          <div class="field" data-themes="theme1 theme3 depth radar">
+          <div class="field" data-themes="theme1 theme3">
             <label for="chart_depth_width">千档挂单条最长长度（px）</label>
             <input id="chart_depth_width" type="number" min="0" max="1200" step="10" value="{{ config.chart_depth_width }}" />
             <p class="hint">0 表示自动；窗口不足时按可用宽度收紧。</p>
           </div>
-          {% for key, label in [('chart_line_width', 'K 线线宽'), ('depth_line_width', '千档挂单线宽')] %}
-          <div class="field">
+          {% for key, label in [('depth_line_width', '千档挂单线宽')] %}
+          <div class="field" data-stealth-hide>
             <label for="{{ key }}">{{ label }}（px）</label>
             <input id="{{ key }}" type="number" min="0.3" max="6" step="0.1" value="{{ config[key] }}" />
           </div>
           {% endfor %}
         </div>
-        <p class="hint">挂单逐价位绘制，不合并相邻价位或累加同屏幕行的量。线宽支持小数像素；价位过密时可以增加窗口高度。</p>
+        <p class="hint" data-stealth-hide>挂单逐价位绘制，不合并相邻价位或累加同屏幕行的量。线宽支持小数像素；价位过密时可以增加窗口高度。</p>
 
         <h3>各区域文字透明度</h3>
         <p class="hint">0% 完全透明，100% 完全显示。只调整文字，不影响曲线、挂单条或背景；最终显示还受整窗透明度影响。</p>
@@ -344,14 +438,6 @@
             <input id="text-opacity-{{ region }}" type="range" min="0" max="1" step="0.05" value="{{ config.text_opacities.get(region, 1) }}" />
           </div>
           {% endfor %}
-        </div>
-
-        <div class="field">
-          <label for="opacity">窗口透明度 <span class="value" id="opacity-value"></span></label>
-          <input id="opacity" name="opacity" type="range" min="{{ min_opacity }}" max="1" step="0.05"
-                 value="{{ config.opacity }}" />
-          <p class="hint">整个窗口一起变淡，文字也会跟着淡；最低 {{ (min_opacity * 100) | round | int }}%
-            还留一丝可见，想彻底看不见请配合「鼠标穿透」。窗口太淡找不着时，从托盘菜单进设置调回来。</p>
         </div>
 
         <div class="grid">
@@ -369,18 +455,9 @@
         <p class="hint">只影响背景板：调到 0 就只剩文字和曲线浮在桌面上，文字仍然清晰。</p>
 
         <div class="checks">
-          <label><input id="always_on_top" name="always_on_top" type="checkbox"
-                        {% if config.always_on_top %}checked{% endif %} /> 最前显示（始终置于所有窗口之上）</label>
-          <label><input id="click_through" name="click_through" type="checkbox"
-                        {% if config.click_through %}checked{% endif %} />
-            鼠标穿透（点击落到下层程序，只留左上角把手可拖动）</label>
           <label><input id="show_title_buttons" name="show_title_buttons" type="checkbox"
                         {% if config.show_title_buttons %}checked{% endif %} />
             显示右上角按钮（刷新 / 设置 / 灰度 / 退出；关掉后整条标题栏收起，在组件上点右键或从托盘菜单都能开回来）</label>
-          <label><input id="show_dark_trade" name="show_dark_trade" type="checkbox"
-                        {% if config.show_dark_trade %}checked{% endif %} /> 显示东方财富暗盘资金</label>
-          <label data-themes="theme1 theme3 depth radar"><input id="show_sparkline" name="show_sparkline" type="checkbox"
-                        {% if config.show_sparkline %}checked{% endif %} /> 显示走势图</label>
           <label data-themes="theme1 theme3 depth radar"><input id="show_chart_depth" name="show_chart_depth" type="checkbox"
                         {% if config.show_chart_depth %}checked{% endif %} /> 在价格轴上显示逐价位千档挂单</label>
           <label><input id="chart_fill_width" name="chart_fill_width" type="checkbox"
@@ -389,16 +466,10 @@
                         {% if config.tdw_recent_five %}checked{% endif %} /> 实时走势图只显示最近 5 分钟（TDW 仍按 1 分钟 K 计算）</label>
           <label data-themes="theme1 theme3 depth radar"><input id="show_sparkline_fill" name="show_sparkline_fill" type="checkbox"
                         {% if config.show_sparkline_fill %}checked{% endif %} /> 填充走势图下方颜色</label>
-          <label><input id="show_bs_points" name="show_bs_points" type="checkbox"
-                        {% if config.show_bs_points %}checked{% endif %} /> 显示 B/S 波动点（B 红线、S 蓝线）</label>
           <label data-themes="theme1 theme3 depth radar"><input id="show_open_line" name="show_open_line" type="checkbox"
                         {% if config.show_open_line %}checked{% endif %} /> 显示开盘价横向虚线</label>
           <label><input id="show_high_low" name="show_high_low" type="checkbox"
                         {% if config.show_high_low %}checked{% endif %} /> 显示 K 线角标：左上最高价 / 右下最低价</label>
-          <label><input id="show_stock_name" name="show_stock_name" type="checkbox"
-                        {% if config.show_stock_name %}checked{% endif %} /> 显示左侧股票名称</label>
-          <label><input id="show_stock_price" name="show_stock_price" type="checkbox"
-                        {% if config.show_stock_price %}checked{% endif %} /> 显示右侧股价与涨跌</label>
           <label><input id="grayscale" name="grayscale" type="checkbox"
                         {% if config.grayscale %}checked{% endif %} /> 灰度显示（所有颜色统一成一个灰，灰阶见下方「灰度值」）</label>
           <label><input id="intraday_chart" name="intraday_chart" type="checkbox"
@@ -406,7 +477,7 @@
           <label data-themes="theme1 theme3"><input id="compact" name="compact" type="checkbox"
                         {% if config.compact %}checked{% endif %} /> 紧凑模式</label>
         </div>
-        <p class="hint">「K 线按已有数据铺满宽度」默认关闭：分时横轴固定为 09:30–15:00（压缩午休），未交易的时间留白；
+        <p class="hint" data-stealth-hide>「K 线按已有数据铺满宽度」默认关闭：分时横轴固定为 09:30–15:00（压缩午休），未交易的时间留白；
           开启后，已有分时数据从首个点到末个点铺满宽度。三个主题均生效，日 K 仍按日期显示。</p>
 
         <div class="field">
@@ -414,56 +485,10 @@
           <input id="grayscale_level" name="grayscale_level" type="range" min="{{ grayscale_level_min }}"
                  max="{{ grayscale_level_max }}" step="1" value="{{ config.grayscale_level }}" />
           <p class="hint">勾上「灰度显示」后，组件里所有颜色都换成这<strong>同一个</strong>灰阶：不再按红涨绿跌把红色、绿色
-            映射成深浅不同的灰，文字、分时曲线、暗盘、千档买卖柱、成交量柱、B/S 标记与日K 蜡烛全是同一个灰，
+            映射成深浅不同的灰，文字、分时曲线、暗盘、千档买卖柱、成交量柱、TDW 箭头与日K 蜡烛使用同一灰阶，
             深浅层次只由透明度承担。0 = 全黑，255 = 全白；窗口背景、边框和标题栏按钮不参与灰度。
             没勾「灰度显示」时本项不生效，因此不可调。</p>
         </div>
-      </section>
-
-      <section class="card" data-settings-scope="common">
-        <h2>公共设置 · MCP 通信提醒</h2>
-        <div class="checks">
-          <label><input id="mcp_notifications_enabled" name="mcp_notifications_enabled"
-                        type="checkbox" {% if config.mcp_notifications_enabled %}checked{% endif %} />
-            接收 gupiao_ztfx MCP 通道实时提醒</label>
-        </div>
-        <div class="sub-checks">
-          <p class="sub-checks-title">提醒到达时</p>
-          <div class="checks">
-            <label><input id="mcp_bell_terminal" name="mcp_bell_terminal" type="checkbox"
-                          {% if config.mcp_bell_terminal %}checked{% endif %} />
-              敲响终端铃铛（响一声，并让终端去闪任务栏）</label>
-            <label><input id="mcp_bell_toast" name="mcp_bell_toast" type="checkbox"
-                          {% if config.mcp_bell_toast %}checked{% endif %} />
-              弹出系统通知</label>
-            <label><input id="mcp_bell_tray_icon" name="mcp_bell_tray_icon" type="checkbox"
-                          {% if config.mcp_bell_tray_icon %}checked{% endif %} />
-              任务栏通知区图标转告警色，挂住未读数；点托盘、把行情窗口或运行 Python 的终端切到前台后清零</label>
-            <label><input id="mcp_bell_window" name="mcp_bell_window" type="checkbox"
-                          {% if config.mcp_bell_window %}checked{% endif %} />
-              在窗口 BELL 按钮上累计未读数</label>
-          </div>
-        </div>
-        <div class="grid">
-          <div class="field">
-            <label for="tray_unread_font_size">托盘未读数字字号（px）</label>
-            <input id="tray_unread_font_size" name="tray_unread_font_size" type="number"
-                   min="7" max="32" step="1" value="{{ config.tray_unread_font_size }}" />
-            <p class="hint">只调整通知区图标里的未读数字，不影响行情窗口字体。</p>
-          </div>
-        </div>
-        <div class="grid">
-          <div class="field">
-            <label for="mcp_url">MCP 地址</label>
-            <input id="mcp_url" name="mcp_url" type="url" value="{{ config.mcp_url }}" />
-          </div>
-          <div class="field">
-            <label for="mcp_api_key">MCP API Key</label>
-            <input id="mcp_api_key" name="mcp_api_key" type="password"
-                   autocomplete="off" value="{{ config.mcp_api_key }}" />
-          </div>
-        </div>
-        <p class="hint">默认连接本机 8801 端口。Key 也可通过 GUPIAO_MCP_API_KEY 环境变量提供；事件通过 MCP 实时订阅直达，正文始终打印到启动程序的 CMD，上面四路提示可分别开关，全关就只剩 CMD 里的正文。想在任务栏上看到动静，认准「通知区图标」这一路——它归组件自己管，装没装 Windows Terminal 都一样。终端铃铛只是附带的一路，且仅 Windows Terminal 能闪任务栏：要在它的「铃声」里勾上「任务栏」，并且窗口不在前台时才会闪（这是 Windows 的规矩）；传统控制台和 MobaXterm 等终端只会响一声，没有任何设置能让它们闪。</p>
       </section>
 
       <footer class="bar">

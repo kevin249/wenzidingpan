@@ -1,4 +1,4 @@
-"""Local TDW (逃顶王), matching gupiao_ztfx formula tdx-251."""
+"""Local TDW (逃顶王) power line and desktop alert rules."""
 
 from __future__ import annotations
 
@@ -65,7 +65,10 @@ def calculate(bars: list[Bar], period: str, as_of: datetime, *, forming: str = "
         events = []
         if previous is not None and power is not None:
             for tag, level in LEVELS:
-                crossed = previous <= level < power if tag.startswith("B") else previous >= level > power
+                crossed = (
+                    previous <= level < power if tag in ("B2", "S2")
+                    else previous >= level > power
+                )
                 if crossed and index - last_event.get(tag, -21) > 20:
                     events.append(tag)
                     last_event[tag] = index
@@ -85,6 +88,6 @@ def align(points: dict[str, Point], stamps) -> tuple[list[float | None], list[tu
         point = points.get(stamp)
         power.append(point.power if point else None)
         if point and point.events:
-            # Two crossings of the same direction can fall on one bar.
+            # Several thresholds can be crossed on one bar.
             signals.append((index, "/".join(point.events) + ("*" if point.provisional else "")))
     return (power if any(value is not None for value in power) else []), signals

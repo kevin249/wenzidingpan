@@ -206,7 +206,8 @@ def _depth(count: int = 8) -> DepthSnapshot:
 
 def _widget(**overrides) -> DepthLadder:
     quote_color = overrides.pop("quote_color", QColor(154, 163, 184))
-    options = {"display_theme": "theme2", "theme2_side": "right", "font_size": 13}
+    options = {"display_theme": "theme2", "theme2_side": "right", "font_size": 13,
+               "chart_line_color": CURVE_COLOR.name()}
     options.update(overrides)
     widget = DepthLadder()
     widget.apply_config(Config(**options))
@@ -547,20 +548,15 @@ def test_theme2_grayscale_puts_book_candles_and_price_on_one_gray(app):
     widget.close()
 
 
-def test_theme2_candles_stay_colored_while_grayscale_is_off(app):
-    """反证：同一套配置关掉灰度后日K 蜡烛确实还是红绿分明的，上面那条断言才不是空转。
-
-    这里**故意不设盘口**：彩色模式下买卖柱原本也是红绿的，带上它就会让这条用例变成
-    「怎么都通过」，反而证明不了蜡烛还在上色。
-    """
-    widget = _widget()
+def test_theme2_candles_use_configured_color_while_grayscale_is_off(app):
+    widget = _widget(chart_line_color="#ff0000")
     widget.set_intraday(_session_trend())
     widget.set_kline(_kline())
     widget.set_chart_mode(MODE_DAILY)
     widget.set_expanded(True)
 
     green_rows, red_rows = _colored_rows(_render(widget), widget.width())
-    assert green_rows and red_rows
+    assert red_rows and not green_rows
     widget.close()
 
 
@@ -1011,7 +1007,7 @@ def test_theme2_price_band_stays_at_the_vertical_center_after_expansion(app):
 
 
 def test_theme2_daily_mode_draws_candles_in_the_middle_band(app):
-    widget = _widget()
+    widget = _widget(chart_line_color="#ff0000")
     widget.set_kline(_kline())
     widget.set_chart_mode(MODE_DAILY)
     widget.set_expanded(True)
@@ -1031,7 +1027,7 @@ def test_theme2_daily_mode_draws_candles_in_the_middle_band(app):
 def test_theme2_daily_candles_span_between_the_two_axes(app):
     """横轴＝两根竖轴之间那一段，分时与日K 共用，所以切模式时图表宽度不跳。"""
     for side in ("right", "left"):
-        widget = _widget(theme2_side=side)
+        widget = _widget(theme2_side=side, chart_line_color="#ff0000")
         widget.set_kline(_kline())
         widget.set_chart_mode(MODE_DAILY)
         widget.set_expanded(True)

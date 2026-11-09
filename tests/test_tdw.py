@@ -16,12 +16,18 @@ def bars(closes):
 
 
 def test_power_and_all_four_crossings_and_closed_bar_cutoff():
-    data = bars([10.] * 25 + [14.] * 12 + [10.] * 8)
+    data = bars([10.] * 25 + [14.] * 25 + [10.] * 27 + [14.] * 8)
     points = calculate(data, PERIOD_1M, START + timedelta(minutes=len(data)))
     assert len(points) == len(data) - 24
     assert points[data[25].time].power == pytest.approx(1.6)
-    assert points[data[25].time].events == ("B1", "B2")
-    assert points[data[37].time].events == ("S1", "S2")
+    assert [(stamp, point.events) for stamp, point in points.items() if point.events] == [
+        (data[25].time, ("B2",)),
+        (data[29].time, ("S2",)),
+        (data[50].time, ("S1",)),
+        (data[55].time, ("B1",)),
+        (data[77].time, ("B2",)),
+        (data[81].time, ("S2",)),
+    ]
     cutoff = START + timedelta(minutes=30)
     assert calculate(data, PERIOD_1M, cutoff) == calculate(data[:31], PERIOD_1M, cutoff)
     assert list(calculate(data, PERIOD_1M, cutoff))[-1] == data[30].time
@@ -30,9 +36,9 @@ def test_power_and_all_four_crossings_and_closed_bar_cutoff():
 def test_filters_are_independent_and_suppress_twenty_following_bars():
     data = bars([10.] * 25 + [14.] + [10.] * 4 + [14.] + [10.] * 15 + [14.])
     p = calculate(data, PERIOD_1M, START + timedelta(hours=5))
-    assert p[data[25].time].events == ("B1", "B2")
+    assert p[data[25].time].events == ("B2",)
     assert p[data[30].time].events == ()
-    assert p[data[46].time].events == ("B1", "B2")
+    assert p[data[46].time].events == ("B2",)
 
 
 def test_daily_warmup_and_flat_market_do_not_create_entries():

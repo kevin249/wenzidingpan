@@ -23,14 +23,15 @@ from PySide6.QtWidgets import (
 
 from ..config import Bounds, Config
 from ..desktop import keep_visible_when_inactive
-from ..mcp_depth import DepthSnapshot, depth_is_stale
+from ..mcp_depth import DepthSnapshot
 from ..poller import Snapshot
 from ..symbols import classify
 from .depth_ladder import DepthLadder
 from .marquee import Marquee
 from .quote_row import QuoteRow
 from .screen_click import ScreenClickWatcher
-from .theme import BORDER, MUTED, TEXT, fmt_money, make_font
+from .stealth import STEALTH_THEMES, StealthPanel
+from .theme import BORDER, MUTED, TEXT, make_font
 
 HANDLE_SIZE = 20
 
@@ -304,10 +305,6 @@ class TickerWindow(QWidget):
         self._rows: dict[str, QuoteRow] = {}
         self._focus_symbol: str | None = None
         self._focus_quotes: list = []
-        self._focus_trends: dict = {}
-        self._radar_sort = False
-        self._focus_buttons: dict[str, QPushButton] = {}
-        self._radar_sort_button: QPushButton | None = None
         self._depths: dict[str, DepthSnapshot] = {}
         self._depth_repaint_timer = QTimer(self)
         self._depth_repaint_timer.setSingleShot(True)
@@ -378,37 +375,14 @@ class TickerWindow(QWidget):
             palette.setColor(QPalette.Base, QColor(0, 0, 0, 0))
             surface.setPalette(palette)
 
-        self.focus_tabs = QWidget()
-        self.focus_tabs_layout = QHBoxLayout(self.focus_tabs)
-        self.focus_tabs_layout.setContentsMargins(8, 3, 8, 3)
-        self.focus_tabs_layout.setSpacing(5)
-        self.focus_tabs_scroll = QScrollArea()
-        self.focus_tabs_scroll.setWidget(self.focus_tabs)
-        self.focus_tabs_scroll.setWidgetResizable(False)
-        self.focus_tabs_scroll.setFixedHeight(50)
-        self.focus_tabs_scroll.setFrameShape(QScrollArea.NoFrame)
-        self.focus_tabs_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.focus_tabs_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self.focus_tabs_scroll.setStyleSheet("QScrollArea, QScrollArea QWidget { background: transparent; border: none; }")
-        self.radar_panel = QScrollArea()
-        self.radar_panel.setWidgetResizable(True)
-        self.radar_panel.setMinimumWidth(190)
-        self.radar_panel.setMaximumWidth(270)
-        self.radar_panel.setFrameShape(QScrollArea.NoFrame)
-        self.radar_list = QWidget()
-        self.radar_layout = QVBoxLayout(self.radar_list)
-        self.radar_layout.setContentsMargins(6, 3, 6, 3)
-        self.radar_layout.setSpacing(4)
-        self.radar_panel.setWidget(self.radar_list)
-        self.radar_panel.setStyleSheet("QScrollArea, QScrollArea QWidget { background: transparent; border: none; }")
         self.focus_host = QWidget()
         focus_layout = QHBoxLayout(self.focus_host)
         focus_layout.setContentsMargins(0, 0, 0, 0)
         focus_layout.setSpacing(0)
-        focus_layout.addWidget(self.radar_panel)
         focus_layout.addWidget(self.scroll, 1)
 
         self.marquee = Marquee()
+        self.stealth = StealthPanel(self)
         self.empty_label = QLabel("自选列表为空\n点击 ⚙ 在浏览器里添加代码")
         self.empty_label.setAlignment(Qt.AlignCenter)
         self.empty_label.setStyleSheet("color: #8b93a7;")
@@ -430,15 +404,15 @@ class TickerWindow(QWidget):
         layout.setContentsMargins(1, 1, 1, 1)
         layout.setSpacing(0)
         layout.addWidget(self.title_bar)
-        layout.addWidget(self.focus_tabs_scroll)
         layout.addWidget(self.empty_label, 1)
         layout.addWidget(self.focus_host, 1)
         layout.addWidget(self.marquee)
+        layout.addWidget(self.stealth)
 
         # 顶层透明特效在 Windows 上可能漏掉使用系统调色板的 QLabel。
         # 按主要内容层分别合成，既完整覆盖子控件，又不会重复叠加透明度。
         self._opacity_effects: list[QGraphicsOpacityEffect] = []
-        for surface in (self.title_bar, self.empty_label, self.rows_host, self.marquee, self.grip):
+        for surface in (self.title_bar, self.empty_label, self.rows_host, self.marquee, self.grip, self.stealth):
             effect = QGraphicsOpacityEffect(surface)
             surface.setGraphicsEffect(effect)
             self._opacity_effects.append(effect)
@@ -472,7 +446,7 @@ class TickerWindow(QWidget):
 
     def scaled_config(self) -> Config:
         """主题1按窗口缩放字体；主题2只调整几何尺寸，字体始终保持配置值。"""
-        if self._config.display_theme == "theme2":
+        if self._config.display_theme in ("theme2", *STEALTH_THEMES):
             return self._config
         if abs(self._scale - 1.0) < 0.01:
             return self._config
@@ -502,96 +476,20 @@ class TickerWindow(QWidget):
         )
 
     def _focus_config(self, config: Config) -> Config:
-        """Use the shared K/price/L2/TDW renderer for both focused themes."""
+        """隐蔽主题复用分时与 B/S 数据缓存，不显示旧工作台绘图区域。"""
         if config.display_theme not in ("depth", "radar"):
             return config
-        return replace(config, display_theme="theme3", layout="multi", row_style="top_bottom",
-                       visible_rows=1,
-                       chart_height=max(340, config.chart_height), theme3_show_tdw=config.theme3_show_tdw)
+        return replace(config, display_theme="theme1", layout="multi", row_style="top_bottom",
+                       visible_rows=1, chart_height=48, theme3_show_tdw=False, show_chart_depth=False)
 
     def _select_focus(self, symbol: str) -> None:
-        if symbol not in self._rows or symbol == self._focus_symbol:
-            return
-        self._focus_symbol = symbol
-        self._grid_shape = (-1, -1)
-        self._lay_out_grid([symbol])
-        self._render_focus_navigation()
-        self._schedule_depth_repaint()
+        if self._config.display_theme in STEALTH_THEMES:
+            self.stealth.show_peek(symbol)
 
     def _render_focus_navigation(self) -> None:
-        for panel in (self.focus_tabs_layout, self.radar_layout):
-            while panel.count():
-                item = panel.takeAt(0)
-                if item.widget():
-                    item.widget().hide()
-        if self._config.display_theme not in ("depth", "radar"):
-            return
-        target = self.focus_tabs_layout if self._config.display_theme == "depth" else self.radar_layout
-        if self._config.display_theme == "radar":
-            if self._radar_sort_button is None:
-                self._radar_sort_button = QPushButton()
-                self._radar_sort_button.setToolTip("关闭时保持自选顺序")
-                self._radar_sort_button.clicked.connect(self._toggle_radar_sort)
-            self._radar_sort_button.setText("✓ 涨幅排序" if self._radar_sort else "按涨幅排序")
-            target.addWidget(self._radar_sort_button)
-            self._radar_sort_button.show()
-        wanted = {quote.symbol for quote in self._focus_quotes}
-        for symbol in set(self._focus_buttons) - wanted:
-            self._focus_buttons.pop(symbol).deleteLater()
-        quotes = (sorted(self._focus_quotes, key=lambda q: q.change_percent if q.change_percent is not None else -float("inf"),
-                         reverse=True) if self._radar_sort and self._config.display_theme == "radar" else self._focus_quotes)
-        for quote in quotes:
-            if quote.symbol not in self._rows:
-                continue
-            price = f"{quote.price:.2f}" if quote.price is not None else "—"
-            change = f"{quote.change_percent:+.2f}%" if quote.change_percent is not None else ""
-            caption = quote.name or quote.symbol
-            if target == self.radar_layout:
-                trend = self._focus_trends.get(quote.symbol)
-                prices = list(getattr(trend, "prices", ()) or ())[-12:]
-                if prices:
-                    low, high = min(prices), max(prices)
-                    glyphs = "▁▂▃▄▅▆▇█"
-                    spark = "".join(glyphs[min(7, int((p - low) / max(high - low, 1e-9) * 7))]
-                                    for p in prices)
-                else:
-                    spark = ""
-                signals = self._rows[quote.symbol].sparkline._signals
-                latest = signals[-1][1] if signals else "—"
-                parsed = classify(quote.symbol)
-                snapshot = self._depths.get(parsed.code if parsed else quote.symbol)
-                near = (
-                    [level for level in snapshot.levels
-                     if quote.price and abs(level.price - quote.price) <= quote.price * .005]
-                    if snapshot and snapshot.available and not depth_is_stale(snapshot) else []
-                )
-                bid = sum(level.volume for level in near if level.side == "bid")
-                ask = sum(level.volume for level in near if level.side == "ask")
-                ratio = f"{bid / (bid + ask):.0%}" if bid + ask else "—"
-                dark = fmt_money(quote.dark_fund) or "—"
-                caption = (f"{caption}  {price}  {change} · 暗 {dark}\n"
-                           f"{spark}   B/S {latest} · 近价买盘 {ratio}")
-            button = self._focus_buttons.get(quote.symbol)
-            if button is None:
-                button = QPushButton()
-                button.setCheckable(True)
-                button.setStyleSheet("QPushButton { text-align: left; padding: 9px; color: #e8eaf0; border: 0; border-radius: 6px; } "
-                                     "QPushButton:checked { background: rgba(68,127,224,0.32); } "
-                                     "QPushButton:hover { background: rgba(68,127,224,0.18); }")
-                button.clicked.connect(lambda _checked=False, symbol=quote.symbol: self._select_focus(symbol))
-                self._focus_buttons[quote.symbol] = button
-            button.setText(caption)
-            button.setCheckable(True)
-            button.setChecked(quote.symbol == self._focus_symbol)
-            target.addWidget(button)
-            button.show()
-        target.addStretch(1)
-        if target == self.focus_tabs_layout:
-            self.focus_tabs.adjustSize()
-
-    def _toggle_radar_sort(self) -> None:
-        self._radar_sort = not self._radar_sort
-        self._render_focus_navigation()
+        if self._config.display_theme in STEALTH_THEMES:
+            self.stealth.set_quotes(self._focus_quotes, self._rows)
+            self._resize_to_grid()
 
     def apply_config(self, config: Config) -> None:
         previous = self._config
@@ -613,6 +511,7 @@ class TickerWindow(QWidget):
             self._hidden_title_frame = 0
 
         self._config = config
+        self.stealth.apply_config(config)
         chart_height_changed = previous.chart_height != config.chart_height
         component_sizes_changed = previous.component_sizes != config.component_sizes
 
@@ -678,18 +577,19 @@ class TickerWindow(QWidget):
             self._lay_out_grid([self._focus_symbol] if config.display_theme in ("depth", "radar") and self._focus_symbol in self._rows
                                else list(self._rows))
 
-        self.focus_tabs_scroll.setVisible(config.display_theme == "depth")
-        self.radar_panel.setVisible(config.display_theme == "radar")
+        stealth = config.display_theme in STEALTH_THEMES
+        self.stealth.setVisible(stealth)
+        self.focus_host.setVisible(not stealth)
         self._render_focus_navigation()
         single = config.layout == "single" and config.display_theme not in ("theme2", "depth", "radar")
         self.marquee.setVisible(single)
-        self.scroll.setVisible(not single and bool(self._rows))
+        self.scroll.setVisible(not stealth and not single and bool(self._rows))
         self.scroll.setVerticalScrollBarPolicy(
             Qt.ScrollBarAsNeeded if config.display_theme == "theme2" else Qt.ScrollBarAlwaysOff
         )
-        self.empty_label.setVisible(not single and not self._rows)
+        self.empty_label.setVisible(not stealth and not single and not self._rows)
         # Keep the resize hit area available even when the title bar is hidden.
-        self.grip.setVisible(not config.click_through)
+        self.grip.setVisible(not stealth and not config.click_through)
         self.grip.set_always_visible(config.show_title_buttons)
         self._position_grip()
 
@@ -730,6 +630,8 @@ class TickerWindow(QWidget):
         """
         menu = QMenu(self)
         menu.addAction("立即刷新", self.refresh_requested.emit)
+        if self._config.display_theme in STEALTH_THEMES:
+            menu.addAction("隐藏窗口（Ctrl+F2 恢复）", self.hide)
         toggle = menu.addAction("显示标题栏按钮", self.title_buttons_requested.emit)
         toggle.setCheckable(True)
         toggle.setChecked(self._config.show_title_buttons)
@@ -739,6 +641,7 @@ class TickerWindow(QWidget):
         return menu
 
     def popup_menu(self, position: QPoint) -> None:
+        self.stealth.dismiss()
         menu = self.build_menu()
         menu.exec(position)
         menu.deleteLater()  # 菜单挂在窗口下，不回收的话点一次多一个
@@ -782,7 +685,6 @@ class TickerWindow(QWidget):
                     row.update_quote(quote, self._focus_config(scaled), snapshot.trends.get(quote.symbol))
             if self._config.display_theme in ("depth", "radar"):
                 self._focus_quotes = list(quotes)
-                self._focus_trends.update(snapshot.trends)
                 self._render_focus_navigation()
         else:
             self._sync_rows(quotes, snapshot.trends)
@@ -793,11 +695,11 @@ class TickerWindow(QWidget):
             symbol = classify(raw_symbol)
             if symbol is not None and symbol.code == snapshot.symbol:
                 row.update_depth(snapshot)
-        if self._config.display_theme == "radar":
+        if self._config.display_theme in STEALTH_THEMES:
             self._render_focus_navigation()
 
     def _schedule_depth_repaint(self) -> None:
-        if self._config.display_theme in ("theme3", "depth", "radar") and not self._depth_repaint_timer.isActive():
+        if self._config.display_theme == "theme3" and not self._depth_repaint_timer.isActive():
             self._depth_repaint_timer.start(0)
 
     def _recompose_depth_surface(self) -> None:
@@ -828,7 +730,7 @@ class TickerWindow(QWidget):
             parsed = classify(raw)
             if target is None or (parsed is not None and parsed.code == target.code):
                 row.refresh_bs_signals()
-        if self._config.display_theme == "radar":
+        if self._config.display_theme in STEALTH_THEMES:
             self._render_focus_navigation()
 
     def _sync_rows(self, quotes, trends: dict | None = None) -> None:
@@ -836,7 +738,6 @@ class TickerWindow(QWidget):
         scaled = self.scaled_config()
         row_config = self._focus_config(scaled)
         self._focus_quotes = list(quotes)
-        self._focus_trends = trends
         for index, quote in enumerate(quotes):
             row = self._rows.get(quote.symbol)
             if row is None:
@@ -878,8 +779,8 @@ class TickerWindow(QWidget):
                            [q.symbol for q in quotes])
 
         single = self._config.layout == "single" and self._config.display_theme not in ("theme2", "depth", "radar")
-        self.scroll.setVisible(not single and bool(self._rows))
-        self.empty_label.setVisible(not single and not self._rows)
+        self.scroll.setVisible(not focused and not single and bool(self._rows))
+        self.empty_label.setVisible(not focused and not single and not self._rows)
         self._resize_to_grid()
 
     def _grid_size(self, count: int) -> tuple[int, int]:
@@ -892,6 +793,13 @@ class TickerWindow(QWidget):
 
     def _lay_out_grid(self, order: list[str]) -> None:
         """按自选顺序从左到右填，填满一行再换下一行。"""
+        if self._config.display_theme in STEALTH_THEMES:
+            for row in self._rows.values():
+                self.rows_layout.removeWidget(row)
+                row.setParent(self.rows_host)
+                row.hide()
+            self._grid_shape = (-1, -1)
+            return
         rows, columns = self._grid_size(len(order))
         # 禁止滚动条：内容宿主始终跟随视口宽度，每个 QuoteRow 再按实际格宽
         # 在横向版与窄卡片版之间自适应。
@@ -1043,12 +951,8 @@ class TickerWindow(QWidget):
         if self._config.display_theme in ("depth", "radar"):
             self.setMinimumHeight(0)
             self.setMaximumHeight(16777215)
-            if not self._manual_size:
-                screen = self.screen()
-                available = screen.availableGeometry() if screen else None
-                width = 1000 if self._config.display_theme == "radar" else 780
-                self.resize(min(width, available.width()) if available else width,
-                            min(620, available.height()) if available else 620)
+            size = self.stealth.sizeHint()
+            self.resize(size.width() + 2, size.height() + chrome)
             self._keep_on_screen()
             return
         if self._config.display_theme == "theme2":
@@ -1153,6 +1057,13 @@ class TickerWindow(QWidget):
 
     def restore_bounds(self, bounds: Bounds | None, available: list) -> None:
         """恢复上次位置前先确认它仍落在某块屏幕上（外接显示器可能已拔掉）。"""
+        if self._config.display_theme in STEALTH_THEMES:
+            self._scale = 1.0
+            self._manual_size = False
+            if bounds is not None:
+                self.move(bounds.x, bounds.y)
+            self._resize_to_grid()
+            return
         if bounds is None:
             self._scale = 1.0
             self._manual_size = False
@@ -1182,6 +1093,8 @@ class TickerWindow(QWidget):
         self._apply_scale()
 
     def moveEvent(self, event) -> None:  # noqa: N802 - Qt 命名
+        if hasattr(self, "stealth"):
+            self.stealth.dismiss()
         if not self._transient_geometry_change:
             self._save_timer.start()
         self._move_handle()
@@ -1404,12 +1317,14 @@ class TickerWindow(QWidget):
 
     def hideEvent(self, event) -> None:  # noqa: N802 - Qt 命名
         self.handle.hide()
+        self.stealth.dismiss()
         # 窗口藏起来就不再占着「全屏点击收起」的钩子（进程退出前 Windows 也会
         # 自行回收，这里主动卸载是为了不悬空回调）；顺带把展开态收干净，
         # 免得再显示时行内还留着展开的画布。
         self._set_theme2_all_expanded(False)
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt 命名
+        self.stealth.dismiss()
         self._screen_click_watcher.stop()
         super().closeEvent(event)
 

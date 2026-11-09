@@ -51,6 +51,7 @@ const NUMBERS = [
   'theme2_depth_width',
   'chart_depth_width',
   'chart_line_width',
+  'average_line_width',
   'depth_line_width',
   ...FONT_SIZES,
   'refresh_seconds',
@@ -69,6 +70,8 @@ const TEXTS = [
   'color_scheme',
   'font_family',
   'tdw_label_color',
+  'chart_line_color',
+  'average_line_color',
   'background_color',
   'mcp_url',
   'mcp_api_key',
@@ -86,10 +89,6 @@ const FONT_COLOR_FALLBACKS = {
   dark_trade_color: '#000000',
 };
 const TEXT_REGIONS = ['name', 'code', 'price', 'percent', 'dark', 'high_low', 'chart', 'tdw'];
-const COMMON_FIELDS = new Set(['provider', 'kline_source', 'symbols', 'stock_visibility', 'debug_mode',
-  'refresh_seconds', 'chart_refresh_seconds', 'mcp_url', 'mcp_api_key', 'mcp_notifications_enabled',
-  'mcp_bell_terminal', 'mcp_bell_toast', 'mcp_bell_tray_icon', 'mcp_bell_window', 'tray_unread_font_size']);
-let settingsScope = 'theme';
 const MAX_SYMBOLS = 50;
 const STOCK_COMPONENTS = [
   ['name', '股票名称'], ['price', '股价'], ['percent', '涨跌幅'],
@@ -303,8 +302,7 @@ function collect() {
     patch[id] = el(`${id}_auto`).checked ? 'auto' : el(id).value;
   }
   patch.text_opacities = Object.fromEntries(TEXT_REGIONS.map(region => [region, Number(el(`text-opacity-${region}`).value)]));
-  return Object.fromEntries(Object.entries(patch).filter(([key]) =>
-    key === 'display_theme' || COMMON_FIELDS.has(key) === (settingsScope === 'common')));
+  return patch;
 }
 
 function fill(config) {
@@ -350,40 +348,46 @@ function refreshHints() {
 
   const theme2 = el('display_theme').value === 'theme2';
   const focused = activeTheme === 'depth' || activeTheme === 'radar';
-  const theme3 = activeTheme === 'theme3' || focused;
-  const names = { depth: '价格深度', radar: '多股雷达', theme3: '分时＋TDW', theme1: '经典网格', theme2: '千档竖列' };
+  const theme3 = activeTheme === 'theme3';
+  const names = { depth: '一行文字', radar: '贴边小列', theme3: '分时＋TDW', theme1: '经典网格', theme2: '千档竖列' };
   const previews = { depth: 'depth-preview.png', radar: 'radar-preview.png', theme3: 'theme3-preview.png' };
   const preview = el('active-theme-preview');
   preview.src = preview.src.replace(/(?:depth|radar|theme[123])-preview\.png$/, previews[activeTheme] || 'theme3-preview.png');
   el('preview-caption').textContent = activeTheme === 'depth'
-    ? '单股聚焦 · 标签切换 · K 线 / 挂单 / TDW'
-    : activeTheme === 'radar' ? '自选列表 · 点击股票查看右侧详情' : '分时图与 TDW 副图';
+    ? '透明文字横条 · 悬停展开 · Ctrl+F2 隐藏'
+    : activeTheme === 'radar' ? '贴边小列 · 微型走势 · 悬停展开' : '分时图与 TDW 副图';
   for (const choice of document.querySelectorAll('[name="theme-choice"]')) {
-    choice.checked = settingsScope !== 'common' && choice.value === activeTheme;
-  }
-  // body also stores the current scope for dynamically inserted MCP cards.
-  // Only hide cards: including body makes the whole page blank on a scope switch.
-  for (const section of document.querySelectorAll('section[data-settings-scope]')) {
-    section.hidden = section.dataset.settingsScope !== settingsScope;
+    choice.checked = choice.value === activeTheme;
   }
   for (const field of document.querySelectorAll('[data-themes]')) {
     field.hidden = !field.dataset.themes.split(' ').includes(activeTheme);
   }
-  el('common-settings').setAttribute('aria-pressed', String(settingsScope === 'common'));
-  document.body.dataset.settingsScope = settingsScope;
+  for (const field of document.querySelectorAll('[data-stealth-hide]')) field.hidden = focused;
+  for (const id of ['stock_name_font_size', 'stock_price_font_size', 'stock_percent_font_size',
+    'dark_trade_font_size', 'chart_label_font_size', 'stock_name_bold', 'stock_price_bold',
+    'stock_percent_bold', 'dark_trade_bold', 'show_chart_depth', 'chart_fill_width',
+    'tdw_recent_five', 'show_sparkline_fill', 'show_open_line', 'show_high_low', 'intraday_chart', 'show_title_buttons']) {
+    const field = el(id).closest('.field, label');
+    if (field) field.hidden = focused || (field.dataset.themes && !field.dataset.themes.split(' ').includes(activeTheme));
+  }
+  for (const region of ['code', 'high_low', 'tdw']) {
+    const field = el(`text-opacity-${region}`).closest('.field');
+    field.hidden = focused || (region === 'code' && !theme2);
+  }
+  document.querySelector('label[for="font_size"]').textContent = focused ? '悬浮文字字号（px）' : '基础 / 控件字号（px）';
   el('theme-settings-heading').textContent = `${names[activeTheme] || activeTheme} · 独立设置`;
   el('theme-font-heading').textContent = `${names[activeTheme] || activeTheme} · 字体颜色与字重`;
   el('tdw-label-field').hidden = !theme3;
   const mirrorLeft = el('theme2_side').value === 'left';
   const single = !theme2 && !focused && el('layout').value === 'single';
-  el('show_chart_depth').disabled = theme2 || single;
+  el('show_chart_depth').disabled = focused || theme2 || single;
   el('theme2_side').disabled = !theme2;
   el('theme2_depth_width').disabled = !theme2;
   el('theme2_popup_font_size').disabled = !theme2;
   el('theme2_always_expanded').disabled = !theme2;
   // 灰度值只在开启「灰度显示」时才参与绘制，没开就没什么可调的。
   el('grayscale_level').disabled = !el('grayscale').checked;
-  el('layout').disabled = theme2 || theme3;
+  el('layout').disabled = focused || theme2 || theme3;
   for (const id of ['visible_rows', 'row_style', 'chart_height']) {
     el(id).disabled = single || theme2 || (focused && id !== 'chart_height');
   }
@@ -400,8 +404,8 @@ function refreshHints() {
       : '多行列表：自选按这个行数铺成网格——填 1 就全部横向排开，填 2 就铺两行，窗口宽度随之变宽。';
 
   el('display-theme-hint').textContent = focused
-    ? activeTheme === 'depth' ? '标签切换单股，逐价位挂单与 K 线使用同一价格坐标。挂单最大宽度是 K 线绘图区的 50%。'
-      : '点击左侧自选股票，右侧显示该股票的分时、逐价位挂单和 TDW。'
+    ? activeTheme === 'depth' ? '自选股横向排列为一行简称、现价和涨跌幅；字号、透明度与位置单独保存。'
+      : '自选股纵向排列，附微型走势；鼠标靠近才展开详情。默认灰度、透明背景。'
     : theme2
     ? `股价轴靠${mirrorLeft ? '左' : '右'}，盘口条向内延伸。可以点击价格展开详情，或开启始终展开。字号、线宽、文字透明度和窗口尺寸只保存到主题 2。`
     : theme3 ? '上方分时图与下方 TDW 共用时间轴。TDW 副图可单独关闭，关闭后分时图自动扩展。挂单条逐价位绘制。'
@@ -411,7 +415,7 @@ function refreshHints() {
 
   el('row_style-hint').textContent = theme2
     ? '主题 2 不使用行内样式。'
-    : theme3 ? '顶部依次显示名称、暗盘、现价和涨跌幅。'
+    : theme3 ? '顶部左侧显示股票名称，中间为现价，右侧依次显示涨跌幅和暗盘。'
     : el('row_style').value === 'top_bottom'
       ? '上下：顶部显示名称、现价、涨跌幅和暗盘，下方显示走势图。'
       : el('row_style').value === 'stacked'
@@ -452,7 +456,7 @@ async function apply(label = '已保存') {
     const config = await postConfig(patch);
     if (sequence !== applySequence) return;
     fill(config);
-    if (settingsScope !== 'common') await applyWindowSize();
+    await applyWindowSize();
     note(label);
   } catch (error) {
     note(`保存失败：${error.message}`);
@@ -460,8 +464,6 @@ async function apply(label = '已保存') {
 }
 
 async function switchTheme(nextTheme) {
-  const previousScope = settingsScope;
-  settingsScope = 'theme';
   if (nextTheme === activeTheme) {
     refreshHints();
     return;
@@ -474,9 +476,7 @@ async function switchTheme(nextTheme) {
   main.inert = true;
   try {
     // 先保存当前页，再只提交主题标识，防止旧主题的字号和颜色写入新主题。
-    settingsScope = previousScope;
     const currentPatch = collect();
-    settingsScope = 'theme';
     currentPatch.display_theme = activeTheme;
     await postConfig(currentPatch);
 
@@ -561,11 +561,12 @@ for (const axis of ['width', 'height']) {
 for (const id of [...CHECKBOXES, 'provider', 'kline_source', 'theme2_side', 'layout', 'row_style', 'color_scheme', 'background_color']) {
   el(id).addEventListener('change', () => apply('已应用'));
 }
-el('common-settings').addEventListener('click', () => { settingsScope = 'common'; refreshHints(); });
 for (const choice of document.querySelectorAll('[name="theme-choice"]')) {
   choice.addEventListener('change', () => switchTheme(choice.value));
 }
-el('tdw_label_color').addEventListener('change', () => apply('已应用'));
+for (const id of ['tdw_label_color', 'chart_line_color', 'average_line_color']) {
+  el(id).addEventListener('change', () => apply('已应用'));
+}
 for (const id of FONT_COLORS) {
   el(id).addEventListener('change', () => apply('已应用'));
   el(`${id}_auto`).addEventListener('change', () => {
@@ -584,7 +585,7 @@ el('grayscale_level').addEventListener('input', () => {
   el('grayscale_level-value').textContent = el('grayscale_level').value;
 });
 el('grayscale_level').addEventListener('change', () => apply('已应用'));
-for (const id of ['chart_depth_width', 'chart_line_width', 'depth_line_width']) {
+for (const id of ['chart_depth_width', 'chart_line_width', 'average_line_width', 'depth_line_width']) {
   el(id).addEventListener('change', () => apply('已应用'));
 }
 for (const region of TEXT_REGIONS) {

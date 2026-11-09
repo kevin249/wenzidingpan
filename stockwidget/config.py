@@ -23,6 +23,16 @@ CONFIG_FILE_NAME = "config.json"
 
 LAYOUTS = ("multi", "single")
 DISPLAY_THEMES = ("theme1", "theme2", "theme3", "depth", "radar")
+STEALTH_DEFAULTS = {
+    "font_size": 12, "stock_name_font_size": 12, "stock_price_font_size": 12,
+    "stock_percent_font_size": 11, "dark_trade_font_size": 11, "chart_label_font_size": 11,
+    "opacity": .72, "background_alpha": 0.0, "grayscale": True, "grayscale_level": 150,
+    "show_title_buttons": False, "always_on_top": True,
+    "stock_name_bold": False, "stock_price_bold": False, "stock_percent_bold": False,
+    "theme3_show_tdw": False, "show_chart_depth": False, "show_sparkline_fill": False,
+    "show_open_line": False, "show_high_low": False, "visible_rows": 1,
+    "bounds": None,
+}
 THEME3_DEFAULTS = {
     "stock_name_font_size": 25, "stock_price_font_size": 28,
     "stock_percent_font_size": 24, "dark_trade_font_size": 15, "chart_label_font_size": 11,
@@ -54,24 +64,18 @@ TEXT_REGIONS = (
     ("chart", "图表坐标与状态文字"), ("tdw", "TDW 图注与信号文字"),
 )
 
-# 只把“显示/窗口外观”按主题隔离。数据源、自选、刷新频率、Debug、
-# MCP/托盘提醒仍是全局共享配置，切主题不会复制或分叉这些运行状态。
+# 字号、颜色、透明度与布局按主题隔离。置顶、穿透、基础显示开关、
+# 数据源、自选和提醒全局共享，切换主题不会覆盖公共设置。
 THEME_SCOPED_FIELDS = (
     "color_scheme",
     "opacity",
     "background_color",
     "background_alpha",
-    "click_through",
-    "always_on_top",
     "show_title_buttons",
-    "show_sparkline",
     "show_chart_depth",
     "show_sparkline_fill",
-    "show_bs_points",
     "show_open_line",
     "show_high_low",
-    "show_stock_name",
-    "show_stock_price",
     "grayscale",
     "grayscale_level",
     "intraday_chart",
@@ -80,9 +84,11 @@ THEME_SCOPED_FIELDS = (
     "theme3_show_tdw",
     "chart_depth_width",
     "chart_line_width",
+    "chart_line_color",
+    "average_line_color",
+    "average_line_width",
     "depth_line_width",
     "text_opacities",
-    "show_dark_trade",
     "compact",
     "theme2_side",
     "theme2_depth_width",
@@ -209,11 +215,15 @@ class Config:
     theme3_show_tdw: bool = True
     chart_depth_width: int = 0  # 主题 1、3 挂单条最长长度；0 自动
     chart_line_width: float = 1.4
+    chart_line_color: str = "#000000"
+    average_line_color: str = "#ffff00"
+    average_line_width: float = 1.5
     depth_line_width: float = .8
     text_opacities: dict[str, float] = field(default_factory=dict)
     show_dark_trade: bool = True
     compact: bool = False
-    display_theme: str = "theme1"  # 旧配置可读；桌面启动时迁移到价格深度
+    display_theme: str = "theme1"  # 旧配置可读；桌面启动时迁移到一行文字
+    stealth_revision: int = 0  # 一次性迁移旧价格深度 / 多股雷达的大窗口外观
     theme2_side: str = "right"  # right = 股价列靠右/盘口向左长，left = 靠左镜像
     theme2_depth_width: int = 84  # 主题2千档柱长度（折叠/展开恒定，25%~70% 夹取且不越行中点），像素
     theme2_popup_font_size: int = 11  # 主题2顶部信息条与图表小字（量标注/角标/提示）字号
@@ -288,7 +298,8 @@ def _theme_profile_from_config(config: Config) -> dict[str, Any]:
 
 
 def _default_theme_profile(theme: str) -> dict[str, Any]:
-    base = Config(display_theme=theme, **(THEME3_DEFAULTS if theme in ("theme3", "depth", "radar") else {}))
+    defaults = STEALTH_DEFAULTS if theme in ("depth", "radar") else THEME3_DEFAULTS if theme == "theme3" else {}
+    base = Config(display_theme=theme, **defaults)
     return _theme_profile_from_config(base)
 
 
@@ -297,8 +308,12 @@ def sanitize(raw: Any, *, _include_theme_profiles: bool = True) -> Config:
     out = Config()
     if not isinstance(raw, dict):
         return out
-    if raw.get("display_theme") in ("theme3", "depth", "radar"):
+    if raw.get("display_theme") in ("depth", "radar"):
+        raw = {**STEALTH_DEFAULTS, **raw, "layout": "multi"}
+    elif raw.get("display_theme") == "theme3":
         raw = {**THEME3_DEFAULTS, **raw, "layout": "multi"}
+    if raw.get("stealth_revision") == 1:
+        out.stealth_revision = 1
 
     if isinstance(raw.get("provider"), str):
         out.provider = raw["provider"]
@@ -385,7 +400,7 @@ def sanitize(raw: Any, *, _include_theme_profiles: bool = True) -> Config:
     depth_width = _as_number(raw.get("chart_depth_width"))
     if depth_width is not None:
         out.chart_depth_width = int(_clamp(round(depth_width), 0, 1200))
-    for key in ("chart_line_width", "depth_line_width"):
+    for key in ("chart_line_width", "average_line_width", "depth_line_width"):
         value = _as_number(raw.get(key))
         if value is not None:
             setattr(out, key, round(_clamp(value, .3, 6), 1))
@@ -460,7 +475,8 @@ def sanitize(raw: Any, *, _include_theme_profiles: bool = True) -> Config:
         out.tray_unread_font_size = int(_clamp(round(tray_unread_size), 7, 32))
 
     # 托盘颜色不支持 auto，只接受实际十六进制颜色。
-    for key in ("tray_icon_normal_color", "tray_icon_alert_color", "tdw_label_color"):
+    for key in ("tray_icon_normal_color", "tray_icon_alert_color", "tdw_label_color",
+                "chart_line_color", "average_line_color"):
         color = raw.get(key)
         if isinstance(color, str):
             color = color.strip().lower()
@@ -594,6 +610,23 @@ class Store:
 
     def get(self) -> Config:
         return sanitize(self._config.to_dict())
+
+    def migrate_stealth_themes(self) -> None:
+        """首次升级收起旧工作台，保留公共数据、第三主题和旧主题的备份 profile。"""
+        if self._config.stealth_revision >= 1:
+            return
+        raw = self._config.to_dict()
+        for theme in ("depth", "radar"):
+            profile = raw["theme_profiles"].setdefault(theme, {})
+            old_bounds = profile.get("bounds")
+            profile.update(STEALTH_DEFAULTS)
+            # 仅保留位置；自动尺寸避免沿用旧工作台的 780×620 外框与缩放。
+            if old_bounds:
+                profile["bounds"] = {**old_bounds, "width": 190, "height": 28,
+                                     "scale": 1.0, "manual_size": False}
+        raw["stealth_revision"] = 1
+        self._config = self._activate_theme(sanitize(raw), self._config.display_theme)
+        self._persist()
 
     def _persist(self) -> None:
         try:

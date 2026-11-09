@@ -9,9 +9,11 @@ from ..tdw import LEVELS
 
 POWER_COLOR = QColor(232, 188, 74)
 LEVEL_COLOR = QColor(185, 196, 208)
+EXIT_TAGS = ("S2", "S1")
+MARKER_TAGS = ("S2", "B1")
 
 
-def _power_y(value, height):
+def power_y(value, height):
     return 2 + (1 - value / 4) * max(1, height - 4)
 
 
@@ -32,7 +34,7 @@ def draw_levels(painter, left, right, height, color, *, label_inset=0, mirror=Fa
     show_labels = captions and height >= 2 * label_height and right - left - label_inset >= 2 * label_width + 18
 
     # At tiny widget heights a pair can round to the same pixel.
-    rows = {tag: round(_power_y(value, height)) for tag, value in LEVELS}
+    rows = {tag: round(power_y(value, height)) for tag, value in LEVELS}
     rows["S2"] = max(0, min(rows["S2"], rows["S1"] - 1))
     rows["B1"] = min(height - 1, max(rows["B1"], rows["B2"] + 1))
     labels = []
@@ -176,7 +178,7 @@ def visible_power_points(power, x_of):
 def draw_power(painter, power, x_of, height, color, *, text_opacity=1.0):
     span = x_of(len(power) - 1) - x_of(0) if power else 0
     spacing = 9 if len(power) > max(1, span) else 0
-    path = series_path(power, x_of, lambda value: _power_y(value, height), spacing)
+    path = series_path(power, x_of, lambda value: power_y(value, height), spacing)
     painter.save()
     painter.setPen(QPen(color, 1, Qt.DashLine))
     painter.drawPath(path)
@@ -191,8 +193,8 @@ def draw_power(painter, power, x_of, height, color, *, text_opacity=1.0):
     painter.restore()
 
 
-def draw_power_panel(painter, power, events, x_of, right, width, height, paint_color, text_color):
-    """主题 3 的独立 0–4 动力轴。箭头锚定原始指标点，缺值处断线。"""
+def draw_power_panel(painter, power, x_of, right, width, height, paint_color, text_color):
+    """绘制独立的动力轴，返回参考线实际绘制的像素行。"""
     painter.save()
     painter.setClipRect(QRectF(0, 0, width, height), Qt.IntersectClip)
     metrics = painter.fontMetrics()
@@ -203,7 +205,7 @@ def draw_power_panel(painter, power, events, x_of, right, width, height, paint_c
     painter.setPen(text_color)
     if height < 4 or right < 1:
         painter.restore()
-        return
+        return {}
     # Guides take priority over captions in a compact panel.
     caption = f"TDW  {latest:.2f}" if latest is not None else "TDW  等待成交数据"
     show_caption = height >= caption_h + 36 and width >= metrics.horizontalAdvance(caption)
@@ -219,11 +221,13 @@ def draw_power_panel(painter, power, events, x_of, right, width, height, paint_c
     # distinct rows even when rounding would collapse the upper/lower pairs.
     ordered = sorted(LEVELS, key=lambda item: item[1], reverse=True)
     previous_row = int(top) - 1
+    guide_rows = {}
     painter.save()
     painter.setRenderHint(QPainter.Antialiasing, False)
     for index, (tag, value) in enumerate(ordered):
         row = max(previous_row + 1, min(round(y_of(value)), int(bottom) - (3 - index)))
         previous_row = row
+        guide_rows[tag] = row
         painter.setPen(QPen(paint_color(QColor(guides[tag]), 220), 1))
         painter.drawLine(QPointF(0, row), QPointF(right, row))
     painter.restore()
@@ -243,24 +247,42 @@ def draw_power_panel(painter, power, events, x_of, right, width, height, paint_c
             painter.setPen(QPen(red if value >= old_value else green, 1.3))
             painter.drawLine(QPointF(old_x, y_of(old_value)), QPointF(x, y_of(value)))
         previous = (x, value)
-    for index, kind in visible_events(events, len(power), x_of):
-        if power[index] is None:
-            continue
-        x, tip = x_of(index), y_of(power[index])
-        direction = 1 if kind.startswith("B") else -1
-        base, tail = tip + direction * 4, tip + direction * 8
-        ink = red if direction == 1 else green
-        painter.setPen(QPen(ink, 1))
-        painter.setBrush(Qt.NoBrush if kind.endswith("*") else ink)
-        painter.drawPolygon(QPolygonF([
-            QPointF(x, tip), QPointF(x-3, base), QPointF(x-1, base), QPointF(x-1, tail),
-            QPointF(x+1, tail), QPointF(x+1, base), QPointF(x+3, base),
-        ]))
-    painter.setPen(text_color)
-    if height >= 3 * caption_h and width - right >= metrics.horizontalAdvance("4.0") + 2:
-        for value in (0, 2, 4):
-            painter.drawText(QRectF(right + 2, y_of(value) - caption_h / 2, width - right - 2, caption_h),
-                             Qt.AlignRight | Qt.AlignVCenter, f"{value:.1f}")
+    painter.restore()
+    return guide_rows
+
+
+def exit_kinds(text):
+    """从同一根 K 线的本地 TDW 事件中取出逃顶和清仓。"""
+    tags = text.rstrip("*").split("/")
+    return [tag for tag in EXIT_TAGS if tag in tags]
+
+
+def connector_points(events, power, count, *, tags=MARKER_TAGS):
+    for index, kind in events:
+        if 0 <= index < min(count, len(power)) and power[index] is not None:
+            codes = kind.rstrip("*").split("/")
+            tag = next((tag for tag in tags if tag in codes), None)
+            if tag:
+                yield index, power[index], tag
+
+
+def draw_tdw_exit(painter, x, price_y, tdw_y, paint_color):
+    """在同一时间坐标上从动力线向上指到价格。"""
+    if tdw_y <= price_y:
+        return
+    head_depth = min(5.0, tdw_y - price_y)
+    head = QPainterPath(QPointF(x - 3.5, price_y + head_depth))
+    head.lineTo(QPointF(x, price_y))
+    head.lineTo(QPointF(x + 3.5, price_y + head_depth))
+    ink = paint_color(QColor("#7d8998"))
+    pen = QPen(ink, 1, Qt.CustomDashLine, Qt.FlatCap)
+    pen.setDashPattern([5, 3])
+    painter.save()
+    painter.setBrush(Qt.NoBrush)
+    painter.setPen(pen)
+    painter.drawLine(QPointF(x, tdw_y), QPointF(x, price_y))
+    painter.setPen(QPen(ink, 1, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+    painter.drawPath(head)
     painter.restore()
 
 

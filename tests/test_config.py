@@ -522,6 +522,28 @@ def test_theme_switch_keeps_global_runtime_settings_shared(tmp_path):
     assert theme2.font_size == 13
 
 
+def test_common_theme_controls_survive_switches_and_legacy_profiles(tmp_path):
+    path = tmp_path / "config.json"
+    shared = {
+        "always_on_top": False, "click_through": True, "show_dark_trade": False,
+        "show_sparkline": False, "show_bs_points": False,
+        "show_stock_name": False, "show_stock_price": False,
+    }
+    store = Store(path)
+    store.update({"display_theme": "depth", "font_size": 10, **shared})
+    # Older files may still contain contradictory copies of shared controls.
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    for profile in raw["theme_profiles"].values():
+        profile.update({key: not value for key, value in shared.items()})
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    store = Store(path)
+    for theme in ("radar", "theme3", "depth"):
+        current = store.update({"display_theme": theme})
+        assert all(getattr(current, key) == value for key, value in shared.items())
+    assert current.font_size == 10
+    assert Store(path).get().click_through is True
+
+
 def test_update_inactive_theme_profile_does_not_change_current_theme(tmp_path):
     store = Store(tmp_path / "config.json")
     current = store.update({"font_size": 11})

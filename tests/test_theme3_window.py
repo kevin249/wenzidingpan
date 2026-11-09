@@ -44,10 +44,10 @@ def card(app, tmp_path, monkeypatch):
     quote = Quote.from_prices("603986", "兆易创新", 10.2, 10)
     trend = Trend(prices=[10, 10.2, 10.1, 10.2], minutes=["09:31:01", "09:31:05", "09:31:10", "09:31:15"],
                   trade_date="2026-11-06", tdw_points={
-                      "2026-11-06 09:31:01": Point(.1, 10, ()),
-                      "2026-11-06 09:31:05": Point(.6, 10.2, ("B1", "B2")),
-                      "2026-11-06 09:31:10": Point(3.8, 10.1, ()),
-                      "2026-11-06 09:31:15": Point(3.1, 10.2, ("S1", "S2")),
+                      "2026-11-06 09:31:01": Point(.24, 10, ()),
+                      "2026-11-06 09:31:05": Point(.15, 10.2, ("B1",)),
+                      "2026-11-06 09:31:10": Point(3.4, 10.1, ()),
+                      "2026-11-06 09:31:15": Point(3.6, 10.2, ("S2",)),
                   })
     window._sync_rows([quote], {quote.symbol: trend})
     window.show()
@@ -132,10 +132,10 @@ def test_card_background_from_settings_survives_resize_and_theme_switch(app, car
     row = window._rows[quote.symbol]
     image = window.grab().toImage()
     chart = row.sparkline
-    assert chart._show_live_price and row.price_label.isHidden()
+    assert chart._show_live_price and row.price_label.isVisible()
     label_width = QFontMetrics(chart._live_price_font).horizontalAdvance(f'{chart._live_price:.2f}')
-    origin = chart.mapTo(window, QPoint(chart.width() - label_width - 8, 0))
-    text_rect = QRect(origin, QSize(label_width + 8, chart.height()))
+    origin = row.price_label.mapTo(window, QPoint())
+    text_rect = QRect(origin, row.price_label.size())
     assert max(image.pixelColor(x, y).alpha()
                for x in range(text_rect.left(), text_rect.right() + 1)
                for y in range(text_rect.top(), text_rect.bottom() + 1)) > 150
@@ -196,14 +196,16 @@ def test_real_card_window_renders_both_price_labels_and_short_dark_caption(app, 
                    for y in range(rect.top(), rect.bottom() + 1)) > 10
 
 
-def test_live_quote_uses_price_axis_and_follows_updates(app, card, monkeypatch):
+def test_live_quote_uses_center_header_and_reference_line_follows_updates(app, card, monkeypatch):
     window, store, quote, trend = card
     window.apply_config(store.update({
         'stock_price_font_size': 32, 'chart_label_font_size': 10,
         'text_opacities': {'price': .4},
     }))
     row = window._rows[quote.symbol]
-    assert row.price_label.isHidden()
+    assert row.price_label.isVisible()
+    assert row.price_label.text() == "10.20"
+    assert row.price_label.alignment() & Qt.AlignHCenter
     assert row.sparkline._live_price_font.pixelSize() == row.price_label.font().pixelSize()
     captions, guides = [], []
     original_text, original_line = QPainter.drawText, QPainter.drawLine
@@ -225,10 +227,8 @@ def test_live_quote_uses_price_axis_and_follows_updates(app, card, monkeypatch):
     row.sparkline.grab()
     live = [item for item in captions if item[0] == '10.20'
             and item[1] == row.price_label.font().pixelSize()]
-    assert len(live) == 1 and guides
-    assert live[0][3] == pytest.approx(102, abs=1)
-    assert live[0][4] & Qt.AlignLeft
-    assert live[0][2].top() <= guides[-1] <= live[0][2].bottom()
+    assert not live and guides
+    assert not any(value in {'0.0', '2.0', '4.0'} for value, *_ in captions)
     assert any(size == row.sparkline._annotation_font.pixelSize() and value != '10.20'
                for value, size, _, _, _ in captions)
 
@@ -237,46 +237,76 @@ def test_live_quote_uses_price_axis_and_follows_updates(app, card, monkeypatch):
     captions.clear()
     guides.clear()
     row.sparkline.grab()
-    assert any(value == '10.10' and size == row.price_label.font().pixelSize()
-               for value, size, _, _, _ in captions)
+    assert row.price_label.text() == '10.10'
+    assert not any(value == '10.10' and size == row.price_label.font().pixelSize()
+                   for value, size, _, _, _ in captions)
     assert guides and guides[-1] != first_y
 
 
-def test_theme3_name_dark_and_percent_share_header_row(app, card):
+@pytest.mark.parametrize("width", [440, 600])
+def test_theme3_header_orders_name_price_percent_dark(app, card, width):
     window, _, quote, _ = card
+    window.resize(width, 400)
     row = window._rows[quote.symbol]
     app.processEvents()
-    assert row.dark_box.isVisible() and row.percent_label.isVisible()
-    assert row.name_label.geometry().left() < row.dark_box.geometry().left()
-    assert 0 <= row.dark_box.geometry().left() - row.name_label.geometry().right() <= \
-        row._layout.horizontalSpacing() + 2
-    assert row.name_label.geometry().top() <= row.dark_box.geometry().center().y() <= row.name_label.geometry().bottom()
-    assert row.dark_box.geometry().top() <= row.percent_label.geometry().center().y() <= row.dark_box.geometry().bottom()
-    assert 0 <= row.percent_label.geometry().left() - row.dark_box.geometry().right() <= \
-        row._layout.horizontalSpacing() + 2
+    widgets = [row.name_label, row.price_label, row.percent_label, row.dark_box]
+    assert all(widget.isVisible() for widget in widgets)
+    rects = [QRect(widget.mapTo(row, QPoint()), widget.size()) for widget in widgets]
+    assert all(left.right() < right.left() for left, right in zip(rects, rects[1:]))
+    assert max(rect.top() for rect in rects) <= min(rect.bottom() for rect in rects)
+    assert rects[-1].right() < row.width()
+    if width == 600:
+        assert abs(rects[1].center().x() - row.rect().center().x()) <= 1
 
 
-def test_theme3_mcp_bs_is_drawn_on_price_chart_while_tdw_stays_local(app, card, monkeypatch):
+def test_theme3_only_draws_outer_tdw_crossings_without_signal_labels(app, card, monkeypatch):
     from stockwidget import mcp_bs
     from stockwidget.ui import tdw_overlay
 
     window, store, quote, trend = card
     row = window._rows[quote.symbol]
     monkeypatch.setattr(mcp_bs, "get_source", lambda: "mcp")
-    monkeypatch.setattr(mcp_bs, "bs_points", lambda *args, **kwargs: [(1, "B"), (3, "S")])
+    monkeypatch.setattr(mcp_bs, "bs_points", lambda *args, **kwargs: [(1, "B"), (3, "S1")])
     window.apply_config(store.update({"show_bs_points": True}))
-    assert row.sparkline._signals == [(1, "B"), (3, "S")]
-    assert row.sparkline._tdw_events == [(1, "B1/B2"), (3, "S1/S2")]
-    assert row.sparkline._tdw_power == [.1, .6, 3.8, 3.1]
-    positions = []
-    original = tdw_overlay.draw_event
-    def record(painter, x, y, kind, height, *args, **kwargs):
-        positions.append((kind, y, height))
-        return original(painter, x, y, kind, height, *args, **kwargs)
-    monkeypatch.setattr(tdw_overlay, "draw_event", record)
+    assert row.sparkline._signals == [(1, "B"), (3, "S1")]
+    assert row.sparkline._tdw_events == [(1, "B1"), (3, "S2")]
+    assert row.sparkline._tdw_power == [.24, .15, 3.4, 3.6]
+    row.sparkline.set_tdw_power(row.sparkline._tdw_power,
+                                 events=[(0, "B2"), (1, "B1"), (2, "S1*"), (3, "S2")])
+    connectors, triggers, polygons, captions = [], [], [], []
+    original_exit = tdw_overlay.draw_tdw_exit
+    original_panel = tdw_overlay.draw_power_panel
+    original_polygon = QPainter.drawPolygon
+    original_text = QPainter.drawText
+    def record_exit(painter, x, price_y, tdw_y, paint_color):
+        connectors.append((x, price_y, tdw_y))
+        return original_exit(painter, x, price_y, tdw_y, paint_color)
+    def record_panel(painter, power, x_of, *args):
+        rows = original_panel(painter, power, x_of, *args)
+        offset = painter.transform().dy()
+        triggers.extend(((x_of(1), offset + rows["B1"], offset), (x_of(3), offset + rows["S2"], offset)))
+        return rows
+    def record_polygon(painter, *args):
+        polygons.append(args)
+        return original_polygon(painter, *args)
+    def record_text(painter, *args):
+        captions.extend(arg for arg in args if isinstance(arg, str))
+        return original_text(painter, *args)
+    monkeypatch.setattr(tdw_overlay, "draw_tdw_exit", record_exit)
+    monkeypatch.setattr(tdw_overlay, "draw_power_panel", record_panel)
+    monkeypatch.setattr(QPainter, "drawPolygon", record_polygon)
+    monkeypatch.setattr(QPainter, "drawText", record_text)
     row.sparkline.grab()
-    assert [kind for kind, _, _ in positions] == ["B", "S"]
-    assert all(0 <= y <= height for _, y, height in positions)
+    assert len(connectors) == len(triggers) == 2
+    for (x, price_y, source_y), (guide_x, guide_y, price_height) in zip(connectors, triggers):
+        assert (x, source_y) == (guide_x, guide_y)
+        assert 0 <= price_y < price_height <= source_y
+    assert connectors[0][2] > connectors[1][2]
+    assert not polygons
+    assert not any(tag in text for text in captions for tag in ("S1", "S2", "B1", "B2"))
+    row.sparkline.set_display_options(show_tdw=False)
+    row.sparkline.grab()
+    assert len(connectors) == len(triggers) == 2
 
 
 @pytest.mark.parametrize('opacity', [.25, .7, 1.0])

@@ -55,9 +55,9 @@ class WidgetApp:
         desktop.use_accessory_activation_policy()
 
         self.store = store or Store()
+        self.store.migrate_stealth_themes()
         if store is None and self.store.get().display_theme in ("theme1", "theme2"):
-            # Old configurations remain readable, but the retired themes are no
-            # longer startup choices. Keep their profiles for recovery.
+            # 旧主题 profile 保留，桌面入口改为新的紧凑悬浮主题。
             target = "depth" if self.store.get().display_theme == "theme1" else "radar"
             self.store.update({"display_theme": target})
         self.config = config = self.store.get()

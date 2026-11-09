@@ -104,7 +104,7 @@ def test_realtime_formula_uses_one_minute_ohlc_and_revises_forming_minute(monkey
     original = bars([10] * 25 + [14])
     packets = [original, bars([10] * 26)[-3:], original[-3:], bars([10]*25+[14,14])[-3:]]
     monkeypatch.setattr(feed, "_eastmoney", lambda *args: packets.pop(0))
-    for value, events in [(1.6, ("B1", "B2")), (0, ()), (1.6, ("B1", "B2"))]:
+    for value, events in [(1.6, ("B2",)), (0, ()), (1.6, ("B2",))]:
         current = feed.fetch(now=at)
         point = current.tdw_points[DAY+" 09:55:25"]
         assert point.power == pytest.approx(value) and point.events == events and point.provisional
@@ -114,7 +114,7 @@ def test_realtime_formula_uses_one_minute_ohlc_and_revises_forming_minute(monkey
     first, second = (current.tdw_points[DAY+clock] for clock in (" 09:55:25", " 09:55:26"))
     assert first.events == () and second.provisional and second.power == pytest.approx(1.6)
     assert intraday_fraction(25, 27, current.minutes) < intraday_fraction(26, 27, current.minutes)
-    assert tdw.align(current.tdw_points, (DAY+" "+m for m in current.minutes))[1] == [(26, "B1/B2*")]
+    assert tdw.align(current.tdw_points, (DAY+" "+m for m in current.minutes))[1] == [(26, "B2*")]
     assert minute_bars(original) == [Bar(DAY+" 09:55", 10, 14, 10, 14)]
 
 

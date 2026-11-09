@@ -47,6 +47,7 @@ def rendered(app):
     widget.set_series(prices)
     widget.set_prev_close(10.0)
     widget.set_color(CURVE_COLOR)
+    widget.set_display_options(chart_line_color=CURVE_COLOR.name())
     widget.set_annotations(
         None,
         signals,
@@ -78,6 +79,7 @@ def test_flat_and_one_tick_keep_historical_curve_at_same_height(app):
     widget = Sparkline()
     widget.set_fill_width(True)  # 本用例比较纵轴；用铺满模式在固定 X 位置取像素。
     widget.set_color(CURVE_COLOR)
+    widget.set_display_options(chart_line_color=CURVE_COLOR.name())
     widget.set_annotations(None, [], show_signals=False, show_open_line=False,
                            show_high_low=False, show_fill=False, grayscale=False)
     widget.resize(WIDTH, HEIGHT)
@@ -257,6 +259,7 @@ def test_signals_hidden_when_switched_off(app):
     widget = Sparkline()
     widget.set_series(prices)
     widget.set_color(CURVE_COLOR)
+    widget.set_display_options(chart_line_color=CURVE_COLOR.name())
     widget.set_annotations(
         None,
         [(12, "B"), (36, "S")],
@@ -294,6 +297,7 @@ def test_thousand_depth_is_drawn_inside_the_chart_right_edge(app):
     widget = Sparkline()
     widget.set_series(prices)
     widget.set_color(CURVE_COLOR)
+    widget.set_display_options(chart_line_color=CURVE_COLOR.name())
     widget.set_annotations(
         None,
         [],
@@ -346,6 +350,7 @@ def test_theme2_traded_volume_is_opposite_depth_with_equal_sidebar_width(app):
     widget.set_series(prices)
     widget.set_volume_profile(volumes, enabled=True)
     widget.set_color(curve_color)
+    widget.set_display_options(chart_line_color=curve_color.name())
     widget.set_annotations(
         None,
         [],
@@ -457,7 +462,8 @@ def _sparkline_widget(level: int, *, grayscale: bool = True) -> Sparkline:
     widget.set_series(prices)
     widget.set_volume_profile([100 + (index % 17) * 30 for index in range(len(prices))], enabled=True)
     widget.set_prev_close(10.0)
-    widget.set_color(CURVE_COLOR)  # 故意给曲线一个绿色：灰度模式必须吃掉它
+    widget.set_color(CURVE_COLOR)
+    widget.set_display_options(chart_line_color=CURVE_COLOR.name())  # 故意给曲线一个绿色：灰度模式必须吃掉它
     widget.set_annotations(
         10.0,
         signals,
@@ -625,7 +631,7 @@ def test_dense_tdw_panel_preserves_extrema_continuity_and_latest_sample(app, mon
     image = QImage(80, 90, QImage.Format_ARGB32_Premultiplied)
     image.fill(0)
     with QPainter(image) as painter:
-        tdw_overlay.draw_power_panel(painter, power, [], lambda i: i / 10,
+        tdw_overlay.draw_power_panel(painter, power, lambda i: i / 10,
                                      70, 80, 90, lambda color, alpha=None: color,
                                      QColor("white"))
     assert len(trace) == 5  # four points in the first column, then the next; gap breaks it

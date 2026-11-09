@@ -35,7 +35,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QFontMetricsF, QPainter, QPen
+from PySide6.QtGui import QColor, QFontMetricsF, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from ..config import Config
@@ -58,7 +58,7 @@ from .sparkline import ANNOTATION_COLOR
 from .sparkline import BUY_COLOR as BS_BUY_COLOR
 from .sparkline import SELL_COLOR as BS_SELL_COLOR
 from .theme import MUTED, display_color, down_color, make_font, up_color
-from .time_axis import intraday_fraction, intraday_grid_fractions
+from .time_axis import average_points, intraday_fraction, intraday_grid_fractions
 
 # 主题2 的配色口径（用户口径 2026-09-23，v3）：分两种模式说话。
 #
@@ -70,7 +70,7 @@ from .time_axis import intraday_fraction, intraday_grid_fractions
 #
 # **灰度模式**：整行统一成 ``grayscale_level`` 那**一个**灰阶，盘口买卖**同色**，
 # 方向只靠上下半区的位置区分（见 :meth:`DepthLadder._paint_color`）。
-CURVE_COLOR = QColor(214, 220, 232)  # 分时曲线：全行最亮的中性色
+CURVE_COLOR = QColor(214, 220, 232)  # 保留旧版中性色引用；实际曲线颜色读取配置。
 DEPTH_ALPHA = 150  # 盘口买卖柱共用同一个透明度：方向由色相表达（灰度下由位置表达）
 ERROR_COLOR = QColor(240, 79, 90)  # ERROR 角标：错误提示红，与涨跌无关
 GUIDE_COLOR = QColor(185, 191, 204)
@@ -310,9 +310,8 @@ class DepthLadder(SizedWidget):
         ``price_color`` / ``percent_color`` 是设置页里「股价 / 涨跌幅」各自的颜色
         （固定色或跟随涨跌）。
 
-        主题2 的分时曲线**不再**吃这个方向色（用户口径 2026-09-23）：曲线固定走
-        :data:`CURVE_COLOR` 中性色，整行只有这两块文字带涨跌色，所以「涨=红」时
-        不会连带把名称、曲线、千档一起染红。
+        主题2 的分时曲线**不再**吃这个方向色（用户口径 2026-09-23）：曲线使用
+        独立的 chart_line_color 设置，所以方向色不会连带改变曲线、名称或千档。
         """
         resolved_price = QColor(price_color) if price_color is not None else QColor(color)
         resolved_percent = (
@@ -925,17 +924,36 @@ class DepthLadder(SizedWidget):
         prefix = count - len(bars)
         curve = tdw_overlay.series_path(prices, x_of, y_of, 4 if bars else 0)
 
-        pen = QPen(self._paint_color(CURVE_COLOR), self._config.chart_line_width)
+        averages = average_points(self._trend.average_prices, self._trend.minutes,
+                                  fill_width=self._config.chart_fill_width or self._recent_view()) if self._trend else []
+        average_path = QPainterPath()
+        for fraction, price in averages:
+            point = QPointF(layout.plot_left + layout.plot_span * fraction, y_of(price))
+            if average_path.elementCount():
+                average_path.lineTo(point)
+            else:
+                average_path.moveTo(point)
+        painter.setPen(QPen(self._paint_color(QColor(self._config.average_line_color)),
+                            self._config.average_line_width,
+                            Qt.DashLine if self._config.grayscale else Qt.SolidLine))
+        painter.drawPath(average_path)
+
+        pen = QPen(self._paint_color(QColor(self._config.chart_line_color)), self._config.chart_line_width)
         pen.setJoinStyle(Qt.RoundJoin)
         pen.setCapStyle(Qt.RoundCap)
         painter.setPen(pen)
         painter.drawPath(curve)
         tdw_overlay.draw_realtime_candles(painter, bars, prefix, x_of,
-                                          y_of, self._paint_color(CURVE_COLOR), line_width=self._config.chart_line_width)
+                                          y_of, self._paint_color(QColor(self._config.chart_line_color)), line_width=self._config.chart_line_width)
 
         if self._show_signals and self._minute_power:
             labels = []
             for index, kind in tdw_overlay.visible_events(self._signals, count, x_of):
+                if tdw_overlay.exit_kinds(kind):
+                    if index < len(self._minute_power) and (power := self._minute_power[index]) is not None:
+                        tdw_overlay.draw_tdw_exit(painter, x_of(index), y_of(prices[index]),
+                                                  tdw_overlay.power_y(power, self.height()), self._paint_color)
+                    continue
                 color = self._paint_color(BS_BUY_COLOR if kind.startswith("B") else BS_SELL_COLOR)
                 tdw_overlay.draw_event(painter, x_of(index), y_of(prices[index]), kind,
                                        self.height(), self.width(), color, labels,
@@ -949,13 +967,9 @@ class DepthLadder(SizedWidget):
             return
         step = layout.plot_span / count
         body_width = max(1.5, min(step * 0.62, 9.0))
-        up = up_color(self._config)
-        down = down_color(self._config)
-
         for index, bar in enumerate(bars):
             x = layout.plot_left + (index + 0.5) * step
-            rising = bar.close >= bar.open
-            color = self._paint_color(up if rising else down)
+            color = self._paint_color(QColor(self._config.chart_line_color))
             painter.setPen(QPen(color, self._config.chart_line_width))
             painter.drawLine(QPointF(x, y_of(bar.high)), QPointF(x, y_of(bar.low)))
             top = min(y_of(bar.open), y_of(bar.close))
@@ -970,6 +984,12 @@ class DepthLadder(SizedWidget):
             for index, kind in self._daily_signals:
                 buying = kind.startswith("B")
                 bar = bars[index]
+                if tdw_overlay.exit_kinds(kind):
+                    if index < len(self._daily_power) and (power := self._daily_power[index]) is not None:
+                        tdw_overlay.draw_tdw_exit(painter, layout.plot_left + (index + 0.5) * step,
+                                                  y_of(bar.close), tdw_overlay.power_y(power, self.height()),
+                                                  self._paint_color)
+                    continue
                 tdw_overlay.draw_event(painter, layout.plot_left + (index + 0.5) * step,
                                        y_of(bar.low if buying else bar.high), kind, self.height(), self.width(),
                                        self._paint_color(BS_BUY_COLOR if buying else BS_SELL_COLOR), labels,

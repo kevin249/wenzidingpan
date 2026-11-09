@@ -2633,7 +2633,7 @@ def test_day_candles_use_warm_history_and_source_switch_removes_tdw(app, monkeyp
             symbol="603986", bars=bars, fetched_at=(first + timedelta(days=161)).timestamp()))
         assert row.theme2_depth.kline.bars == bars[-UI_LIMIT:]
         assert len(row.theme2_depth._daily_power) == UI_LIMIT
-        assert row.theme2_depth._daily_signals == [(1, "B1/B2"), (13, "S1/S2")]
+        assert row.theme2_depth._daily_signals == [(1, "B2"), (5, "S2"), (13, "S1"), (18, "B1")]
         assert row.theme2_depth._show_tdw_levels and row.sparkline._show_tdw_levels
         source[0] = "mcp"
         row.refresh_bs_signals()

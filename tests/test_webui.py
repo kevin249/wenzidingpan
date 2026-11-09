@@ -38,7 +38,7 @@ def test_settings_page_renders(server):
     body = response.get_data(as_text=True)
     assert "行情组件设置" in body
     assert "东方财富" in body
-    assert "显示 B/S 波动点" in body
+    assert "显示 TDW 穿线箭头" in body
     assert "显示左侧股票名称" in body
     assert "股票名称字号" in body
     assert "暗盘字号" in body
@@ -48,8 +48,8 @@ def test_settings_page_renders(server):
     assert "字体颜色与字重" in body
     assert "跟随涨跌" in body
     assert "显示主题" in body
-    assert "主题 1 · 价格深度" in body
-    assert "主题 2 · 多股雷达" in body
+    assert "主题 1 · 一行文字" in body
+    assert "主题 2 · 贴边小列" in body
     assert '主题 3 · 分时＋TDW' in body
     assert body.count('name="theme-choice"') == 3
     assert '<select id="display_theme"' not in body
@@ -416,6 +416,8 @@ def test_shared_controls_and_theme_controls_have_separate_sections(server):
     parser.feed(_client(server).get(f"/?token={server.token}").get_data(as_text=True))
     for field in ("provider", "kline_source", "refresh_seconds", "chart_refresh_seconds", "mcp_url", "debug_mode"):
         assert parser.controls[field] == "common"
+    for field in ("always_on_top", "click_through", "show_dark_trade", "show_sparkline", "show_bs_points", "show_stock_name", "show_stock_price"):
+        assert parser.controls[field] == "common-theme"
     for field in ("theme3_show_tdw", "chart_depth_width", "chart_line_width", "depth_line_width", "background_alpha"):
         assert parser.controls[field] == "theme"
     for region, _ in TEXT_REGIONS:

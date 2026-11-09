@@ -67,3 +67,20 @@ def intraday_grid_fractions(
         if start < minute < end
     ]
     return [0.0, *ticks, 1.0]
+
+
+def average_points(averages, minutes=(), *, fill_width=False):
+    """将分时均价映射到价格曲线的同一时间范围，不按两组数据的条数对齐。"""
+    start, end = 0.0, float(SESSION_MINUTES)
+    if fill_width:
+        if len(minutes) < 2:
+            return []
+        start, end = trading_minute(minutes[0]), trading_minute(minutes[-1])
+        if start is None or end is None or end <= start:
+            return []
+    points = []
+    for clock, price in averages:
+        minute = trading_minute(clock)
+        if minute is not None and start <= minute <= end:
+            points.append(((minute - start) / (end - start), price))
+    return points
