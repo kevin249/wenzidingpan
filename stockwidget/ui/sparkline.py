@@ -570,10 +570,11 @@ class Sparkline(SizedWidget):
             grid_color = self._paint_color(self._color, 65)
             # 使用 1 / 2 / 5 的十进制价格间隔，轴标直接对应盘口价格。
             if self._card_style:
-                # Leave roughly one label-height of space between neighboring
-                # price labels. A fixed eight-tick cap wastes taller cards.
+                # More price range deserves more readable price labels, up to
+                # what the available rows can hold without overlap.
                 plot_height = max(1, height - 2 * price_inset - 4)
-                target = span * (2 * label_height) / plot_height
+                wanted = max(3, 4 + int(4 * math.log2(1 + span)))
+                target = max(span / wanted, span * (2 * label_height) / plot_height)
             else:
                 target = span / max(2, min(8, height // (label_height + 8)))
             unit = 10 ** math.floor(math.log10(target))
@@ -590,7 +591,7 @@ class Sparkline(SizedWidget):
                     continue
                 painter.setPen(self._text_color(self._color))
                 painter.drawText(QRectF(width + 2, y - label_height / 2, self.width() - width - 2,
-                                        label_height), Qt.AlignRight | Qt.AlignVCenter, f"{price:.2f}")
+                                        label_height), Qt.AlignLeft | Qt.AlignVCenter, f"{price:.2f}")
 
             start, end = 0.0, float(SESSION_MINUTES)
             ticks = [(0, "09:30"), (0.5, "11:30/13:00"), (1, "15:00")]
@@ -734,4 +735,4 @@ class Sparkline(SizedWidget):
             painter.drawText(QRectF(width + 2,
                                     max(0.0, min(height - live_label_height, live_y - live_label_height / 2)),
                                     self.width() - width - 2, live_label_height),
-                             Qt.AlignRight | Qt.AlignVCenter, f"{self._live_price:.2f}")
+                             Qt.AlignLeft | Qt.AlignVCenter, f"{self._live_price:.2f}")

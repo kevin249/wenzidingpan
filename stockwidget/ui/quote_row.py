@@ -673,7 +673,10 @@ class QuoteRow(SizedWidget):
                 text_rows = (len(visible) + columns - 1) // columns
                 if show_chart:
                     self._layout.addWidget(self.sparkline, text_rows, 0, 1, columns, chart_align)
-                stretch = visible.index(self.dark_box) if card and self.dark_box in visible else columns - 1
+                # On theme 3 the name takes spare width; dark flow and percent
+                # sit next to each other at the right edge of the header.
+                stretch = (visible.index(self.name_label) if card and self.name_label in visible
+                           else columns - 1)
                 self._layout.setColumnStretch(stretch, 1)
             elif stacked:
                 next_row = 0

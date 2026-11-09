@@ -207,7 +207,7 @@ def test_live_quote_uses_price_axis_and_follows_updates(app, card, monkeypatch):
     def record_text(painter, *args):
         if isinstance(args[-1], str) and args[-1].replace('.', '', 1).isdigit():
             captions.append((args[-1], painter.font().pixelSize(), args[0],
-                             painter.pen().color().alpha()))
+                             painter.pen().color().alpha(), args[1]))
         return original_text(painter, *args)
 
     def record_line(painter, *args):
@@ -223,9 +223,10 @@ def test_live_quote_uses_price_axis_and_follows_updates(app, card, monkeypatch):
             and item[1] == row.price_label.font().pixelSize()]
     assert len(live) == 1 and guides
     assert live[0][3] == pytest.approx(102, abs=1)
+    assert live[0][4] & Qt.AlignLeft
     assert live[0][2].top() <= guides[-1] <= live[0][2].bottom()
     assert any(size == row.sparkline._annotation_font.pixelSize() and value != '10.20'
-               for value, size, _, _ in captions)
+               for value, size, _, _, _ in captions)
 
     first_y = guides[-1]
     window._sync_rows([Quote.from_prices('603986', '兆易创新', 10.1, 10)], {quote.symbol: trend})
@@ -233,8 +234,17 @@ def test_live_quote_uses_price_axis_and_follows_updates(app, card, monkeypatch):
     guides.clear()
     row.sparkline.grab()
     assert any(value == '10.10' and size == row.price_label.font().pixelSize()
-               for value, size, _, _ in captions)
+               for value, size, _, _, _ in captions)
     assert guides and guides[-1] != first_y
+
+
+def test_theme3_header_keeps_percent_next_to_dark_flow(app, card):
+    window, _, quote, _ = card
+    row = window._rows[quote.symbol]
+    app.processEvents()
+    assert row.dark_box.isVisible() and row.percent_label.isVisible()
+    assert 0 <= row.percent_label.geometry().left() - row.dark_box.geometry().right() <= \
+        row._layout.horizontalSpacing() + 2
 
 
 @pytest.mark.parametrize('opacity', [.25, .7, 1.0])

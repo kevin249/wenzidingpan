@@ -870,3 +870,29 @@ def test_tall_theme3_price_axis_uses_available_height_with_blank_rows(app, monke
     assert all(b - a >= 2 * chart._annotation_font.pixelSize() - 2
                for a, b in zip(sorted(labels), sorted(labels)[1:]))
     chart.close()
+
+
+def test_theme3_axis_shows_more_price_values_for_wider_price_range(app, monkeypatch):
+    from PySide6.QtGui import QPainter
+    labels = []
+    original = QPainter.drawText
+    def record(painter, *args):
+        if isinstance(args[-1], str) and args[-1].replace('.', '', 1).isdigit() and '.' in args[-1]:
+            labels.append(args[-1])
+            assert args[1] & Qt.AlignLeft
+        return original(painter, *args)
+    monkeypatch.setattr(QPainter, 'drawText', record)
+    counts = []
+    for spread in (.2, 4.0):
+        chart = Sparkline()
+        chart.resize(420, 500)
+        chart.set_card_style(True)
+        chart.set_display_options(show_tdw=False)
+        chart.set_series([100., 100. + spread])
+        chart.set_annotations(None, [], show_signals=False, show_open_line=False,
+                              show_high_low=False, show_fill=False, grayscale=False)
+        labels.clear()
+        chart.grab()
+        counts.append(len(labels))
+        chart.close()
+    assert counts[1] > counts[0] >= 3
