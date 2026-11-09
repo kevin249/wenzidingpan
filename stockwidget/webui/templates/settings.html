@@ -9,29 +9,35 @@
   <body data-token="{{ token }}">
     <main>
       <header class="page-header">
-        <h1>行情组件设置</h1>
-        <p class="sub">改动即时生效，同时写入本地 JSON 配置文件。</p>
+        <h1>行情工作台</h1>
+        <p class="sub">公共数据与主题外观独立配置 · 改动即时生效</p>
       </header>
 
       <section class="card settings-navigation">
-        <h2>选择设置区域</h2>
+        <h2>工作台导航</h2>
         <button type="button" id="common-settings" aria-pressed="false">公共设置 · 行情 / 自选 / MCP</button>
         <fieldset class="theme-picker" id="theme-picker" disabled>
           <legend>显示主题 · 独立设置</legend>
           <input type="hidden" id="display_theme" value="{{ config.display_theme }}" />
           <div class="theme-cards">
-            {% for key, title in [('theme1', '经典网格'), ('theme2', '千档竖列'), ('theme3', '分时＋TDW')] %}
+            {% for key, title, preview in [('depth', '价格深度', 'depth-preview.png'), ('radar', '多股雷达', 'radar-preview.png'), ('theme3', '分时＋TDW', 'theme3-preview.png')] %}
               <label class="theme-card">
                 <input type="radio" name="theme-choice" value="{{ key }}"
                        {% if config.display_theme == key %}checked{% endif %} />
-                <img src="{{ url_for('static', filename=key ~ '-preview.png') }}" alt="" />
+                <img src="{{ url_for('static', filename=preview) }}" alt="" />
                 <span>主题 {{ loop.index }} · {{ title }}</span>
               </label>
             {% endfor %}
           </div>
         </fieldset>
-        <p class="hint">选择主题会切换桌面主题，并打开它自己的设置。字号、透明度、线宽和显示开关各自保存。</p>
+        <p class="hint">切换主题后，窗口尺寸、字号和图表参数分别保存。旧主题配置仍可读取。</p>
       </section>
+      <aside class="card live-preview" aria-label="主题预览">
+        <h2>主题预览</h2>
+        <img id="active-theme-preview" alt="当前主题布局示意" src="{{ url_for('static', filename='depth-preview.png') }}" />
+        <p id="preview-caption" class="hint"></p>
+        <p class="hint">预览为布局示意；实时行情以桌面窗口为准。</p>
+      </aside>
       <section class="card" data-settings-scope="common">
         <h2>公共设置 · 行情与自选</h2>
         <div class="field">
@@ -170,7 +176,7 @@
                 <td><output id="size-current-window">等待桌面窗口</output></td>
               </tr>
               {% for region, label in component_regions %}
-              <tr {% if region == "canvas" %}data-themes="theme2"{% elif region == "chart" %}data-themes="theme1 theme3"{% endif %}>
+              <tr {% if region == "canvas" %}data-themes="theme2"{% elif region == "chart" %}data-themes="theme1 theme3 depth radar"{% endif %}>
                 <th scope="row">{{ label }}</th>
                 {% for axis, axis_label in [('width', '宽度'), ('height', '高度')] %}
                 {% if region == 'chart' and axis == 'height' %}
@@ -294,7 +300,7 @@
                             {% if config.dark_trade_bold %}checked{% endif %} /> 加粗</label>
             </div>
           </div>
-          <div class="font-style-field" id="tdw-label-field" data-themes="theme3" {% if config.display_theme != 'theme3' %}hidden{% endif %}>
+          <div class="font-style-field" id="tdw-label-field" data-themes="theme3 depth radar" {% if config.display_theme not in ('theme3', 'depth', 'radar') %}hidden{% endif %}>
             <label for="tdw_label_color">TDW 图注</label>
             <input id="tdw_label_color" type="color" value="{{ config.tdw_label_color }}" />
           </div>
@@ -311,11 +317,11 @@
         </div>
 
         <h3>图表与千档挂单</h3>
-        <div class="checks" data-themes="theme3">
+        <div class="checks" data-themes="theme3 depth radar">
           <label><input id="theme3_show_tdw" type="checkbox" {% if config.theme3_show_tdw %}checked{% endif %} /> 显示 TDW 副图（动力线、四条参考线与信号箭头）</label>
         </div>
         <div class="grid">
-          <div class="field" data-themes="theme1 theme3">
+          <div class="field" data-themes="theme1 theme3 depth radar">
             <label for="chart_depth_width">千档挂单条最长长度（px）</label>
             <input id="chart_depth_width" type="number" min="0" max="1200" step="10" value="{{ config.chart_depth_width }}" />
             <p class="hint">0 表示自动；窗口不足时按可用宽度收紧。</p>
@@ -373,19 +379,19 @@
             显示右上角按钮（刷新 / 设置 / 灰度 / 退出；关掉后整条标题栏收起，在组件上点右键或从托盘菜单都能开回来）</label>
           <label><input id="show_dark_trade" name="show_dark_trade" type="checkbox"
                         {% if config.show_dark_trade %}checked{% endif %} /> 显示东方财富暗盘资金</label>
-          <label data-themes="theme1 theme3"><input id="show_sparkline" name="show_sparkline" type="checkbox"
+          <label data-themes="theme1 theme3 depth radar"><input id="show_sparkline" name="show_sparkline" type="checkbox"
                         {% if config.show_sparkline %}checked{% endif %} /> 显示走势图</label>
-          <label data-themes="theme1 theme3"><input id="show_chart_depth" name="show_chart_depth" type="checkbox"
-                        {% if config.show_chart_depth %}checked{% endif %} /> 在 K 线内显示千档挂单分布（主题 1、3）</label>
+          <label data-themes="theme1 theme3 depth radar"><input id="show_chart_depth" name="show_chart_depth" type="checkbox"
+                        {% if config.show_chart_depth %}checked{% endif %} /> 在价格轴上显示逐价位千档挂单</label>
           <label><input id="chart_fill_width" name="chart_fill_width" type="checkbox"
                         {% if config.chart_fill_width %}checked{% endif %} /> K 线按已有数据铺满宽度</label>
           <label><input id="tdw_recent_five" name="tdw_recent_five" type="checkbox"
                         {% if config.tdw_recent_five %}checked{% endif %} /> 实时走势图只显示最近 5 分钟（TDW 仍按 1 分钟 K 计算）</label>
-          <label data-themes="theme1 theme3"><input id="show_sparkline_fill" name="show_sparkline_fill" type="checkbox"
+          <label data-themes="theme1 theme3 depth radar"><input id="show_sparkline_fill" name="show_sparkline_fill" type="checkbox"
                         {% if config.show_sparkline_fill %}checked{% endif %} /> 填充走势图下方颜色</label>
           <label><input id="show_bs_points" name="show_bs_points" type="checkbox"
                         {% if config.show_bs_points %}checked{% endif %} /> 显示 B/S 波动点（B 红线、S 蓝线）</label>
-          <label data-themes="theme1 theme3"><input id="show_open_line" name="show_open_line" type="checkbox"
+          <label data-themes="theme1 theme3 depth radar"><input id="show_open_line" name="show_open_line" type="checkbox"
                         {% if config.show_open_line %}checked{% endif %} /> 显示开盘价横向虚线</label>
           <label><input id="show_high_low" name="show_high_low" type="checkbox"
                         {% if config.show_high_low %}checked{% endif %} /> 显示 K 线角标：左上最高价 / 右下最低价</label>

@@ -55,6 +55,11 @@ class WidgetApp:
         desktop.use_accessory_activation_policy()
 
         self.store = store or Store()
+        if store is None and self.store.get().display_theme in ("theme1", "theme2"):
+            # Old configurations remain readable, but the retired themes are no
+            # longer startup choices. Keep their profiles for recovery.
+            target = "depth" if self.store.get().display_theme == "theme1" else "radar"
+            self.store.update({"display_theme": target})
         self.config = config = self.store.get()
         self._quitting = False
         self._unread = 0

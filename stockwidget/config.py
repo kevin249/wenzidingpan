@@ -22,7 +22,7 @@ APP_DIR_NAME = "stock-ticker-widget"
 CONFIG_FILE_NAME = "config.json"
 
 LAYOUTS = ("multi", "single")
-DISPLAY_THEMES = ("theme1", "theme2", "theme3")
+DISPLAY_THEMES = ("theme1", "theme2", "theme3", "depth", "radar")
 THEME3_DEFAULTS = {
     "stock_name_font_size": 25, "stock_price_font_size": 28,
     "stock_percent_font_size": 24, "dark_trade_font_size": 15, "chart_label_font_size": 11,
@@ -213,7 +213,7 @@ class Config:
     text_opacities: dict[str, float] = field(default_factory=dict)
     show_dark_trade: bool = True
     compact: bool = False
-    display_theme: str = "theme1"  # 经典网格 / 千档竖列 / 分时＋TDW
+    display_theme: str = "theme1"  # 旧配置可读；桌面启动时迁移到价格深度
     theme2_side: str = "right"  # right = 股价列靠右/盘口向左长，left = 靠左镜像
     theme2_depth_width: int = 84  # 主题2千档柱长度（折叠/展开恒定，25%~70% 夹取且不越行中点），像素
     theme2_popup_font_size: int = 11  # 主题2顶部信息条与图表小字（量标注/角标/提示）字号
@@ -288,7 +288,7 @@ def _theme_profile_from_config(config: Config) -> dict[str, Any]:
 
 
 def _default_theme_profile(theme: str) -> dict[str, Any]:
-    base = Config(display_theme=theme, **(THEME3_DEFAULTS if theme == "theme3" else {}))
+    base = Config(display_theme=theme, **(THEME3_DEFAULTS if theme in ("theme3", "depth", "radar") else {}))
     return _theme_profile_from_config(base)
 
 
@@ -297,7 +297,7 @@ def sanitize(raw: Any, *, _include_theme_profiles: bool = True) -> Config:
     out = Config()
     if not isinstance(raw, dict):
         return out
-    if raw.get("display_theme") == "theme3":
+    if raw.get("display_theme") in ("theme3", "depth", "radar"):
         raw = {**THEME3_DEFAULTS, **raw, "layout": "multi"}
 
     if isinstance(raw.get("provider"), str):

@@ -35,7 +35,7 @@ def test_depth_switch_is_validated_persisted_and_theme_scoped(tmp_path):
     client = server.app.test_client()
     page = client.get(f"/?token={server.token}").get_data(as_text=True)
     assert 'id="show_chart_depth" name="show_chart_depth" type="checkbox"' in page
-    assert "在 K 线内显示千档挂单分布" in page
+    assert "在价格轴上显示逐价位千档挂单" in page
     result = client.post(f"/api/config?token={server.token}", json={"show_chart_depth": False})
     assert result.get_json()["config"]["show_chart_depth"] is False
     assert not changes[-1].show_chart_depth

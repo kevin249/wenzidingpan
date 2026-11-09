@@ -435,3 +435,39 @@ input[type='color'] {
 [hidden] { display: none !important; }
 #common-settings[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
 .settings-navigation { border-top: 3px solid var(--accent); }
+
+/* Settings workstation: navigation, editable fields, and theme preview. */
+main {
+  max-width: 1480px;
+  display: grid;
+  grid-template-columns: 224px minmax(420px, 1fr) 280px;
+  align-items: start;
+  gap: 16px;
+}
+.page-header { grid-column: 1 / -1; }
+.settings-navigation { grid-column: 1; grid-row: 2 / span 30; position: sticky; top: 16px; }
+main > section.card:not(.settings-navigation) { grid-column: 2; min-width: 0; }
+.live-preview { grid-column: 3; grid-row: 2 / span 30; position: sticky; top: 16px; }
+.live-preview img { width: 100%; border-radius: 8px; background: #151b25; }
+.bar { grid-column: 2; }
+.theme-cards { grid-template-columns: 1fr; }
+.theme-card { flex-direction: row !important; align-items: center; }
+.theme-card img { width: 65px; height: 48px; object-fit: cover; flex: none; }
+.theme-card span { padding-right: 16px; }
+.theme-card input { right: 8px; top: 20px; }
+.settings-navigation > button { width: 100%; text-align: left; }
+.settings-navigation .hint { font-size: 11px; }
+
+@media (max-width: 1130px) {
+  main { grid-template-columns: 200px minmax(0, 1fr); }
+  .live-preview { display: none; }
+}
+@media (max-width: 720px) {
+  body { padding: 12px; }
+  main { display: flex; max-width: 620px; }
+  .settings-navigation { position: static; width: 100%; }
+  .theme-cards { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .theme-card { flex-direction: column !important; }
+  .theme-card img { width: 100%; height: auto; aspect-ratio: 1.5; }
+  .theme-card input { top: 9px; }
+}

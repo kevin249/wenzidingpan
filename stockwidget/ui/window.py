@@ -23,14 +23,14 @@ from PySide6.QtWidgets import (
 
 from ..config import Bounds, Config
 from ..desktop import keep_visible_when_inactive
-from ..mcp_depth import DepthSnapshot
+from ..mcp_depth import DepthSnapshot, depth_is_stale
 from ..poller import Snapshot
 from ..symbols import classify
 from .depth_ladder import DepthLadder
 from .marquee import Marquee
 from .quote_row import QuoteRow
 from .screen_click import ScreenClickWatcher
-from .theme import BORDER, MUTED, TEXT, make_font
+from .theme import BORDER, MUTED, TEXT, fmt_money, make_font
 
 HANDLE_SIZE = 20
 
@@ -302,6 +302,12 @@ class TickerWindow(QWidget):
         super().__init__()
         self._config = config
         self._rows: dict[str, QuoteRow] = {}
+        self._focus_symbol: str | None = None
+        self._focus_quotes: list = []
+        self._focus_trends: dict = {}
+        self._radar_sort = False
+        self._focus_buttons: dict[str, QPushButton] = {}
+        self._radar_sort_button: QPushButton | None = None
         self._depths: dict[str, DepthSnapshot] = {}
         self._depth_repaint_timer = QTimer(self)
         self._depth_repaint_timer.setSingleShot(True)
@@ -372,6 +378,36 @@ class TickerWindow(QWidget):
             palette.setColor(QPalette.Base, QColor(0, 0, 0, 0))
             surface.setPalette(palette)
 
+        self.focus_tabs = QWidget()
+        self.focus_tabs_layout = QHBoxLayout(self.focus_tabs)
+        self.focus_tabs_layout.setContentsMargins(8, 3, 8, 3)
+        self.focus_tabs_layout.setSpacing(5)
+        self.focus_tabs_scroll = QScrollArea()
+        self.focus_tabs_scroll.setWidget(self.focus_tabs)
+        self.focus_tabs_scroll.setWidgetResizable(False)
+        self.focus_tabs_scroll.setFixedHeight(50)
+        self.focus_tabs_scroll.setFrameShape(QScrollArea.NoFrame)
+        self.focus_tabs_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.focus_tabs_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.focus_tabs_scroll.setStyleSheet("QScrollArea, QScrollArea QWidget { background: transparent; border: none; }")
+        self.radar_panel = QScrollArea()
+        self.radar_panel.setWidgetResizable(True)
+        self.radar_panel.setMinimumWidth(190)
+        self.radar_panel.setMaximumWidth(270)
+        self.radar_panel.setFrameShape(QScrollArea.NoFrame)
+        self.radar_list = QWidget()
+        self.radar_layout = QVBoxLayout(self.radar_list)
+        self.radar_layout.setContentsMargins(6, 3, 6, 3)
+        self.radar_layout.setSpacing(4)
+        self.radar_panel.setWidget(self.radar_list)
+        self.radar_panel.setStyleSheet("QScrollArea, QScrollArea QWidget { background: transparent; border: none; }")
+        self.focus_host = QWidget()
+        focus_layout = QHBoxLayout(self.focus_host)
+        focus_layout.setContentsMargins(0, 0, 0, 0)
+        focus_layout.setSpacing(0)
+        focus_layout.addWidget(self.radar_panel)
+        focus_layout.addWidget(self.scroll, 1)
+
         self.marquee = Marquee()
         self.empty_label = QLabel("自选列表为空\n点击 ⚙ 在浏览器里添加代码")
         self.empty_label.setAlignment(Qt.AlignCenter)
@@ -394,8 +430,9 @@ class TickerWindow(QWidget):
         layout.setContentsMargins(1, 1, 1, 1)
         layout.setSpacing(0)
         layout.addWidget(self.title_bar)
+        layout.addWidget(self.focus_tabs_scroll)
         layout.addWidget(self.empty_label, 1)
-        layout.addWidget(self.scroll, 1)
+        layout.addWidget(self.focus_host, 1)
         layout.addWidget(self.marquee)
 
         # 顶层透明特效在 Windows 上可能漏掉使用系统调色板的 QLabel。
@@ -464,6 +501,98 @@ class TickerWindow(QWidget):
             },
         )
 
+    def _focus_config(self, config: Config) -> Config:
+        """Use the shared K/price/L2/TDW renderer for both focused themes."""
+        if config.display_theme not in ("depth", "radar"):
+            return config
+        return replace(config, display_theme="theme3", layout="multi", row_style="top_bottom",
+                       visible_rows=1,
+                       chart_height=max(340, config.chart_height), theme3_show_tdw=config.theme3_show_tdw)
+
+    def _select_focus(self, symbol: str) -> None:
+        if symbol not in self._rows or symbol == self._focus_symbol:
+            return
+        self._focus_symbol = symbol
+        self._grid_shape = (-1, -1)
+        self._lay_out_grid([symbol])
+        self._render_focus_navigation()
+        self._schedule_depth_repaint()
+
+    def _render_focus_navigation(self) -> None:
+        for panel in (self.focus_tabs_layout, self.radar_layout):
+            while panel.count():
+                item = panel.takeAt(0)
+                if item.widget():
+                    item.widget().hide()
+        if self._config.display_theme not in ("depth", "radar"):
+            return
+        target = self.focus_tabs_layout if self._config.display_theme == "depth" else self.radar_layout
+        if self._config.display_theme == "radar":
+            if self._radar_sort_button is None:
+                self._radar_sort_button = QPushButton()
+                self._radar_sort_button.setToolTip("关闭时保持自选顺序")
+                self._radar_sort_button.clicked.connect(self._toggle_radar_sort)
+            self._radar_sort_button.setText("✓ 涨幅排序" if self._radar_sort else "按涨幅排序")
+            target.addWidget(self._radar_sort_button)
+            self._radar_sort_button.show()
+        wanted = {quote.symbol for quote in self._focus_quotes}
+        for symbol in set(self._focus_buttons) - wanted:
+            self._focus_buttons.pop(symbol).deleteLater()
+        quotes = (sorted(self._focus_quotes, key=lambda q: q.change_percent if q.change_percent is not None else -float("inf"),
+                         reverse=True) if self._radar_sort and self._config.display_theme == "radar" else self._focus_quotes)
+        for quote in quotes:
+            if quote.symbol not in self._rows:
+                continue
+            price = f"{quote.price:.2f}" if quote.price is not None else "—"
+            change = f"{quote.change_percent:+.2f}%" if quote.change_percent is not None else ""
+            caption = quote.name or quote.symbol
+            if target == self.radar_layout:
+                trend = self._focus_trends.get(quote.symbol)
+                prices = list(getattr(trend, "prices", ()) or ())[-12:]
+                if prices:
+                    low, high = min(prices), max(prices)
+                    glyphs = "▁▂▃▄▅▆▇█"
+                    spark = "".join(glyphs[min(7, int((p - low) / max(high - low, 1e-9) * 7))]
+                                    for p in prices)
+                else:
+                    spark = ""
+                signals = self._rows[quote.symbol].sparkline._signals
+                latest = signals[-1][1] if signals else "—"
+                parsed = classify(quote.symbol)
+                snapshot = self._depths.get(parsed.code if parsed else quote.symbol)
+                near = (
+                    [level for level in snapshot.levels
+                     if quote.price and abs(level.price - quote.price) <= quote.price * .005]
+                    if snapshot and snapshot.available and not depth_is_stale(snapshot) else []
+                )
+                bid = sum(level.volume for level in near if level.side == "bid")
+                ask = sum(level.volume for level in near if level.side == "ask")
+                ratio = f"{bid / (bid + ask):.0%}" if bid + ask else "—"
+                dark = fmt_money(quote.dark_fund) or "—"
+                caption = (f"{caption}  {price}  {change} · 暗 {dark}\n"
+                           f"{spark}   B/S {latest} · 近价买盘 {ratio}")
+            button = self._focus_buttons.get(quote.symbol)
+            if button is None:
+                button = QPushButton()
+                button.setCheckable(True)
+                button.setStyleSheet("QPushButton { text-align: left; padding: 9px; color: #e8eaf0; border: 0; border-radius: 6px; } "
+                                     "QPushButton:checked { background: rgba(68,127,224,0.32); } "
+                                     "QPushButton:hover { background: rgba(68,127,224,0.18); }")
+                button.clicked.connect(lambda _checked=False, symbol=quote.symbol: self._select_focus(symbol))
+                self._focus_buttons[quote.symbol] = button
+            button.setText(caption)
+            button.setCheckable(True)
+            button.setChecked(quote.symbol == self._focus_symbol)
+            target.addWidget(button)
+            button.show()
+        target.addStretch(1)
+        if target == self.focus_tabs_layout:
+            self.focus_tabs.adjustSize()
+
+    def _toggle_radar_sort(self) -> None:
+        self._radar_sort = not self._radar_sort
+        self._render_focus_navigation()
+
     def apply_config(self, config: Config) -> None:
         previous = self._config
         theme_changed = previous.display_theme != config.display_theme
@@ -524,7 +653,8 @@ class TickerWindow(QWidget):
         self.marquee.apply_config(scaled)
         self.empty_label.setFont(make_font(scaled, 0.9))
         for row in self._rows.values():
-            row.apply_config(scaled)
+            row.apply_config(self._focus_config(scaled))
+            row.sparkline.set_split_depth(config.display_theme in ("depth", "radar"))
         if config.display_theme != "theme2":
             self._set_theme2_all_expanded(False)
         elif config.theme2_always_expanded:
@@ -542,10 +672,16 @@ class TickerWindow(QWidget):
             # 不允许 _lay_out_grid 因“shape 没变”提前返回。
             self._grid_shape = (-1, -1)
         if self._rows:
+            if config.display_theme in ("depth", "radar") and self._focus_symbol not in self._rows:
+                self._focus_symbol = next(iter(self._rows))
             # 字号会改变每个行情格的 minimumSizeHint，随配置一起刷新内容宽度。
-            self._lay_out_grid(list(self._rows))
+            self._lay_out_grid([self._focus_symbol] if config.display_theme in ("depth", "radar") and self._focus_symbol in self._rows
+                               else list(self._rows))
 
-        single = config.layout == "single" and config.display_theme != "theme2"
+        self.focus_tabs_scroll.setVisible(config.display_theme == "depth")
+        self.radar_panel.setVisible(config.display_theme == "radar")
+        self._render_focus_navigation()
+        single = config.layout == "single" and config.display_theme not in ("theme2", "depth", "radar")
         self.marquee.setVisible(single)
         self.scroll.setVisible(not single and bool(self._rows))
         self.scroll.setVerticalScrollBarPolicy(
@@ -636,14 +772,18 @@ class TickerWindow(QWidget):
 
     def update_snapshot(self, snapshot: Snapshot, _provider_label: str) -> None:
         quotes = snapshot.quotes
-        if self._config.layout == "single" and self._config.display_theme != "theme2":
+        if self._config.layout == "single" and self._config.display_theme not in ("theme2", "depth", "radar"):
             self.marquee.set_quotes(quotes)
         elif snapshot.updated_symbols is not None:
             changed = set(snapshot.updated_symbols)
             scaled = self.scaled_config()
             for quote in quotes:
                 if quote.symbol in changed and (row := self._rows.get(quote.symbol)) is not None:
-                    row.update_quote(quote, scaled, snapshot.trends.get(quote.symbol))
+                    row.update_quote(quote, self._focus_config(scaled), snapshot.trends.get(quote.symbol))
+            if self._config.display_theme in ("depth", "radar"):
+                self._focus_quotes = list(quotes)
+                self._focus_trends.update(snapshot.trends)
+                self._render_focus_navigation()
         else:
             self._sync_rows(quotes, snapshot.trends)
 
@@ -653,9 +793,11 @@ class TickerWindow(QWidget):
             symbol = classify(raw_symbol)
             if symbol is not None and symbol.code == snapshot.symbol:
                 row.update_depth(snapshot)
+        if self._config.display_theme == "radar":
+            self._render_focus_navigation()
 
     def _schedule_depth_repaint(self) -> None:
-        if self._config.display_theme == "theme3" and not self._depth_repaint_timer.isActive():
+        if self._config.display_theme in ("theme3", "depth", "radar") and not self._depth_repaint_timer.isActive():
             self._depth_repaint_timer.start(0)
 
     def _recompose_depth_surface(self) -> None:
@@ -686,15 +828,21 @@ class TickerWindow(QWidget):
             parsed = classify(raw)
             if target is None or (parsed is not None and parsed.code == target.code):
                 row.refresh_bs_signals()
+        if self._config.display_theme == "radar":
+            self._render_focus_navigation()
 
     def _sync_rows(self, quotes, trends: dict | None = None) -> None:
         trends = trends or {}
         scaled = self.scaled_config()
+        row_config = self._focus_config(scaled)
+        self._focus_quotes = list(quotes)
+        self._focus_trends = trends
         for index, quote in enumerate(quotes):
             row = self._rows.get(quote.symbol)
             if row is None:
                 row = QuoteRow(quote.symbol)
-                row.apply_config(scaled)
+                row.apply_config(row_config)
+                row.sparkline.set_split_depth(self._config.display_theme in ("depth", "radar"))
                 row.sparkline.depth_invalidated.connect(self._schedule_depth_repaint)
                 row.sparkline.depth_painted.connect(self.depth_painted, Qt.QueuedConnection)
                 row.theme2_expand_requested.connect(self._on_theme2_expand_requested)
@@ -703,7 +851,7 @@ class TickerWindow(QWidget):
                     row.set_theme2_expanded(True, notify=False)
                 self._install_move_filters(row)
                 self._rows[quote.symbol] = row
-            row.update_quote(quote, scaled, trends.get(quote.symbol))
+            row.update_quote(quote, row_config, trends.get(quote.symbol))
             symbol = classify(quote.symbol)
             if symbol is not None:
                 row.update_depth(self._depths.get(symbol.code))
@@ -721,9 +869,15 @@ class TickerWindow(QWidget):
                 self.rows_layout.removeWidget(row)
                 row.deleteLater()
 
-        self._lay_out_grid([q.symbol for q in quotes])
+        focused = self._config.display_theme in ("depth", "radar")
+        if focused:
+            if self._focus_symbol not in wanted:
+                self._focus_symbol = quotes[0].symbol if quotes else None
+            self._render_focus_navigation()
+        self._lay_out_grid([self._focus_symbol] if focused and self._focus_symbol else
+                           [q.symbol for q in quotes])
 
-        single = self._config.layout == "single" and self._config.display_theme != "theme2"
+        single = self._config.layout == "single" and self._config.display_theme not in ("theme2", "depth", "radar")
         self.scroll.setVisible(not single and bool(self._rows))
         self.empty_label.setVisible(not single and not self._rows)
         self._resize_to_grid()
@@ -747,14 +901,15 @@ class TickerWindow(QWidget):
         ):
             return  # 形状没变，位置也都在，不必重排
 
-        for symbol in order:
-            row = self._rows.get(symbol)
-            if row is not None:
-                self.rows_layout.removeWidget(row)
+        for row in self._rows.values():
+            self.rows_layout.removeWidget(row)
+            if row.symbol not in order:
+                row.hide()
         for index, symbol in enumerate(order):
             row = self._rows.get(symbol)
             if row is not None:
                 self.rows_layout.addWidget(row, index // columns, index % columns)
+                row.show()
         old_columns = self._grid_shape[1]
         for column in range(columns, old_columns):
             self.rows_layout.setColumnStretch(column, 0)
@@ -885,6 +1040,17 @@ class TickerWindow(QWidget):
     ) -> None:
         """高度按网格行数算，宽度按列数摊开——1 行就是全部横向铺满。"""
         chrome = self._chrome_height()
+        if self._config.display_theme in ("depth", "radar"):
+            self.setMinimumHeight(0)
+            self.setMaximumHeight(16777215)
+            if not self._manual_size:
+                screen = self.screen()
+                available = screen.availableGeometry() if screen else None
+                width = 1000 if self._config.display_theme == "radar" else 780
+                self.resize(min(width, available.width()) if available else width,
+                            min(620, available.height()) if available else 620)
+            self._keep_on_screen()
+            return
         if self._config.display_theme == "theme2":
             self.setMinimumHeight(0)
             self.setMaximumHeight(16777215)
@@ -992,6 +1158,8 @@ class TickerWindow(QWidget):
             self._manual_size = False
             self.resize(300, 260)
             self._apply_scale()
+            if self._config.display_theme in ("depth", "radar"):
+                self._resize_to_grid()
             return
         self._scale = _clamp(bounds.scale, 0.6, 3.0)
         self._manual_size = bounds.manual_size

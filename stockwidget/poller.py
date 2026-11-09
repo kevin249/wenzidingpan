@@ -199,7 +199,7 @@ class Poller(QThread):
 
     @staticmethod
     def _needs_tdw(config: Config) -> bool:
-        return (config.display_theme == "theme3"
+        return (config.display_theme in ("theme3", "depth", "radar")
                 or config.show_bs_points and mcp_bs.get_source() == mcp_bs.SOURCE_LOCAL)
 
     @staticmethod

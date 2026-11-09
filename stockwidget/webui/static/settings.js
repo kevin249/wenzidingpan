@@ -349,7 +349,15 @@ function refreshHints() {
   if (provider && el('symbols-hint')) el('symbols-hint').textContent = provider.placeholder;
 
   const theme2 = el('display_theme').value === 'theme2';
-  const theme3 = activeTheme === 'theme3';
+  const focused = activeTheme === 'depth' || activeTheme === 'radar';
+  const theme3 = activeTheme === 'theme3' || focused;
+  const names = { depth: '价格深度', radar: '多股雷达', theme3: '分时＋TDW', theme1: '经典网格', theme2: '千档竖列' };
+  const previews = { depth: 'depth-preview.png', radar: 'radar-preview.png', theme3: 'theme3-preview.png' };
+  const preview = el('active-theme-preview');
+  preview.src = preview.src.replace(/(?:depth|radar|theme[123])-preview\.png$/, previews[activeTheme] || 'theme3-preview.png');
+  el('preview-caption').textContent = activeTheme === 'depth'
+    ? '单股聚焦 · 标签切换 · K 线 / 挂单 / TDW'
+    : activeTheme === 'radar' ? '自选列表 · 点击股票查看右侧详情' : '分时图与 TDW 副图';
   for (const choice of document.querySelectorAll('[name="theme-choice"]')) {
     choice.checked = settingsScope !== 'common' && choice.value === activeTheme;
   }
@@ -363,11 +371,11 @@ function refreshHints() {
   }
   el('common-settings').setAttribute('aria-pressed', String(settingsScope === 'common'));
   document.body.dataset.settingsScope = settingsScope;
-  el('theme-settings-heading').textContent = `主题 ${activeTheme.slice(-1)} · 独立设置`;
-  el('theme-font-heading').textContent = `主题 ${activeTheme.slice(-1)} 的字体颜色与字重`;
+  el('theme-settings-heading').textContent = `${names[activeTheme] || activeTheme} · 独立设置`;
+  el('theme-font-heading').textContent = `${names[activeTheme] || activeTheme} · 字体颜色与字重`;
   el('tdw-label-field').hidden = !theme3;
   const mirrorLeft = el('theme2_side').value === 'left';
-  const single = !theme2 && el('layout').value === 'single';
+  const single = !theme2 && !focused && el('layout').value === 'single';
   el('show_chart_depth').disabled = theme2 || single;
   el('theme2_side').disabled = !theme2;
   el('theme2_depth_width').disabled = !theme2;
@@ -377,7 +385,7 @@ function refreshHints() {
   el('grayscale_level').disabled = !el('grayscale').checked;
   el('layout').disabled = theme2 || theme3;
   for (const id of ['visible_rows', 'row_style', 'chart_height']) {
-    el(id).disabled = single || theme2;
+    el(id).disabled = single || theme2 || (focused && id !== 'chart_height');
   }
   if (theme3) el('row_style').disabled = true;
   for (const region of SIZE_REGIONS) {
@@ -391,7 +399,10 @@ function refreshHints() {
       ? '单行滚动：所有股票在一行里横向滚动，鼠标悬停暂停；此模式下行数、行内样式与 K 线高度都不生效。'
       : '多行列表：自选按这个行数铺成网格——填 1 就全部横向排开，填 2 就铺两行，窗口宽度随之变宽。';
 
-  el('display-theme-hint').textContent = theme2
+  el('display-theme-hint').textContent = focused
+    ? activeTheme === 'depth' ? '标签切换单股，逐价位挂单与 K 线使用同一价格坐标。挂单最大宽度是 K 线绘图区的 50%。'
+      : '点击左侧自选股票，右侧显示该股票的分时、逐价位挂单和 TDW。'
+    : theme2
     ? `股价轴靠${mirrorLeft ? '左' : '右'}，盘口条向内延伸。可以点击价格展开详情，或开启始终展开。字号、线宽、文字透明度和窗口尺寸只保存到主题 2。`
     : theme3 ? '上方分时图与下方 TDW 共用时间轴。TDW 副图可单独关闭，关闭后分时图自动扩展。挂单条逐价位绘制。'
              : '经典网格支持左中右、上中下、上下布局，也可选择单行滚动。所有显示参数只保存到主题 1。';

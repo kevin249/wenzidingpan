@@ -52,6 +52,7 @@ class Sparkline(SizedWidget):
         self._show_card_tdw = True
         self._text_opacities = {}
         self._depth_width = 0
+        self._split_depth = False
         self._chart_line_width = 1.4
         self._depth_line_width = .8
         self._tdw_label_color = QColor("#f4f4f1")
@@ -104,6 +105,11 @@ class Sparkline(SizedWidget):
         self._chart_line_width = chart_line_width
         self._depth_line_width = depth_line_width
         self.update()
+
+    def set_split_depth(self, enabled: bool) -> None:
+        if self._split_depth != enabled:
+            self._split_depth = enabled
+            self.update()
 
     def set_preferred_height(self, height: int) -> None:
         """曲线本身没有固有尺寸，想要多高由外层告诉它。
@@ -473,9 +479,12 @@ class Sparkline(SizedWidget):
             indicator_height = (min(self.height() // 2, max(8, round(self.height() * .28)))
                                 if self._card_style and self._show_card_tdw else 0)
             with QPainter(self) as painter:
-                if self._show_depth:
+                if self._show_depth and not self._split_depth:
                     self._draw_depth(painter, self.width(), self.height() - indicator_height,
                                      None, self._book_width(self.width()))
+                elif self._split_depth:
+                    painter.setPen(self._text_color(ANNOTATION_COLOR))
+                    painter.drawText(self.rect(), Qt.AlignCenter, "等待分时价格轴")
                 if indicator_height:
                     painter.translate(0, self.height() - indicator_height)
                     painter.setFont(self._annotation_font)
@@ -488,6 +497,7 @@ class Sparkline(SizedWidget):
         total_height = self.height() or 1
         metrics = QFontMetrics(self._annotation_font)
         axes = self._card_style and width >= 150 and total_height >= max(60, metrics.height() * 4 + 16)
+        axis_width = 0
         footer = []
         if axes:
             if self._minutes and total_height >= 115:
@@ -532,6 +542,14 @@ class Sparkline(SizedWidget):
         has_book = self._show_depth and self._depth and self._depth.available and self._depth.levels
         book_width = self._book_width(width) if has_book else profile_width
         chart_right = float(width - 1)
+        split = self._split_depth and axes
+        panel_width = max(0, round(width * .32)) if split else 0
+        axis_x = width
+        panel_left = width
+        if split:
+            chart_right = max(chart_left + 1.0, width - panel_width - 2.0)
+            axis_x = chart_right + 2.0
+            panel_left = axis_x + axis_width
         if book_width and not self._card_style:
             chart_right = max(chart_left + 1.0, width - book_width - 6)
 
@@ -570,11 +588,12 @@ class Sparkline(SizedWidget):
                 if y < label_height / 2 or y > height - label_height / 2:
                     continue
                 painter.setPen(QPen(grid_color, .8, Qt.DashLine))
-                painter.drawLine(QPointF(chart_left, y), QPointF(width, y))
+                painter.drawLine(QPointF(chart_left, y), QPointF(self.width() - 1 if split else width, y))
                 if live_y is not None and abs(y - live_y) < (label_height + live_label_height) / 2 + 2:
                     continue
                 painter.setPen(self._text_color(self._color))
-                painter.drawText(QRectF(width + 2, y - label_height / 2, self.width() - width - 2,
+                painter.drawText(QRectF(axis_x + 2, y - label_height / 2,
+                                        axis_width - 2 if split else self.width() - width - 2,
                                         label_height), Qt.AlignLeft | Qt.AlignVCenter, f"{price:.2f}")
 
             start, end = 0.0, float(SESSION_MINUTES)
@@ -641,7 +660,14 @@ class Sparkline(SizedWidget):
         if self._show_volume_profile:
             self._draw_traded_volume(painter, height, y_of, profile_width)
         if self._show_depth:
-            self._draw_depth(painter, width, height, y_of, self._book_width(width, chart_right - chart_left))
+            if split:
+                painter.save()
+                painter.translate(panel_left, 0)
+                self._draw_depth(painter, max(1, self.width() - panel_left), height, y_of,
+                                 self._book_width(self.width() - panel_left, chart_right - chart_left))
+                painter.restore()
+            else:
+                self._draw_depth(painter, width, height, y_of, self._book_width(width, chart_right - chart_left))
 
         if tdw_enabled and not self._card_style:
             painter.save()
@@ -714,15 +740,16 @@ class Sparkline(SizedWidget):
         if live_y is not None:
             ink = self._paint_color(self._live_price_color, self._live_price_color.alpha())
             painter.setPen(QPen(ink, 1, Qt.DashLine))
-            painter.drawLine(QPointF(chart_left, live_y), QPointF(width, live_y))
+            painter.drawLine(QPointF(chart_left, live_y), QPointF(self.width() - 1 if split else width, live_y))
         if self._show_high_low:
-            draw_price_labels(painter, QRectF(chart_left, 0, width - chart_left, height),
+            draw_price_labels(painter, QRectF(chart_left, 0,
+                              (chart_right if split else width) - chart_left, height),
                               price_low, price_high, self._annotation_font,
                               self._text_color(self._color, "high_low"), card=self._card_style)
         if live_y is not None:
             painter.setFont(self._live_price_font)
             painter.setPen(ink)
-            painter.drawText(QRectF(width + 2,
+            painter.drawText(QRectF(axis_x + 2,
                                     max(0.0, min(height - live_label_height, live_y - live_label_height / 2)),
-                                    self.width() - width - 2, live_label_height),
+                                    axis_width - 2 if split else self.width() - width - 2, live_label_height),
                              Qt.AlignLeft | Qt.AlignVCenter, f"{self._live_price:.2f}")

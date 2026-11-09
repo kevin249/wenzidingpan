@@ -48,11 +48,12 @@ def test_settings_page_renders(server):
     assert "字体颜色与字重" in body
     assert "跟随涨跌" in body
     assert "显示主题" in body
-    assert "主题 2 · 千档竖列" in body
+    assert "主题 1 · 价格深度" in body
+    assert "主题 2 · 多股雷达" in body
     assert '主题 3 · 分时＋TDW' in body
     assert body.count('name="theme-choice"') == 3
     assert '<select id="display_theme"' not in body
-    for theme in ("theme1", "theme2", "theme3"):
+    for theme in ("depth", "radar", "theme3"):
         assert _client(server).get(f"/static/{theme}-preview.png").mimetype == "image/png"
     assert "主题 2 停靠侧" in body
     assert "靠左 · 镜像" in body
