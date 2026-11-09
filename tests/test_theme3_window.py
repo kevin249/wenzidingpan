@@ -156,16 +156,21 @@ def test_background_paint_erases_old_pixels_including_rounded_corners(app, card,
 
 @pytest.mark.parametrize("size", [(220, 200), (440, 400)])
 def test_real_card_window_renders_both_price_labels_and_short_dark_caption(app, card, monkeypatch, size):
+    from stockwidget.mcp_depth import DepthLevel, DepthSnapshot
     window, store, quote, trend = card
     window.resize(*size)
     window.apply_config(store.update({"show_high_low": True, "text_opacities": {"high_low": 1}}))
     window._sync_rows([quote], {quote.symbol: trend})
+    window.update_depth(DepthSnapshot('603986', available=True, levels=(
+        DepthLevel('bid', 10.0, 200), DepthLevel('ask', 10.2, 300))))
     app.processEvents()
     row = window._rows[quote.symbol]
     assert row.dark_label.text() == "暗"
     chart = row.sparkline
     captions = []
+    outlines = []
     original = QPainter.drawText
+    original_path = QPainter.drawPath
 
     def record(self, *args):
         if args[-1] in {"高 10.20", "低 10.00"}:
@@ -173,8 +178,15 @@ def test_real_card_window_renders_both_price_labels_and_short_dark_caption(app, 
         return original(self, *args)
 
     monkeypatch.setattr(QPainter, "drawText", record)
+    def record_path(self, path):
+        if self.pen().widthF() == 2.5 and self.pen().color().red() == 0:
+            outlines.append(path)
+        return original_path(self, path)
+
+    monkeypatch.setattr(QPainter, "drawPath", record_path)
     before = window.grab().toImage()
     assert len(captions) == 2
+    assert len(outlines) == 2
     origin = chart.mapTo(window, QPoint())
     glyph_rects = [rect.translated(round(point.x()) + origin.x(), round(point.y()) + origin.y())
                    for point, rect in captions]

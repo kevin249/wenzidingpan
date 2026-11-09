@@ -687,6 +687,9 @@ class Sparkline(SizedWidget):
             painter.restore()
 
         if self._show_high_low:
+            label_color = self._text_color(QColor("#f4f4f1") if self._card_style else self._color,
+                                           "high_low")
+            outline = QColor(0, 0, 0, min(210, label_color.alpha())) if self._card_style else None
             draw_price_labels(painter, QRectF(chart_left, 0, width - chart_left, height),
                               price_low, price_high, self._annotation_font,
-                              self._text_color(self._color, "high_low"))
+                              label_color, outline=outline)

@@ -1,10 +1,10 @@
 """Legible high/low labels shared by all chart themes."""
 
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QFont, QFontInfo, QFontMetricsF
+from PySide6.QtGui import QFont, QFontInfo, QFontMetricsF, QPainterPath, QPen
 
 
-def draw_price_labels(painter, rect: QRectF, low: float, high: float, font, color):
+def draw_price_labels(painter, rect: QRectF, low: float, high: float, font, color, *, outline=None):
     """Use device font metrics and explicit baselines to avoid clipping glyphs."""
     area = rect.adjusted(2, 2, -2, -2)
     if area.width() <= 0 or area.height() <= 0:
@@ -26,7 +26,17 @@ def draw_price_labels(painter, rect: QRectF, low: float, high: float, font, colo
     painter.setBackgroundMode(Qt.TransparentMode)
     painter.setFont(font)
     painter.setPen(color)
-    painter.drawText(QPointF(area.left(), area.top() + metrics.ascent()), labels[0])
-    painter.drawText(QPointF(area.right() - metrics.horizontalAdvance(labels[1]),
-                            area.bottom() - metrics.descent()), labels[1])
+    positions = (QPointF(area.left(), area.top() + metrics.ascent()),
+                 QPointF(area.right() - metrics.horizontalAdvance(labels[1]),
+                         area.bottom() - metrics.descent()))
+    if outline is not None and color.alpha() > 0:
+        painter.setBrush(Qt.NoBrush)
+        painter.setPen(QPen(outline, 2.5))
+        for position, label in zip(positions, labels):
+            path = QPainterPath()
+            path.addText(position, font, label)
+            painter.drawPath(path)
+        painter.setPen(color)
+    for position, label in zip(positions, labels):
+        painter.drawText(position, label)
     painter.restore()
