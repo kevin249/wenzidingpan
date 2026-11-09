@@ -21,6 +21,14 @@ from stockwidget import app as app_module
 from stockwidget.config import Config, Store
 from stockwidget.mcp_notifications import McpNotification
 
+
+def test_bs_console_omits_normal_cycles_but_keeps_errors(capsys):
+    for status in ("已连接 · B/S 同步", "已连接 · 等待下一次 B/S 同步", "已关闭"):
+        app_module.WidgetApp._on_bs_status(None, status)
+    assert capsys.readouterr().out == ""
+    app_module.WidgetApp._on_bs_status(None, "MCP 读取失败：timeout · 5 秒后重试")
+    assert "[MCP B/S] MCP 读取失败：timeout" in capsys.readouterr().out
+
 NOTIFICATION = McpNotification(
     event_id="e1", title="盯盘提醒", body="600519 涨停封板", created_at="09:31"
 )
