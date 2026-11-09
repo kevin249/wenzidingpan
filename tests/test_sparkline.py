@@ -825,3 +825,25 @@ def test_theme3_depth_uses_the_same_price_axis_as_candles(app, monkeypatch):
         2 * min(end.x() - start.x() for start, end in positions))
     assert any('窗内2/3档' in s for s in texts)
     chart.close()
+
+
+def test_opposite_corner_prices_keep_readable_font_on_short_theme3_chart(app, monkeypatch):
+    from PySide6.QtGui import QFont, QPainter
+    from PySide6.QtCore import QRectF
+    from stockwidget.ui.price_labels import draw_price_labels
+    font = QFont()
+    font.setPixelSize(14)
+    image = QImage(300, 24, QImage.Format_ARGB32_Premultiplied)
+    image.fill(Qt.transparent)
+    labels = []
+    original = QPainter.drawText
+    def record(painter, *args):
+        labels.append((str(args[-1]), painter.font().pixelSize(), args[0]))
+        return original(painter, *args)
+    monkeypatch.setattr(QPainter, 'drawText', record)
+    with QPainter(image) as painter:
+        draw_price_labels(painter, QRectF(0, 0, 300, 24), 241, 243, font,
+                          QColor('#f4f4f1'), outline=QColor('black'))
+    assert [text for text, _, _ in labels] == ['高 243.00', '低 241.00']
+    assert all(size >= 11 for _, size, _ in labels)
+    assert labels[0][2].x() < labels[1][2].x()

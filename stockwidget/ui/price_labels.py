@@ -15,8 +15,10 @@ def draw_price_labels(painter, rect: QRectF, low: float, high: float, font, colo
     metrics = QFontMetricsF(font, painter.device())
     size = font.pixelSize() if font.pixelSize() > 0 else QFontInfo(font).pixelSize()
     while size > 1:
+        # Labels occupy opposite corners, not two stacked rows. Halving the
+        # available height made both glyphs microscopic on compact cards.
         fit = min(1.0, area.width() / max(metrics.horizontalAdvance(text) for text in labels),
-                  area.height() / (2 * metrics.height()))
+                  area.height() / metrics.height())
         if fit >= 1:
             break
         size = max(1, min(size - 1, int(size * fit)))
