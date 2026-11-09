@@ -602,6 +602,45 @@ def test_dense_tdw_paths_keep_real_endpoint_and_break_at_missing_data(app):
     assert len(signals) == 2000
 
 
+def test_dense_tdw_panel_preserves_extrema_continuity_and_latest_sample(app, monkeypatch):
+    from PySide6.QtGui import QColor, QImage, QPainter
+    from stockwidget.ui import tdw_overlay
+
+    # Ten transactions occupy one pixel; the extrema must survive in time order.
+    power = [1, 3, 2, 4, 1, 3, 2, 0, 1, 2, 3, None, 2, 1]
+    reduced = list(tdw_overlay.visible_power_points(power, lambda i: i / 10))
+    assert reduced == [(0, 1), (.3, 4), (.7, 0), (.9, 2),
+                       (1., 3), None, (1.2, 2), (1.3, 1)]
+
+    trace = []
+    original = QPainter.drawLine
+    red, green = QColor("#f2615d"), QColor("#50d185")
+
+    def record(painter, *args):
+        if painter.pen().color() in (red, green) and len(args) == 2:
+            trace.append((args[0].x(), args[0].y(), args[1].x(), args[1].y()))
+        return original(painter, *args)
+
+    monkeypatch.setattr(QPainter, "drawLine", record)
+    image = QImage(80, 90, QImage.Format_ARGB32_Premultiplied)
+    image.fill(0)
+    with QPainter(image) as painter:
+        tdw_overlay.draw_power_panel(painter, power, [], lambda i: i / 10,
+                                     70, 80, 90, lambda color, alpha=None: color,
+                                     QColor("white"))
+    assert len(trace) == 5  # four points in the first column, then the next; gap breaks it
+    assert trace[0][0] == 0 and trace[0][2] == .3
+    assert trace[-1][0] == 1.2 and trace[-1][2] == 1.3
+
+    # A dense five-minute window still covers its entire plot and reaches the
+    # newest transaction instead of drawing only the last couple of points.
+    many = [(i % 7) * .5 for i in range(2000)]
+    reduced = list(tdw_overlay.visible_power_points(many, lambda i: i / 10))
+    assert 200 < len(reduced) <= 800
+    assert reduced[0] == (0, many[0])
+    assert reduced[-1] == (199.9, many[-1])
+
+
 def test_classic_full_book_and_tdw_markers_have_no_text(app, monkeypatch):
     from PySide6.QtGui import QPainter
     from stockwidget.mcp_depth import DEPTH_FULL

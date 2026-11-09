@@ -1,5 +1,7 @@
 """Draw TDW on an independent 0–4 scale and mark events at their price bars."""
 
+import math
+
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QPolygonF
 
@@ -132,6 +134,45 @@ def visible_events(events, count, x_of):
     return reversed(retained)
 
 
+def visible_power_points(power, x_of):
+    """Keep each screen column's first, extrema and last sample in time order.
+
+    Transaction bars can be much denser than pixels. Collapsing a column to
+    only its last sample hides crossings; connecting every second obscures the
+    curve. A missing sample still breaks the trace.
+    """
+    column = None
+    first = low = high = last = None
+
+    def flush():
+        if first is not None:
+            for point in sorted({p[0]: p for p in (first, low, high, last)}.values()):
+                yield point[1], point[2]
+
+    for index, value in enumerate(power):
+        if value is None:
+            yield from flush()
+            first = low = high = last = None
+            column = None
+            yield None
+            continue
+        x = x_of(index)
+        pixel = math.floor(x)
+        if column is not None and pixel != column:
+            yield from flush()
+            first = low = high = last = None
+        point = (index, x, value)
+        if first is None:
+            first = low = high = point
+        if value < low[2]:
+            low = point
+        if value > high[2]:
+            high = point
+        last = point
+        column = pixel
+    yield from flush()
+
+
 def draw_power(painter, power, x_of, height, color, *, text_opacity=1.0):
     span = x_of(len(power) - 1) - x_of(0) if power else 0
     spacing = 9 if len(power) > max(1, span) else 0
@@ -192,15 +233,13 @@ def draw_power_panel(painter, power, events, x_of, right, width, height, paint_c
 
     red, green = paint_color(QColor("#f2615d")), paint_color(QColor("#50d185"))
     previous = None
-    for index, value in enumerate(power):
-        if value is None:
+    for point in visible_power_points(power, x_of):
+        if point is None:
             previous = None
             continue
-        x = x_of(index)
+        x, value = point
         if previous is not None:
             old_x, old_value = previous
-            if x - old_x < 1 and index + 1 < len(power) and power[index + 1] is not None:
-                continue
             painter.setPen(QPen(red if value >= old_value else green, 1.3))
             painter.drawLine(QPointF(old_x, y_of(old_value)), QPointF(x, y_of(value)))
         previous = (x, value)
