@@ -79,6 +79,7 @@ class Sparkline(SizedWidget):
         self._annotation_font = QFont()
         self._annotation_font.setPixelSize(9)
         self._depth: DepthSnapshot | None = None
+        self._changed_depth_keys: set[tuple[str, float]] = set()
         self._show_depth = True
         self._depth_expired = False
         self._last_depth_paint = None
@@ -172,6 +173,14 @@ class Sparkline(SizedWidget):
 
     def set_depth(self, snapshot: DepthSnapshot | None) -> None:
         if snapshot != self._depth:
+            previous = self._depth
+            if snapshot is not None and previous is not None and previous.symbol == snapshot.symbol:
+                old = {(level.side, level.price): level.volume for level in previous.levels}
+                new = {(level.side, level.price): level.volume for level in snapshot.levels}
+                self._changed_depth_keys = {key for key in old.keys() | new.keys()
+                                            if old.get(key) != new.get(key)}
+            else:
+                self._changed_depth_keys = set()
             self._depth = snapshot
             if snapshot is not None:
                 self._depth_clock.start()
@@ -387,7 +396,7 @@ class Sparkline(SizedWidget):
         pad = max(.5, self._depth_line_width / 2)
         label_height = QFontMetrics(self._annotation_font).height()
         if (self._show_high_low or self._card_style) and height >= 4 * label_height:
-            pad = max(pad, label_height + 1)
+            pad = max(pad, label_height * (2 if self._card_style and width >= 300 else 1) + 1)
         pad = min(pad, max(0.0, (height - 1) / 2))
         rows = depth_rows(snapshot.levels, pad, height - pad, center_gap=.5)
         if not rows:
@@ -405,14 +414,18 @@ class Sparkline(SizedWidget):
         # Never sum neighboring prices merely because they share a screen pixel.
         # Thin strokes leave room between levels when the price range permits it.
         pixels_per_unit = max_width / maximum
-        for y, level in sorted(rows, key=lambda item: item[1].volume, reverse=True):
+        for y, level in sorted(rows, key=lambda item: (
+                (item[1].side, item[1].price) in self._changed_depth_keys,
+                -item[1].volume)):
             # A single linear scale for the whole book, including subpixel bars.
             # No per-level cap or 1px floor that can flatten different volumes.
             bar_width = pixels_per_unit * level.volume
             red_side = "ask" if self._card_style and self._book_scheme == "us" else "bid"
+            changed = (level.side, level.price) in self._changed_depth_keys
             color = self._paint_color(DEPTH_BID_COLOR if level.side == red_side else DEPTH_ASK_COLOR,
-                                      255 if self._grayscale else 215)
-            painter.setPen(QPen(color, self._depth_line_width, Qt.SolidLine, Qt.FlatCap))
+                                      255 if changed or self._grayscale else 215)
+            painter.setPen(QPen(color, max(self._depth_line_width, 1.25) if changed else
+                                self._depth_line_width, Qt.SolidLine, Qt.FlatCap))
             painter.drawLine(QPointF(right - bar_width, y), QPointF(right, y))
 
         if {level.side for _, level in rows} == {"ask", "bid"}:
@@ -433,6 +446,15 @@ class Sparkline(SizedWidget):
             label_width = min(width, max(max_width, QFontMetrics(self._annotation_font).horizontalAdvance(caption) + 4))
             painter.drawText(QRectF(width - label_width, 1, label_width, height),
                              Qt.AlignRight | Qt.AlignTop, caption)
+            if self._card_style and width >= 300:
+                bids = (level.price for level in snapshot.levels if level.side == "bid")
+                asks = (level.price for level in snapshot.levels if level.side == "ask")
+                best_bid = max(bids, default=None)
+                best_ask = min(asks, default=None)
+                if best_bid is not None and best_ask is not None:
+                    detail = f"买{best_bid:g} 卖{best_ask:g} · 变{len(self._changed_depth_keys)}档"
+                    painter.drawText(QRectF(0, label_height + 1, width, label_height + 2),
+                                     Qt.AlignRight | Qt.AlignTop, detail)
         painter.restore()
         self._record_depth_paint(snapshot, True)
 

@@ -753,3 +753,36 @@ def test_theme3_book_uses_one_linear_scale_even_for_subpixel_orders(app, monkeyp
         assert widths == pytest.approx([span * .5 * v / 100000 for v in (100000, 1000, 100, 1)])
         assert max(widths) <= span * .5
     chart.close()
+
+
+def test_theme3_marks_live_book_changes_without_stretching_bars(app, monkeypatch):
+    from PySide6.QtGui import QPainter
+    chart = Sparkline()
+    chart.resize(400, 200)
+    chart.set_card_style(True)
+    chart.set_series([242.2, 242.5])
+    chart.set_depth(DepthSnapshot('603986', available=True, levels=(
+        DepthLevel('bid', 242.2, 3), DepthLevel('ask', 242.5, 3000))))
+    chart.grab()
+    chart.set_depth(DepthSnapshot('603986', available=True, levels=(
+        DepthLevel('bid', 242.3, 4), DepthLevel('ask', 242.5, 3000))))
+    captions, changed_widths, original_widths = [], [], []
+    original_text, original_line = QPainter.drawText, QPainter.drawLine
+    def record_text(painter, *args):
+        captions.append(str(args[-1]))
+        return original_text(painter, *args)
+    def record_line(painter, *args):
+        if painter.pen().widthF() == 1.25:
+            changed_widths.append(abs(args[1].x() - args[0].x()))
+        if (painter.pen().widthF() == chart._depth_line_width
+                and args[0].y() == args[1].y()
+                and 100 < abs(args[1].x() - args[0].x()) < 200):
+            original_widths.append(abs(args[1].x() - args[0].x()))
+        return original_line(painter, *args)
+    monkeypatch.setattr(QPainter, 'drawText', record_text)
+    monkeypatch.setattr(QPainter, 'drawLine', record_line)
+    chart.grab()
+    assert any('买242.3 卖242.5 · 变2档' in s for s in captions)
+    assert len(changed_widths) == len(original_widths) == 1
+    assert changed_widths[0] / original_widths[0] == pytest.approx(4 / 3000)
+    chart.close()

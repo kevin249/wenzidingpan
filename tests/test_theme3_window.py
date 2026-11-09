@@ -227,4 +227,8 @@ def test_live_depth_repaints_composited_window_without_forced_child_grab(app, ca
     window.update_depth(first)
     QTest.qWait(80)
     assert paints and paints[-1] is first
+    # Clear the change marker before comparing the restored baseline image.
+    chart.set_depth(None)
+    window.update_depth(first)
+    QTest.qWait(80)
     assert window.grab().toImage() == first_image, 'old long bars left ghost pixels after shrink'
