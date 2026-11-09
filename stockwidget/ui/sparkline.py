@@ -392,49 +392,51 @@ class Sparkline(SizedWidget):
             self._record_depth_paint(snapshot, False)
             return
 
-        # Keep the entire book independent of the candle price window.
+        # Theme 3 shares the K-line price axis. Drawing levels by ordinal rank
+        # here would put a different price on the same right-hand price tick.
         pad = max(.5, self._depth_line_width / 2)
         label_height = QFontMetrics(self._annotation_font).height()
-        if (self._show_high_low or self._card_style) and height >= 4 * label_height:
+        if not (self._card_style and y_of is not None) and (self._show_high_low or self._card_style) and height >= 4 * label_height:
             pad = max(pad, label_height * (2 if self._card_style and width >= 300 else 1) + 1)
         pad = min(pad, max(0.0, (height - 1) / 2))
-        rows = depth_rows(snapshot.levels, pad, height - pad, center_gap=.5)
-        if not rows:
-            return
+        if self._card_style and y_of is not None:
+            rows = [(y, level) for level in snapshot.levels
+                    if math.isfinite(y := y_of(level.price)) and 0 <= y < height]
+        else:
+            rows = depth_rows(snapshot.levels, pad, height - pad, center_gap=.5)
 
-        maximum = max(level.volume for _, level in rows)
+        maximum = max((level.volume for _, level in rows), default=0)
         max_width = max(0.0, min(profile_width, width))
         if max_width <= 0:
             return
         right = float(width - 1)
-        painter.save()
-        painter.setClipRect(QRectF(max(0, right - max_width), 0, max_width + 1, height), Qt.IntersectClip)
-        painter.setRenderHint(QPainter.Antialiasing, True)
-        # Each source level keeps its own floating-point Y and individual size.
-        # Never sum neighboring prices merely because they share a screen pixel.
-        # Thin strokes leave room between levels when the price range permits it.
-        pixels_per_unit = max_width / maximum
-        for y, level in sorted(rows, key=lambda item: (
-                (item[1].side, item[1].price) in self._changed_depth_keys,
-                -item[1].volume)):
-            # A single linear scale for the whole book, including subpixel bars.
-            # No per-level cap or 1px floor that can flatten different volumes.
-            bar_width = pixels_per_unit * level.volume
-            red_side = "ask" if self._card_style and self._book_scheme == "us" else "bid"
-            changed = (level.side, level.price) in self._changed_depth_keys
-            color = self._paint_color(DEPTH_BID_COLOR if level.side == red_side else DEPTH_ASK_COLOR,
-                                      255 if changed or self._grayscale else 215)
-            painter.setPen(QPen(color, max(self._depth_line_width, 1.25) if changed else
-                                self._depth_line_width, Qt.SolidLine, Qt.FlatCap))
-            painter.drawLine(QPointF(right - bar_width, y), QPointF(right, y))
+        if rows:
+            painter.save()
+            painter.setClipRect(QRectF(max(0, right - max_width), 0, max_width + 1, height), Qt.IntersectClip)
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            # Each visible price keeps its own Y and a common linear width scale.
+            pixels_per_unit = max_width / maximum
+            for y, level in sorted(rows, key=lambda item: (
+                    (item[1].side, item[1].price) in self._changed_depth_keys,
+                    -item[1].volume)):
+                bar_width = pixels_per_unit * level.volume
+                red_side = "ask" if self._card_style and self._book_scheme == "us" else "bid"
+                changed = (level.side, level.price) in self._changed_depth_keys
+                color = self._paint_color(DEPTH_BID_COLOR if level.side == red_side else DEPTH_ASK_COLOR,
+                                          255 if changed or self._grayscale else 215)
+                painter.setPen(QPen(color, max(self._depth_line_width, 1.25) if changed else
+                                    self._depth_line_width, Qt.SolidLine, Qt.FlatCap))
+                painter.drawLine(QPointF(right - bar_width, y), QPointF(right, y))
 
-        if {level.side for _, level in rows} == {"ask", "bid"}:
-            mid = height / 2
-            painter.setPen(QPen(self._paint_color(ANNOTATION_COLOR), 1, Qt.DotLine))
-            painter.drawLine(QPointF(max(0, right - max_width), mid), QPointF(right, mid))
-        painter.restore()
+            if not self._card_style and {level.side for _, level in rows} == {"ask", "bid"}:
+                mid = height / 2
+                painter.setPen(QPen(self._paint_color(ANNOTATION_COLOR), 1, Qt.DotLine))
+                painter.drawLine(QPointF(max(0, right - max_width), mid), QPointF(right, mid))
+            painter.restore()
         painter.save()
         status = [f"L2 {depth_time_label(snapshot)}"] if self._card_style else []
+        if self._card_style and y_of is not None:
+            status.append(f"窗内{len(rows)}/{len(snapshot.levels)}档")
         if snapshot.using_cached_full_depth:
             status.append("缓存")
         if snapshot.depth_mode != DEPTH_FULL and not snapshot.full_depth:
@@ -456,7 +458,7 @@ class Sparkline(SizedWidget):
                     painter.drawText(QRectF(0, label_height + 1, width, label_height + 2),
                                      Qt.AlignRight | Qt.AlignTop, detail)
         painter.restore()
-        self._record_depth_paint(snapshot, True)
+        self._record_depth_paint(snapshot, bool(rows))
 
     def _record_depth_paint(self, snapshot, displayed):
         # Emit once per delivered frame, after drawing, never on mere receipt.

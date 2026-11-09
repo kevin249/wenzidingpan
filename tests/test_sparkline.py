@@ -786,3 +786,42 @@ def test_theme3_marks_live_book_changes_without_stretching_bars(app, monkeypatch
     assert len(changed_widths) == len(original_widths) == 1
     assert changed_widths[0] / original_widths[0] == pytest.approx(4 / 3000)
     chart.close()
+
+
+def test_theme3_depth_uses_the_same_price_axis_as_candles(app, monkeypatch):
+    from PySide6.QtGui import QPainter
+    from stockwidget.ui import tdw_overlay
+    chart = Sparkline()
+    chart.resize(420, 240)
+    chart.set_card_style(True)
+    chart.set_display_options(show_tdw=False, depth_line_width=.73)
+    chart.set_series([241., 243.])
+    chart.set_annotations(None, [], show_signals=False, show_open_line=False,
+                          show_high_low=False, show_fill=False, grayscale=False)
+    chart.set_depth(DepthSnapshot('603986', available=True, levels=(
+        DepthLevel('bid', 241.5, 100), DepthLevel('ask', 242.5, 200),
+        DepthLevel('ask', 300., 100000))))
+    positions, texts, price_to_y = [], [], []
+    original_line, original_text = QPainter.drawLine, QPainter.drawText
+    original_path = tdw_overlay.series_path
+    def capture_path(points, x_of, y_of, *args):
+        price_to_y.append(y_of)
+        return original_path(points, x_of, y_of, *args)
+    def capture_line(painter, *args):
+        if len(args) == 2 and painter.pen().widthF() == pytest.approx(.73):
+            positions.append((args[0], args[1]))
+        return original_line(painter, *args)
+    def capture_text(painter, *args):
+        texts.append(str(args[-1]))
+        return original_text(painter, *args)
+    monkeypatch.setattr(tdw_overlay, 'series_path', capture_path)
+    monkeypatch.setattr(QPainter, 'drawLine', capture_line)
+    monkeypatch.setattr(QPainter, 'drawText', capture_text)
+    chart.grab()
+    assert len(positions) == 2
+    assert sorted(start.y() for start, _ in positions) == pytest.approx(
+        sorted([price_to_y[0](241.5), price_to_y[0](242.5)]))
+    assert max(end.x() - start.x() for start, end in positions) == pytest.approx(
+        2 * min(end.x() - start.x() for start, end in positions))
+    assert any('窗内2/3档' in s for s in texts)
+    chart.close()

@@ -1,4 +1,4 @@
-"""Each received price level must reach the painter without binning or clipping."""
+"""Price levels retain their own quantities; theme 3 follows the candle price window."""
 
 import os
 
@@ -68,6 +68,12 @@ def test_every_level_is_drawn_with_its_original_volume(app, monkeypatch, book, t
             widget._draw_depth(painter, 600, height, lambda price: 10000 + price, span)
     finally:
         painter.end()
+    if theme == "theme3":
+        # Price-aligned levels outside the visible candle window must not be
+        # squeezed onto an unrelated price tick. Other layouts use full-book axes.
+        assert strokes == []
+        widget.close()
+        return
     assert len(strokes) == len(book.levels)
     assert len({y for y, _ in strokes}) == len(book.levels)
     assert all(0 <= y < height for y, _ in strokes)
