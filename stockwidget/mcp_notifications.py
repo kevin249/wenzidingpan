@@ -130,6 +130,20 @@ async def _bounded(
     return request_task.result()
 
 
+async def negotiate_protocol(
+    session: ClientSession, cancel_event: asyncio.Event | None = None,
+) -> bool:
+    """Use modern discovery, with fallback only for explicit legacy errors."""
+    try:
+        await _bounded(session.discover(), cancel_event)
+        return True
+    except MCPError as exc:
+        if getattr(exc, "code", None) not in {-32601, -32602}:  # METHOD_NOT_FOUND / legacy INVALID_PARAMS
+            raise
+    await _bounded(session.initialize(), cancel_event)
+    return False
+
+
 def _notifications(payload: dict[str, Any]) -> list[McpNotification]:
     rows = payload.get("notifications")
     if not isinstance(rows, list):
@@ -292,14 +306,7 @@ class McpNotificationListener(QThread):
         self, session: ClientSession, cancel_event: asyncio.Event
     ) -> bool:
         """优先协商 2026-07-28；老网关只在明确不支持 discover 时回退 initialize。"""
-        try:
-            await _bounded(session.discover(), cancel_event)
-            return True
-        except MCPError as exc:
-            if getattr(exc, "code", None) not in {-32601, -32602}:  # METHOD_NOT_FOUND / legacy INVALID_PARAMS
-                raise
-        await _bounded(session.initialize(), cancel_event)
-        return False
+        return await negotiate_protocol(session, cancel_event)
 
     async def _run_modern_subscription(
         self, session: ClientSession, uri: str, cancel_event: asyncio.Event

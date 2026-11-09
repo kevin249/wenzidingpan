@@ -15,7 +15,7 @@ from .crashlog import install_crash_log
 from .gui_gc import GuiGarbageCollector
 from .hotkey import DEFAULT_WINDOW_TOGGLE_HOTKEY, WindowsGlobalHotkey
 from .local_bs import LocalBsNotifier
-from .mcp_depth import DepthSnapshot, McpDepthPoller
+from .mcp_depth import DepthSnapshot, McpBsPoller, McpDepthPoller
 from .mcp_notifications import McpNotification, McpNotificationListener
 from .poller import Poller, Snapshot
 from .ui.icon import tray_icon
@@ -106,10 +106,12 @@ class WidgetApp:
 
         self.poller = Poller(config)
         self.poller.snapshot_ready.connect(self._on_poll_ready, Qt.QueuedConnection)
-        self.depth_poller = McpDepthPoller(config)
+        self.depth_poller = McpDepthPoller(config, sync_bs=False)
         self.depth_poller.depth_ready.connect(self._on_depth_snapshot, Qt.QueuedConnection)
-        self.depth_poller.bs_ready.connect(self._on_bs_updated, Qt.QueuedConnection)
         self.depth_poller.status_changed.connect(self._on_depth_status, Qt.QueuedConnection)
+        self.bs_poller = McpBsPoller(config)
+        self.bs_poller.bs_ready.connect(self._on_bs_updated, Qt.QueuedConnection)
+        self.bs_poller.status_changed.connect(self._on_bs_status, Qt.QueuedConnection)
         self.notification_listener = McpNotificationListener(config)
         self.notification_listener.notification_ready.connect(
             self._on_mcp_notification, Qt.QueuedConnection
@@ -155,6 +157,7 @@ class WidgetApp:
     def refresh(self) -> None:
         self.poller.refresh_now()
         self.depth_poller.refresh_now()
+        self.bs_poller.refresh_now()
         self.notification_listener.refresh_now()
 
     def open_settings(self) -> None:
@@ -213,7 +216,7 @@ class WidgetApp:
     def _workers(self) -> list:
         return [worker for worker in (
             self._global_window_hotkey, self.poller, self.depth_poller,
-            self.notification_listener,
+            self.bs_poller, self.notification_listener,
         ) if worker is not None]
 
     def _stop_workers(self) -> None:
@@ -299,6 +302,9 @@ class WidgetApp:
         depth_poller = getattr(self, "depth_poller", None)
         if depth_poller is not None:
             depth_poller.apply_config(config)
+        bs_poller = getattr(self, "bs_poller", None)
+        if bs_poller is not None:
+            bs_poller.apply_config(config)
         self.notification_listener.apply_config(config)
         if self.tray is not None:
             self.tray.apply_config(config)
@@ -339,7 +345,7 @@ class WidgetApp:
         self._local_bs_notifier = LocalBsNotifier()
         self.window.refresh_bs_signals()
         self.poller.refresh_now()
-        self.depth_poller.refresh_bs_now()
+        self.bs_poller.refresh_bs_now()
 
     def _on_mcp_cache_updated(self) -> None:
         """Baseline loads and resource reads must repaint even without a new alert."""
@@ -352,6 +358,10 @@ class WidgetApp:
     def _on_depth_status(self, status: str) -> None:
         if status != "已关闭":
             print(f"[MCP千档] {status}", flush=True)
+
+    def _on_bs_status(self, status: str) -> None:
+        if status != "已关闭":
+            print(f"[MCP B/S] {status}", flush=True)
 
     def _on_mcp_status(self, status: str) -> None:
         timestamp, separator, message = status.partition("] ")
@@ -369,7 +379,7 @@ class WidgetApp:
         if notification.event_type == mcp_bs.BS_EVENT_TYPE:
             # The full-day marker snapshot takes precedence over notifications.
             # Refresh it immediately; notification bursts coalesce in the worker.
-            self.depth_poller.refresh_bs_now()
+            self.bs_poller.refresh_bs_now()
         timestamp = notification.created_at or "时间未知"
         print("\n======\n", flush=True)
         print(f"[MCP提醒] {timestamp} | {notification.title}", flush=True)
@@ -407,10 +417,11 @@ class WidgetApp:
         self.window.show()
         if self.tray is not None:
             self.tray.show()
-        # 两个轮询线程的首次循环都带显式标记，因此打开组件时必定各拉一次全套数据
-        # （行情 + 分时/K线 + 千档），不判断 Debug 也不判断是否休市。
+        # Quote, depth and B/S workers each perform an explicit startup fetch.
+        # Slow B/S calls cannot delay the next depth snapshot.
         self.poller.start()
         self.depth_poller.start()
+        self.bs_poller.start()
         self.notification_listener.start()
         try:
             return self.qt.exec()

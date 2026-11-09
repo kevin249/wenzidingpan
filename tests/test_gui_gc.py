@@ -115,6 +115,9 @@ with tempfile.TemporaryDirectory() as directory:
         while True:
             app.notification_listener.cache_updated.emit()
             await asyncio.sleep(.02)
+    async def bs(*args, **kwargs):
+        return False
+    app.bs_poller._fetch_cycle = bs
     app.depth_poller._fetch_cycle = depth
     app.notification_listener._listen = listen
     def record(phase, info):

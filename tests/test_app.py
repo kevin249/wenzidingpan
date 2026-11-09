@@ -114,6 +114,7 @@ def test_quit_keeps_qt_alive_until_all_workers_finish(monkeypatch):
     app._quitting = False
     app._global_window_hotkey = None
     app.poller, app.depth_poller, app.notification_listener = workers
+    app.bs_poller = None
     app._flush_bounds = lambda: events.append("flush")
     app.server = SimpleNamespace(stop=lambda: events.append("server-stop"))
     app.qt = SimpleNamespace(quit=lambda: events.append("qt-quit"))
@@ -487,7 +488,7 @@ def test_bs_notification_refreshes_authoritative_markers_immediately(dispatch):
         config=Config(mcp_bell_terminal=False, mcp_bell_toast=False,
                       mcp_bell_tray_icon=False, mcp_bell_window=False),
         window=_FakeWindow(), tray=None, poller=_FakePoller(),
-        depth_poller=SimpleNamespace(refresh_bs_now=lambda: synced.append(True)),
+        bs_poller=SimpleNamespace(refresh_bs_now=lambda: synced.append(True)),
     )
     app_module.WidgetApp._on_mcp_notification(stub, McpNotification(
         event_id='new-bs', title='B', body='', event_type='trading.holding_t_signal',
@@ -504,7 +505,8 @@ def test_notification_baseline_refreshes_chart_without_ringing_alerts():
 
 
 def test_manual_refresh_includes_notification_stream():
-    workers = [_FakePoller() for _ in range(3)]
-    stub = SimpleNamespace(poller=workers[0], depth_poller=workers[1], notification_listener=workers[2])
+    workers = [_FakePoller() for _ in range(4)]
+    stub = SimpleNamespace(poller=workers[0], depth_poller=workers[1],
+                           notification_listener=workers[2], bs_poller=workers[3])
     app_module.WidgetApp.refresh(stub)
-    assert [worker.refreshes for worker in workers] == [1, 1, 1]
+    assert [worker.refreshes for worker in workers] == [1, 1, 1, 1]

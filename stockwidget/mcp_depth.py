@@ -18,6 +18,7 @@ from .market_hours import OFF_HOURS_WAKE_SECONDS, is_a_share_active_time, active
 from .mcp_bs import record_volatility_bs
 from .mcp_notifications import (
     REQUEST_TIMEOUT_SECONDS, SSE_TIMEOUT, _api_key, _bounded, _describe_error, _tool_payload,
+    negotiate_protocol,
 )
 from .mcp_runtime import McpConnection
 from .symbols import classify
@@ -319,8 +320,9 @@ class McpDepthPoller(QThread):
     bs_ready = Signal(str)
     status_changed = Signal(str)
 
-    def __init__(self, config: Config, parent=None) -> None:
+    def __init__(self, config: Config, parent=None, *, sync_bs: bool = True) -> None:
         super().__init__(parent)
+        self._sync_bs = sync_bs
         self._config = config
         self._wake = threading.Event()
         self._changed = threading.Event()
@@ -432,7 +434,7 @@ class McpDepthPoller(QThread):
             fetch_depth = self._depth_enabled(config) and self._should_poll(config, explicit)
             started = time.monotonic()
             bs_allowed = bool(explicit or bs_explicit or active_updates_allowed(config.debug_mode))
-            fetch_bs = self._should_fetch_bs(
+            fetch_bs = self._sync_bs and self._should_fetch_bs(
                 config, explicit or bs_explicit, started - self._last_bs_fetch_at
             )
             if not fetch_depth and not fetch_bs:
@@ -505,7 +507,9 @@ class McpDepthPoller(QThread):
         if not self._depth_enabled(config):
             depth_wait = BS_POLL_SECONDS
 
-        if self._last_bs_fetch_at <= 0:
+        if not self._sync_bs:
+            bs_wait = float("inf")
+        elif self._last_bs_fetch_at <= 0:
             bs_wait = DEPTH_RETRY_SECONDS
         else:
             bs_wait = max(0.0, self._last_bs_fetch_at + BS_POLL_SECONDS - current)
@@ -536,7 +540,7 @@ class McpDepthPoller(QThread):
                 async with ClientSession(
                     read_stream, write_stream, read_timeout_seconds=REQUEST_TIMEOUT_SECONDS,
                 ) as session:
-                    await _bounded(session.initialize())
+                    await negotiate_protocol(session)
                     for raw_symbol in config.symbols:
                         if self._stopping.is_set() or self._changed.is_set():
                             return False
@@ -592,3 +596,11 @@ class McpDepthPoller(QThread):
         return bool(valid_codes) and all(
             self._depth_modes.get(code) == DEPTH_FULL for code in valid_codes
         )
+
+
+class McpBsPoller(McpDepthPoller):
+    """Keep slow B/S queries and their retries off the depth connection/thread."""
+
+    @staticmethod
+    def _depth_enabled(config: Config) -> bool:
+        return False

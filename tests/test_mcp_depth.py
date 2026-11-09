@@ -584,7 +584,7 @@ def test_push_during_real_fetch_loop_does_not_drop_remaining_symbols(monkeypatch
             return self
         async def __aexit__(self, *args):
             pass
-        async def initialize(self):
+        async def discover(self):
             pass
         async def call_tool(self, name, arguments):
             fetched.append(arguments['symbol'])

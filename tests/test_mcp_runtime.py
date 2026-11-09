@@ -13,7 +13,7 @@ import pytest
 from mcp.shared.exceptions import MCPError
 
 from stockwidget.config import Config
-from stockwidget.mcp_depth import McpDepthPoller
+from stockwidget.mcp_depth import McpBsPoller, McpDepthPoller
 from stockwidget.mcp_notifications import McpNotificationListener, _describe_error
 from stockwidget.mcp_runtime import McpConnection
 
@@ -23,6 +23,7 @@ if sys.version_info < (3, 11):
 
 @pytest.mark.parametrize("worker_type,operation", [
     (McpDepthPoller, "_fetch_cycle"),
+    (McpBsPoller, "_fetch_cycle"),
     (McpNotificationListener, "_listen"),
 ])
 def test_stop_interrupts_an_inflight_connection(worker_type, operation, monkeypatch):
@@ -60,6 +61,7 @@ def test_stop_interrupts_an_inflight_connection(worker_type, operation, monkeypa
 
 @pytest.mark.parametrize("worker_type,operation", [
     (McpDepthPoller, "_fetch_cycle"),
+    (McpBsPoller, "_fetch_cycle"),
     (McpNotificationListener, "_listen"),
 ])
 def test_exception_group_and_server_error_reconnect_without_ending_worker(
@@ -108,6 +110,7 @@ def test_cancel_tolerates_a_loop_closed_during_the_cross_thread_handoff():
 
 @pytest.mark.parametrize("worker_type,operation", [
     (McpDepthPoller, "_fetch_cycle"),
+    (McpBsPoller, "_fetch_cycle"),
     (McpNotificationListener, "_listen"),
 ])
 def test_config_change_cancels_old_connection_and_reconnects(worker_type, operation, monkeypatch):
@@ -182,7 +185,7 @@ with tempfile.TemporaryDirectory() as directory:
                   "display_theme": "theme2", "show_sparkline": False,
                   "show_dark_trade": False, "intraday_chart": False})
     app = WidgetApp([], store=store)
-    attempts = {"depth": 0, "reminders": 0}
+    attempts = {"depth": 0, "bs": 0, "reminders": 0}
     ticks = []
     expired = []
 
@@ -195,6 +198,7 @@ with tempfile.TemporaryDirectory() as directory:
         await asyncio.Event().wait()
 
     app.depth_poller._fetch_cycle = lambda *args, **kwargs: connection("depth")
+    app.bs_poller._fetch_cycle = lambda *args, **kwargs: connection("bs")
     app.notification_listener._listen = lambda *args: connection("reminders")
     timer = QTimer()
     def check():
@@ -261,7 +265,7 @@ with tempfile.TemporaryDirectory() as directory:
     timer = QTimer()
     expired = []
     def check():
-        if calls.count("initialize") >= 3 and calls.count("server/discover") >= 3:
+        if calls.count("server/discover") >= 9:
             timer.stop()
             app.quit()
     timer.timeout.connect(check)
