@@ -173,7 +173,7 @@ def test_high_low_labels_remain_in_opposite_corners_with_book_and_tdw(app, monke
     high, low = labels[-2:]
     assert high[-1] == "高 444.38" and low[-1] == "低 440.27"
     assert high[0].x() == 2
-    assert low[0].x() > high[0].x()
+    assert low[0].x() == high[0].x() if card else low[0].x() > high[0].x()
     assert 0 < high[0].y() < low[0].y() < size[1]
     labels.clear()
     widget.set_annotation_options(show_signals=True, show_open_line=False,
@@ -827,7 +827,7 @@ def test_theme3_depth_uses_the_same_price_axis_as_candles(app, monkeypatch):
     chart.close()
 
 
-def test_opposite_corner_prices_keep_readable_font_on_short_theme3_chart(app, monkeypatch):
+def test_left_corner_prices_keep_plain_readable_font_on_short_theme3_chart(app, monkeypatch):
     from PySide6.QtGui import QFont, QPainter
     from PySide6.QtCore import QRectF
     from stockwidget.ui.price_labels import draw_price_labels
@@ -838,12 +838,35 @@ def test_opposite_corner_prices_keep_readable_font_on_short_theme3_chart(app, mo
     labels = []
     original = QPainter.drawText
     def record(painter, *args):
-        labels.append((str(args[-1]), painter.font().pixelSize(), args[0]))
+        labels.append((str(args[-1]), painter.font().pixelSize(), args[0], painter.font().bold()))
         return original(painter, *args)
     monkeypatch.setattr(QPainter, 'drawText', record)
     with QPainter(image) as painter:
         draw_price_labels(painter, QRectF(0, 0, 300, 24), 241, 243, font,
-                          QColor('#f4f4f1'), outline=QColor('black'))
-    assert [text for text, _, _ in labels] == ['高 243.00', '低 241.00']
-    assert all(size >= 11 for _, size, _ in labels)
-    assert labels[0][2].x() < labels[1][2].x()
+                          QColor('#f4f4f1'), card=True)
+    assert [text for text, _, _, _ in labels] == ['高 243.00', '低 241.00']
+    assert all(size >= 11 and not bold for _, size, _, bold in labels)
+    assert labels[0][2].x() == labels[1][2].x()
+
+
+def test_tall_theme3_price_axis_uses_available_height_with_blank_rows(app, monkeypatch):
+    from PySide6.QtGui import QPainter
+    chart = Sparkline()
+    chart.resize(420, 600)
+    chart.set_card_style(True)
+    chart.set_display_options(show_tdw=False)
+    chart.set_series([10, 13])
+    chart.set_annotations(None, [], show_signals=False, show_open_line=False,
+                          show_high_low=False, show_fill=False, grayscale=False)
+    labels = []
+    original = QPainter.drawText
+    def record(painter, *args):
+        if isinstance(args[-1], str) and args[-1].replace('.', '', 1).isdigit() and '.' in args[-1]:
+            labels.append(args[0].center().y())
+        return original(painter, *args)
+    monkeypatch.setattr(QPainter, 'drawText', record)
+    chart.grab()
+    assert len(labels) > 8
+    assert all(b - a >= 2 * chart._annotation_font.pixelSize() - 2
+               for a, b in zip(sorted(labels), sorted(labels)[1:]))
+    chart.close()

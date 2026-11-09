@@ -168,28 +168,20 @@ def test_real_card_window_renders_both_price_labels_and_short_dark_caption(app, 
     assert row.dark_label.text() == "暗"
     chart = row.sparkline
     captions = []
-    outlines = []
     original = QPainter.drawText
-    original_path = QPainter.drawPath
 
     def record(self, *args):
         if args[-1] in {"高 10.20", "低 10.00"}:
-            captions.append((args[0], self.fontMetrics().boundingRect(args[-1])))
+            captions.append((args[0], self.fontMetrics().boundingRect(args[-1]), self.font().bold()))
         return original(self, *args)
 
     monkeypatch.setattr(QPainter, "drawText", record)
-    def record_path(self, path):
-        if self.pen().widthF() == 2.5 and self.pen().color().red() == 0:
-            outlines.append(path)
-        return original_path(self, path)
-
-    monkeypatch.setattr(QPainter, "drawPath", record_path)
     before = window.grab().toImage()
     assert len(captions) == 2
-    assert len(outlines) == 2
+    assert not any(bold for _, _, bold in captions)
     origin = chart.mapTo(window, QPoint())
     glyph_rects = [rect.translated(round(point.x()) + origin.x(), round(point.y()) + origin.y())
-                   for point, rect in captions]
+                   for point, rect, _ in captions]
     window.apply_config(store.update({"text_opacities": {"high_low": 0}}))
     app.processEvents()
     after = window.grab().toImage()

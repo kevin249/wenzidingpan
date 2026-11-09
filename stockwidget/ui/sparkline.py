@@ -544,9 +544,15 @@ class Sparkline(SizedWidget):
             painter.setFont(self._annotation_font)
             grid_color = self._paint_color(self._color, 65)
             # 使用 1 / 2 / 5 的十进制价格间隔，轴标直接对应盘口价格。
-            target = span / max(2, min(8, height // (label_height + 8)))
+            if self._card_style:
+                # Leave roughly one label-height of space between neighboring
+                # price labels. A fixed eight-tick cap wastes taller cards.
+                plot_height = max(1, height - 2 * price_inset - 4)
+                target = span * (2 * label_height) / plot_height
+            else:
+                target = span / max(2, min(8, height // (label_height + 8)))
             unit = 10 ** math.floor(math.log10(target))
-            step = next(f * unit for f in (1, 2, 5, 10) if f * unit >= target)
+            step = next(f * unit for f in (1, 2, 2.5, 5, 10) if f * unit >= target)
             for tick in range(math.ceil(low / step), math.floor(high / step) + 1):
                 price = tick * step
                 y = y_of(price)
@@ -687,9 +693,6 @@ class Sparkline(SizedWidget):
             painter.restore()
 
         if self._show_high_low:
-            label_color = self._text_color(QColor("#f4f4f1") if self._card_style else self._color,
-                                           "high_low")
-            outline = QColor(0, 0, 0, min(210, label_color.alpha())) if self._card_style else None
             draw_price_labels(painter, QRectF(chart_left, 0, width - chart_left, height),
                               price_low, price_high, self._annotation_font,
-                              label_color, outline=outline)
+                              self._text_color(self._color, "high_low"), card=self._card_style)
