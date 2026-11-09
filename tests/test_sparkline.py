@@ -7,6 +7,7 @@ B 从底边向上画到曲线，S 从顶边向下画到曲线，两者都不穿�
 from __future__ import annotations
 
 import math
+import time
 
 import pytest
 from PySide6.QtCore import QPoint, Qt
@@ -306,7 +307,7 @@ def test_thousand_depth_is_drawn_inside_the_chart_right_edge(app):
         DepthSnapshot(
             symbol="600000",
             levels=levels,
-            received_at=1.0,
+            received_at=time.time(),
             full_depth=True,
             available=True,
             bid_count=6,
@@ -358,7 +359,7 @@ def test_theme2_traded_volume_is_opposite_depth_with_equal_sidebar_width(app):
         DepthSnapshot(
             symbol="600000",
             levels=levels,
-            received_at=1.0,
+            received_at=time.time(),
             full_depth=True,
             available=True,
             bid_count=2,
@@ -471,7 +472,7 @@ def _sparkline_widget(level: int, *, grayscale: bool = True) -> Sparkline:
         DepthSnapshot(
             symbol="600000",
             levels=levels,
-            received_at=1.0,
+            received_at=time.time(),
             full_depth=True,
             available=True,
             bid_count=6,
@@ -638,3 +639,91 @@ def test_card_has_no_time_tick_row_in_session_or_recent_view(app, monkeypatch):
     chart.grab()
     assert not set(times) & set(captions)
     assert "15:00" not in captions
+
+
+@pytest.mark.parametrize('size', [(100, 80), (400, 240), (900, 400)])
+@pytest.mark.parametrize('configured_width', [0, 30, 1800])
+def test_theme3_depth_strokes_never_exceed_half_candle_plot(app, monkeypatch, size, configured_width):
+    from PySide6.QtGui import QPainter
+    from stockwidget.ui import tdw_overlay
+    chart = Sparkline()
+    chart.resize(*size)
+    chart.set_card_style(True)
+    chart.set_display_options(show_tdw=False, depth_width=configured_width, depth_line_width=.7)
+    chart.set_series([10, 10.1], realtime_bars=[Bar('10:00:00', 10, 10.2, 9.9, 10.1, 100)])
+    chart.set_annotations(None, [], show_signals=False, show_open_line=False,
+                          show_high_low=False, show_fill=False, grayscale=False)
+    chart.set_depth(DepthSnapshot('603986', available=True, levels=(
+        DepthLevel('bid', 10, 100), DepthLevel('ask', 10.1, 200),
+    )))
+    widths, plot_spans = [], []
+    original_draw = QPainter.drawLine
+    def draw(painter, *args):
+        if len(args) == 2 and painter.pen().widthF() == pytest.approx(.7):
+            widths.append(abs(args[1].x() - args[0].x()))
+        return original_draw(painter, *args)
+    # Capture the plot from its curve; card candles use a separate draw path.
+    original_path = tdw_overlay.series_path
+    def path(points, x_of, *args):
+        plot_spans.append(x_of(len(points) - 1) - x_of(0))
+        return original_path(points, x_of, *args)
+    monkeypatch.setattr(QPainter, 'drawLine', draw)
+    monkeypatch.setattr(tdw_overlay, 'series_path', path)
+    chart.set_fill_width(True)
+    chart.grab()
+    assert widths and plot_spans
+    assert max(widths) <= plot_spans[0] * .5 + 1e-6
+    if configured_width:
+        assert max(widths) <= configured_width
+    chart.close()
+
+
+def test_old_depth_is_hidden_and_source_time_is_shown_even_after_fresh_receipt(app, monkeypatch):
+    from datetime import datetime
+    from PySide6.QtGui import QPainter
+    import stockwidget.mcp_depth as depth
+    now = datetime.fromisoformat('2026-11-09T10:35:00+08:00').timestamp()
+    monkeypatch.setattr(depth.time, 'time', lambda: now)
+    chart = Sparkline()
+    chart.resize(500, 300)
+    chart.set_card_style(True)
+    chart.set_series([10., 11.], ['10:34', '10:35'])
+    chart.set_display_options(depth_line_width=.7)
+    chart.set_depth(DepthSnapshot('603986', available=True, received_at=now,
+        source_at='2026-11-09T10:00:00+08:00', levels=(DepthLevel('bid', 10, 100),)))
+    texts, bars = [], []
+    original_text, original_line = QPainter.drawText, QPainter.drawLine
+    def text(painter, *args):
+        texts.append(str(args[-1]))
+        return original_text(painter, *args)
+    def line(painter, *args):
+        if painter.pen().widthF() == pytest.approx(.7):
+            bars.append(args)
+        return original_line(painter, *args)
+    monkeypatch.setattr(QPainter, 'drawText', text)
+    monkeypatch.setattr(QPainter, 'drawLine', line)
+    chart.grab()
+    assert not bars
+    assert 'L2 过期·等待新数据' in texts
+    assert '盘口采样 10:00:00' in texts
+    assert not any('采样 10:35:00' in text for text in texts)
+    chart.close()
+
+
+def test_depth_age_timer_invalidates_a_frozen_frame_without_quote_updates(app, monkeypatch):
+    from datetime import datetime
+    from PySide6.QtTest import QTest
+    import stockwidget.mcp_depth as depth
+    now = [datetime.fromisoformat('2026-11-09T10:35:00+08:00').timestamp()]
+    monkeypatch.setattr(depth.time, 'time', lambda: now[0])
+    chart = Sparkline()
+    chart.set_depth(DepthSnapshot('603986', available=True, received_at=now[0],
+                                  levels=(DepthLevel('bid', 10, 100),)))
+    chart._depth_clock.setInterval(10)
+    assert not chart._depth_expired
+    now[0] += 31
+    QTest.qWait(30)
+    assert chart._depth_expired
+    chart.set_depth(None)
+    assert not chart._depth_clock.isActive()
+    chart.close()

@@ -116,10 +116,12 @@ def test_dense_book_keeps_every_price_and_its_individual_volume(app, monkeypatch
         widget.set_display_options(depth_width=240, depth_line_width=.6)
         widget.set_depth(depth)
         span = widget._book_width(400)
-        assert span == 240
+        assert span == pytest.approx(399 * .5)
         with QPainter(image) as painter:
             widget._draw_depth(painter, 400, 32, lambda price: (10.01 - price) * 500, span)
-        assert [y for _, _, y in strokes] == pytest.approx([(10.01 - row.price) * 500 for row in reversed(levels)])
+        assert len(strokes) == len(levels)
+        assert len({y for _, _, y in strokes}) == len(levels)
+        assert all(0 <= y <= 32 for _, _, y in strokes)
     else:
         widget = DepthLadder()
         widget.resize(400, 32)

@@ -15,7 +15,7 @@ from .crashlog import install_crash_log
 from .gui_gc import GuiGarbageCollector
 from .hotkey import DEFAULT_WINDOW_TOGGLE_HOTKEY, WindowsGlobalHotkey
 from .local_bs import LocalBsNotifier
-from .mcp_depth import DepthSnapshot, McpBsPoller, McpDepthPoller
+from .mcp_depth import DepthSnapshot, McpBsPoller, McpDepthPoller, depth_time_label
 from .mcp_notifications import McpNotification, McpNotificationListener
 from .poller import Poller, Snapshot
 from .ui.icon import tray_icon
@@ -340,6 +340,13 @@ class WidgetApp:
 
     def _on_depth_snapshot(self, snapshot: DepthSnapshot) -> None:
         self.window.update_depth(snapshot)
+        bids = [level.price for level in snapshot.levels if level.side == "bid"]
+        asks = [level.price for level in snapshot.levels if level.side == "ask"]
+        mode = "缓存" if snapshot.using_cached_full_depth else snapshot.depth_mode
+        print(f"[MCP千档] {snapshot.symbol} {depth_time_label(snapshot)} · {mode} "
+              f"· 买{snapshot.bid_count}/卖{snapshot.ask_count}档 "
+              f"· 买一{max(bids) if bids else '-'} 卖一{min(asks) if asks else '-'}"
+              f"{(' · ' + snapshot.reason) if snapshot.reason else ''}", flush=True)
 
     def _on_bs_source_changed(self) -> None:
         self._local_bs_notifier = LocalBsNotifier()

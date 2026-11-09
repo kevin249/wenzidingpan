@@ -9,9 +9,8 @@ from __future__ import annotations
 from collections import deque
 from datetime import datetime
 import math
-import time
 
-from PySide6.QtCore import QPointF, QRectF, QSize, Qt
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPen, QPolygonF
 from PySide6.QtWidgets import QWidget
 
@@ -19,7 +18,7 @@ from ..config import DEFAULT_GRAYSCALE_LEVEL
 from ..local_bs import SAMPLE_LEN
 from ..kline import Bar
 from ..market_hours import SHANGHAI_TZ
-from ..mcp_depth import DEPTH_FULL, DepthSnapshot
+from ..mcp_depth import DEPTH_FULL, DepthSnapshot, depth_is_stale, depth_time_label
 from . import tdw_overlay
 from .price_scale import PriceScale
 from .price_labels import draw_price_labels
@@ -37,7 +36,6 @@ DEPTH_ASK_COLOR = QColor(34, 197, 94)
 TRADED_VOLUME_COLOR = QColor(148, 163, 184)
 OPEN_LINE_COLOR = QColor(245, 158, 11)
 ANNOTATION_COLOR = QColor(185, 190, 202)  # 「成交量 / 十档」这类小字标注
-DEPTH_STALE_SECONDS = 120
 
 
 class Sparkline(SizedWidget):
@@ -79,6 +77,10 @@ class Sparkline(SizedWidget):
         self._annotation_font.setPixelSize(9)
         self._depth: DepthSnapshot | None = None
         self._show_depth = True
+        self._depth_expired = False
+        self._depth_clock = QTimer(self)
+        self._depth_clock.setInterval(1000)
+        self._depth_clock.timeout.connect(self._check_depth_age)
         self._price_scale = PriceScale()
         self.setAttribute(Qt.WA_TransparentForMouseEvents)
 
@@ -167,6 +169,19 @@ class Sparkline(SizedWidget):
     def set_depth(self, snapshot: DepthSnapshot | None) -> None:
         if snapshot != self._depth:
             self._depth = snapshot
+            if snapshot is not None:
+                self._depth_clock.start()
+                self.setToolTip(f"L2 {depth_time_label(snapshot)}\n{snapshot.reason}")
+            else:
+                self._depth_clock.stop()
+                self.setToolTip("")
+            self._check_depth_age()
+            self.update()
+
+    def _check_depth_age(self) -> None:
+        expired = bool(self._depth and depth_is_stale(self._depth))
+        if expired != self._depth_expired:
+            self._depth_expired = expired
             self.update()
 
     def set_tdw_power(self, power, *, show_levels=True):
@@ -292,7 +307,11 @@ class Sparkline(SizedWidget):
         maximum = max(24.0, (width - 80.0) / 2.0)
         return min(target, maximum)
 
-    def _book_width(self, width):
+    def _book_width(self, width, chart_width=None):
+        if self._card_style:
+            # The limit is relative to the actual candle plot, excluding axes.
+            span = max(0.0, width - 1 if chart_width is None else chart_width)
+            return min(self._depth_width or span * .5, span * .5)
         return min(self._depth_width, max(0, width * .65)) if self._depth_width else self._side_profile_width(width)
 
     def _text_color(self, normal, region="chart", alpha=None):
@@ -346,7 +365,15 @@ class Sparkline(SizedWidget):
         profile_width: float,
     ) -> None:
         snapshot = self._depth
-        if snapshot is None or not snapshot.available or not snapshot.levels:
+        if snapshot is None:
+            return
+        if not snapshot.available or not snapshot.levels or depth_is_stale(snapshot):
+            painter.save()
+            painter.setFont(self._annotation_font)
+            painter.setPen(self._text_color(ANNOTATION_COLOR))
+            label = "L2 过期·等待新数据" if depth_is_stale(snapshot) or "source_stale" in snapshot.reason else "L2 暂无新数据"
+            painter.drawText(QRectF(0, 1, width, height), Qt.AlignRight | Qt.AlignTop, label)
+            painter.restore()
             return
 
         # Keep the entire book independent of the candle price window.
@@ -360,7 +387,9 @@ class Sparkline(SizedWidget):
             return
 
         maximum = max(level.volume for _, level in rows)
-        max_width = min(profile_width, width)
+        max_width = max(0.0, min(profile_width, width))
+        if max_width <= 0:
+            return
         right = float(width - 1)
         painter.save()
         painter.setClipRect(QRectF(max(0, right - max_width), 0, max_width + 1, height), Qt.IntersectClip)
@@ -369,7 +398,7 @@ class Sparkline(SizedWidget):
         # Never sum neighboring prices merely because they share a screen pixel.
         # Thin strokes leave room between levels when the price range permits it.
         for y, level in sorted(rows, key=lambda item: item[1].volume, reverse=True):
-            bar_width = max(1.0, max_width * level.volume / maximum)
+            bar_width = min(max_width, max(1.0, max_width * level.volume / maximum))
             red_side = "ask" if self._card_style and self._book_scheme == "us" else "bid"
             color = self._paint_color(DEPTH_BID_COLOR if level.side == red_side else DEPTH_ASK_COLOR,
                                       255 if self._grayscale else 215)
@@ -387,8 +416,6 @@ class Sparkline(SizedWidget):
             status.append("缓存")
         if snapshot.depth_mode != DEPTH_FULL and not snapshot.full_depth:
             status.append("降级")
-        if snapshot.received_at and time.time() - snapshot.received_at > DEPTH_STALE_SECONDS:
-            status.append("延迟")
         if status:
             painter.setFont(self._annotation_font)
             painter.setPen(self._text_color(ANNOTATION_COLOR))
@@ -422,8 +449,7 @@ class Sparkline(SizedWidget):
             if self._minutes and total_height >= 115:
                 footer.append(f"分时 {self._minutes[-1]}")
                 if self._show_depth and self._depth and self._depth.received_at:
-                    stamp = datetime.fromtimestamp(self._depth.received_at, SHANGHAI_TZ)
-                    footer.append(f"盘口采样 {stamp:%H:%M:%S}")
+                    footer.append(f"盘口{depth_time_label(self._depth)}")
                 total_height -= metrics.height() + 4
             width -= metrics.horizontalAdvance(f"{max(points):.2f}") + 6
         tdw_enabled = self._show_signals and self._show_tdw_levels
@@ -554,7 +580,7 @@ class Sparkline(SizedWidget):
         if self._show_volume_profile:
             self._draw_traded_volume(painter, height, y_of, profile_width)
         if self._show_depth:
-            self._draw_depth(painter, width, height, y_of, self._book_width(width))
+            self._draw_depth(painter, width, height, y_of, self._book_width(width, chart_right - chart_left))
 
         if tdw_enabled and not self._card_style:
             painter.save()

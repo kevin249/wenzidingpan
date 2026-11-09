@@ -601,3 +601,63 @@ def test_push_during_real_fetch_loop_does_not_drop_remaining_symbols(monkeypatch
     assert fetched == ['600000', '000001']
     assert [snapshot.symbol for snapshot in delivered] == fetched
     assert worker._bs_explicit
+
+
+def test_stale_full_book_falls_back_even_when_response_was_just_received(monkeypatch):
+    from datetime import datetime
+    now = datetime.fromisoformat('2026-11-09T10:35:00+08:00').timestamp()
+    monkeypatch.setattr(mcp_depth.time, 'time', lambda: now)
+    calls = []
+    class Session:
+        async def call_tool(self, name, arguments):
+            requested = arguments['requested_depth']
+            calls.append(requested)
+            return _result({
+                'available': True, 'full_depth_verified': requested == 1000,
+                'source_at': ('2026-11-09T10:00:00+08:00' if requested == 1000
+                              else '2026-11-09T02:34:58Z'),
+                'fetched_at': '2026-11-09T10:35:00+08:00',
+                'levels': _levels(20 if requested == 1000 else 10),
+            })
+    snapshot = asyncio.run(mcp_depth._fetch_depth_with_fallback(Session(), '603986'))
+    assert calls == [1000, 10]
+    assert snapshot.available and snapshot.depth_mode == DEPTH_TEN
+    assert '1000:source_stale' in snapshot.reason
+    assert mcp_depth.depth_time_label(snapshot) == '采样 10:34:58'
+    assert snapshot.received_at == now
+
+
+def test_expired_full_cache_cannot_keep_overriding_total_failure():
+    full = parse_depth_payload('603986', {
+        'available': True, 'full_depth_verified': True, 'levels': _levels(20),
+    }, received_at=100.0)
+    failed = mcp_depth.DepthSnapshot('603986', received_at=131.0, reason='timeout')
+    display, cache, failures = mcp_depth._merge_depth_state(failed, full, 2)
+    assert not display.available and not display.levels
+    assert cache is None and failures == 3
+    assert display.reason == 'timeout'
+
+
+def test_all_stale_responses_are_unavailable_and_preserve_diagnostics(monkeypatch):
+    from datetime import datetime
+    now = datetime.fromisoformat('2026-11-09T10:35:00+08:00').timestamp()
+    monkeypatch.setattr(mcp_depth.time, 'time', lambda: now)
+    class Session:
+        async def call_tool(self, name, arguments):
+            return _result({'available': True, 'full_depth_verified': True,
+                            'source_at': '2026-11-06T15:00:00+08:00', 'levels': _levels(20)})
+    snapshot = asyncio.run(mcp_depth._fetch_depth_with_fallback(Session(), '603986'))
+    assert not snapshot.available and not snapshot.full_depth
+    assert all(f'{depth}:source_stale' in snapshot.reason for depth in (1000, 10, 5))
+
+
+def test_closed_market_can_display_last_session_without_claiming_new_sample():
+    from datetime import datetime
+    source = '2026-11-09T15:00:00+08:00'
+    now = datetime.fromisoformat('2026-11-09T18:00:00+08:00').timestamp()
+    snapshot = parse_depth_payload('603986', {
+        'available': True, 'full_depth_verified': True, 'levels': _levels(20),
+        'source_at': source, 'fetched_at': '2026-11-09T18:00:00+08:00',
+    }, received_at=now)
+    assert not mcp_depth.depth_is_stale(snapshot, now)
+    assert mcp_depth.depth_time_label(snapshot) == '采样 15:00:00'

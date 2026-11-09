@@ -6,6 +6,7 @@ import asyncio
 import threading
 import time
 from dataclasses import dataclass, replace
+from datetime import datetime
 from typing import Any
 
 import httpx2
@@ -14,7 +15,7 @@ from mcp.client.streamable_http import streamable_http_client
 from PySide6.QtCore import QThread, Signal
 
 from .config import Config
-from .market_hours import OFF_HOURS_WAKE_SECONDS, is_a_share_active_time, active_updates_allowed
+from .market_hours import SHANGHAI_TZ, OFF_HOURS_WAKE_SECONDS, is_a_share_active_time, active_updates_allowed
 from .mcp_bs import record_volatility_bs
 from .mcp_notifications import (
     REQUEST_TIMEOUT_SECONDS, SSE_TIMEOUT, _api_key, _bounded, _describe_error, _tool_payload,
@@ -30,6 +31,7 @@ DEPTH_INTER_SYMBOL_GAP_SECONDS = 0.75
 BS_POLL_SECONDS = 60.0
 MIN_THOUSAND_LEVELS = 11
 DEPTH_ERROR_FAILURES = 3
+DEPTH_MAX_AGE_SECONDS = 30.0
 
 DEPTH_FULL = "FULL_DEPTH"
 DEPTH_TEN = "TEN_LEVEL"
@@ -60,6 +62,40 @@ class DepthSnapshot:
     full_depth_failures: int = 0
     using_cached_full_depth: bool = False
     latest_depth_mode: str = DEPTH_NONE
+    source_at: str = ""
+
+
+def depth_sample_time(snapshot: DepthSnapshot, *, use_received: bool = True) -> float:
+    """Use the upstream data clock, never replace it with the response clock."""
+    for value in (snapshot.source_at, snapshot.fetched_at):
+        if not value:
+            continue
+        try:
+            stamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=SHANGHAI_TZ)
+            return stamp.timestamp()
+        except (ValueError, TypeError, OverflowError):
+            continue
+    return snapshot.received_at if use_received else 0.0
+
+
+def depth_is_stale(snapshot: DepthSnapshot, now: float | None = None, *,
+                   active_only: bool = True) -> bool:
+    current = time.time() if now is None else now
+    if active_only and not is_a_share_active_time(datetime.fromtimestamp(current, SHANGHAI_TZ)):
+        return False
+    sampled = depth_sample_time(snapshot)
+    return bool(sampled and current - sampled > DEPTH_MAX_AGE_SECONDS)
+
+
+def depth_time_label(snapshot: DepthSnapshot) -> str:
+    sampled = depth_sample_time(snapshot)
+    if not sampled:
+        return "时间未知"
+    stamp = datetime.fromtimestamp(sampled, SHANGHAI_TZ)
+    prefix = "采样" if depth_sample_time(snapshot, use_received=False) else "接收"
+    return f"{prefix} {stamp:%H:%M:%S}"
 
 
 def _number(value: Any) -> float | None:
@@ -183,6 +219,7 @@ def parse_depth_payload(
         symbol=code,
         levels=tuple(levels),
         fetched_at=str(payload.get("fetched_at") or payload.get("source_at") or ""),
+        source_at=str(payload.get("source_at") or ""),
         received_at=time.time() if received_at is None else float(received_at),
         full_depth=mode == DEPTH_FULL,
         available=mode != DEPTH_NONE,
@@ -222,11 +259,13 @@ async def _fetch_requested_depth(
             },
         )
     )
-    return parse_depth_payload(
-        symbol,
-        _tool_payload(result),
-        requested_depth=requested_depth,
+    snapshot = parse_depth_payload(
+        symbol, _tool_payload(result), requested_depth=requested_depth,
     )
+    if snapshot.available and depth_is_stale(snapshot, snapshot.received_at):
+        return replace(snapshot, available=False, full_depth=False, depth_mode=DEPTH_NONE,
+                       reason=f"source_stale: {depth_time_label(snapshot)}")
+    return snapshot
 
 
 async def _fetch_depth_with_fallback(
@@ -234,29 +273,19 @@ async def _fetch_depth_with_fallback(
     symbol: str,
 ) -> DepthSnapshot:
     """严格按 千档 → 十档 → 五档 获取，任何降级都保持可显示。"""
-    last = DepthSnapshot(symbol=symbol, reason="depth_unavailable")
-    try:
-        last = await _fetch_requested_depth(session, symbol, 1000)
-        if last.full_depth:
-            return last
-    except Exception as exc:
-        last = DepthSnapshot(symbol=symbol, reason=f"1000:{type(exc).__name__}")
-
-    try:
-        ten = await _fetch_requested_depth(session, symbol, 10)
-        if ten.available:
-            return ten
-        last = ten
-    except Exception as exc:
-        last = DepthSnapshot(symbol=symbol, reason=f"10:{type(exc).__name__}")
-
-    try:
-        five = await _fetch_requested_depth(session, symbol, 5)
-        if five.available:
-            return five
-        return five
-    except Exception as exc:
-        return DepthSnapshot(symbol=symbol, reason=f"5:{type(exc).__name__}")
+    reasons = []
+    last = DepthSnapshot(symbol=symbol, reason="depth_unavailable", received_at=time.time())
+    for requested in (1000, 10, 5):
+        try:
+            last = await _fetch_requested_depth(session, symbol, requested)
+            if last.full_depth or (requested != 1000 and last.available):
+                return replace(last, reason="; ".join(reasons + ([last.reason] if last.reason else [])))
+            reasons.append(f"{requested}:{last.reason or 'depth_unavailable'}")
+        except Exception as exc:
+            reasons.append(f"{requested}:{_describe_error(exc)}")
+            last = DepthSnapshot(symbol=symbol, received_at=time.time())
+    return replace(last, available=False, full_depth=False, depth_mode=DEPTH_NONE,
+                   reason="; ".join(reasons))
 
 
 def _merge_depth_state(
@@ -275,12 +304,14 @@ def _merge_depth_state(
         return fresh, fresh, 0
 
     failures = max(0, int(consecutive_failures)) + 1
-    if not snapshot.available and cached_full_depth is not None and cached_full_depth.full_depth:
+    if (not snapshot.available and cached_full_depth is not None and cached_full_depth.full_depth
+            and not depth_is_stale(cached_full_depth, snapshot.received_at or time.time(), active_only=False)):
         display = replace(
             cached_full_depth,
             full_depth_failures=failures,
             using_cached_full_depth=True,
             latest_depth_mode=snapshot.depth_mode,
+            reason=snapshot.reason,
         )
         return display, cached_full_depth, failures
 
@@ -438,7 +469,10 @@ class McpDepthPoller(QThread):
                 config, explicit or bs_explicit, started - self._last_bs_fetch_at
             )
             if not fetch_depth and not fetch_bs:
-                self._emit_status("已休眠 · 等待交易时段或手动刷新")
+                self._emit_status(
+                    "已连接 · 等待下一次 B/S 同步" if bs_allowed and self._sync_bs
+                    else "已休眠 · 等待交易时段或手动刷新"
+                )
                 self._wake.wait(OFF_HOURS_WAKE_SECONDS if not bs_allowed else
                                 max(0.5, BS_POLL_SECONDS - (started - self._last_bs_fetch_at)))
                 continue
