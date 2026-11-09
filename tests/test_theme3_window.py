@@ -192,6 +192,51 @@ def test_real_card_window_renders_both_price_labels_and_short_dark_caption(app, 
                    for y in range(rect.top(), rect.bottom() + 1)) > 10
 
 
+def test_live_quote_uses_price_axis_and_follows_updates(app, card, monkeypatch):
+    window, store, quote, trend = card
+    window.apply_config(store.update({
+        'stock_price_font_size': 32, 'chart_label_font_size': 10,
+        'text_opacities': {'price': .4},
+    }))
+    row = window._rows[quote.symbol]
+    assert row.price_label.isHidden()
+    assert row.sparkline._live_price_font.pixelSize() == row.price_label.font().pixelSize()
+    captions, guides = [], []
+    original_text, original_line = QPainter.drawText, QPainter.drawLine
+
+    def record_text(painter, *args):
+        if isinstance(args[-1], str) and args[-1].replace('.', '', 1).isdigit():
+            captions.append((args[-1], painter.font().pixelSize(), args[0],
+                             painter.pen().color().alpha()))
+        return original_text(painter, *args)
+
+    def record_line(painter, *args):
+        if (len(args) == 2 and painter.pen().style() == Qt.DashLine
+                and painter.pen().widthF() == 1 and args[0].y() == args[1].y()):
+            guides.append(args[0].y())
+        return original_line(painter, *args)
+
+    monkeypatch.setattr(QPainter, 'drawText', record_text)
+    monkeypatch.setattr(QPainter, 'drawLine', record_line)
+    row.sparkline.grab()
+    live = [item for item in captions if item[0] == '10.20'
+            and item[1] == row.price_label.font().pixelSize()]
+    assert len(live) == 1 and guides
+    assert live[0][3] == pytest.approx(102, abs=1)
+    assert live[0][2].top() <= guides[-1] <= live[0][2].bottom()
+    assert any(size == row.sparkline._annotation_font.pixelSize() and value != '10.20'
+               for value, size, _, _ in captions)
+
+    first_y = guides[-1]
+    window._sync_rows([Quote.from_prices('603986', '兆易创新', 10.1, 10)], {quote.symbol: trend})
+    captions.clear()
+    guides.clear()
+    row.sparkline.grab()
+    assert any(value == '10.10' and size == row.price_label.font().pixelSize()
+               for value, size, _, _ in captions)
+    assert guides and guides[-1] != first_y
+
+
 @pytest.mark.parametrize('opacity', [.25, .7, 1.0])
 def test_live_depth_repaints_composited_window_without_forced_child_grab(app, card, monkeypatch, opacity):
     import time

@@ -78,6 +78,10 @@ class Sparkline(SizedWidget):
         self._preferred_height = 0
         self._annotation_font = QFont()
         self._annotation_font.setPixelSize(9)
+        self._live_price: float | None = None
+        self._live_price_font = QFont()
+        self._live_price_color = QColor("#f4f4f1")
+        self._show_live_price = False
         self._depth: DepthSnapshot | None = None
         self._changed_depth_keys: set[tuple[str, float]] = set()
         self._show_depth = True
@@ -219,6 +223,16 @@ class Sparkline(SizedWidget):
         """设置最高价/最低价字体，窗口缩放时由外层按比例更新。"""
         if font != self._annotation_font:
             self._annotation_font = QFont(font)
+            self.update()
+
+    def set_live_price(self, price: float | None, font: QFont, color: QColor, *, visible: bool) -> None:
+        state = (price, font, color, visible)
+        if state != (self._live_price, self._live_price_font, self._live_price_color,
+                     self._show_live_price):
+            self._live_price = price
+            self._live_price_font = QFont(font)
+            self._live_price_color = QColor(color)
+            self._show_live_price = visible
             self.update()
 
     def set_annotations(
@@ -495,7 +509,11 @@ class Sparkline(SizedWidget):
                 if self._show_depth and self._depth and self._depth.received_at:
                     footer.append(f"盘口{depth_time_label(self._depth)}")
                 total_height -= metrics.height() + 4
-            width -= metrics.horizontalAdvance(f"{max(points):.2f}") + 6
+            axis_width = metrics.horizontalAdvance(f"{max(points):.2f}") + 6
+            if self._card_style and self._show_live_price and self._live_price is not None:
+                axis_width = max(axis_width, QFontMetrics(self._live_price_font).horizontalAdvance(
+                    f"{self._live_price:.2f}") + 6)
+            width -= axis_width
         tdw_enabled = self._show_signals and self._show_tdw_levels
         # 大卡片给动力线独立的纵轴，小卡片保留原有叠加刻度。
         if self._card_style:
@@ -509,6 +527,9 @@ class Sparkline(SizedWidget):
         if self._realtime_bars:
             price_low = min(price_low, min(bar.low for bar in self._realtime_bars))
             price_high = max(price_high, max(bar.high for bar in self._realtime_bars))
+        if self._card_style and self._show_live_price and self._live_price is not None:
+            price_low = min(price_low, self._live_price)
+            price_high = max(price_high, self._live_price)
         scale = PriceScale() if self._recent_view else self._price_scale
         low, high = scale.bounds(price_low, price_high)
         span = high - low
@@ -517,6 +538,10 @@ class Sparkline(SizedWidget):
 
         def y_of(value: float) -> float:
             return (height - price_inset - 2) - (value - low) / span * (height - 2 * price_inset - 4)
+
+        live_y = (y_of(self._live_price) if self._card_style and self._show_live_price
+                  and self._live_price is not None else None)
+        live_label_height = QFontMetrics(self._live_price_font).height()
 
         profile_width = self._side_profile_width(width) if self._show_volume_profile else 0.0
         chart_left = profile_width + 2.0 if self._show_volume_profile else 0.0
@@ -552,7 +577,8 @@ class Sparkline(SizedWidget):
             else:
                 target = span / max(2, min(8, height // (label_height + 8)))
             unit = 10 ** math.floor(math.log10(target))
-            step = next(f * unit for f in (1, 2, 2.5, 5, 10) if f * unit >= target)
+            factors = (1, 1.25, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10) if self._card_style else (1, 2, 2.5, 5, 10)
+            step = next(f * unit for f in factors if f * unit >= target)
             for tick in range(math.ceil(low / step), math.floor(high / step) + 1):
                 price = tick * step
                 y = y_of(price)
@@ -560,6 +586,8 @@ class Sparkline(SizedWidget):
                     continue
                 painter.setPen(QPen(grid_color, .8, Qt.DashLine))
                 painter.drawLine(QPointF(chart_left, y), QPointF(width, y))
+                if live_y is not None and abs(y - live_y) < (label_height + live_label_height) / 2 + 2:
+                    continue
                 painter.setPen(self._text_color(self._color))
                 painter.drawText(QRectF(width + 2, y - label_height / 2, self.width() - width - 2,
                                         label_height), Qt.AlignRight | Qt.AlignVCenter, f"{price:.2f}")
@@ -692,7 +720,18 @@ class Sparkline(SizedWidget):
                                          self._paint_color, self._text_color(self._tdw_label_color, "tdw"))
             painter.restore()
 
+        if live_y is not None:
+            ink = self._paint_color(self._live_price_color, self._live_price_color.alpha())
+            painter.setPen(QPen(ink, 1, Qt.DashLine))
+            painter.drawLine(QPointF(chart_left, live_y), QPointF(width, live_y))
         if self._show_high_low:
             draw_price_labels(painter, QRectF(chart_left, 0, width - chart_left, height),
                               price_low, price_high, self._annotation_font,
                               self._text_color(self._color, "high_low"), card=self._card_style)
+        if live_y is not None:
+            painter.setFont(self._live_price_font)
+            painter.setPen(ink)
+            painter.drawText(QRectF(width + 2,
+                                    max(0.0, min(height - live_label_height, live_y - live_label_height / 2)),
+                                    self.width() - width - 2, live_label_height),
+                             Qt.AlignRight | Qt.AlignVCenter, f"{self._live_price:.2f}")

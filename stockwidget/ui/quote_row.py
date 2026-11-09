@@ -256,7 +256,8 @@ class QuoteRow(SizedWidget):
         self.dark_label.setText("暗")
         self.sparkline.set_show_depth(config.show_chart_depth)
         self.name_label.setVisible(self._visible("name"))
-        self.price_label.setVisible(self._visible("price"))
+        self.price_label.setVisible(self._visible("price") and
+                                    (config.display_theme != "theme3" or not self._visible("chart")))
         self.percent_label.setVisible(self._visible("percent"))
         self.sparkline.set_annotation_options(
             show_signals=config.show_bs_points,
@@ -531,11 +532,13 @@ class QuoteRow(SizedWidget):
         self.theme2_depth.hide()
         self._layout.setRowStretch(0, 0)
         self._layout.setRowStretch(1, 0)
+        card = config.display_theme == "theme3"
         self.name_label.setVisible(self._visible("name"))
-        self.price_label.setVisible(self._visible("price"))
+        self.price_label.setVisible(self._visible("price") and
+                                    (not card or not self._visible("chart") or
+                                     bool(self._last_quote and self._last_quote.error)))
         self.percent_label.setVisible(self._visible("percent"))
         self.sparkline.setVisible(self._visible("chart"))
-        card = config.display_theme == "theme3"
         self.dark_box.setVisible(
             self._visible("dark") and (card or self._last_quote is None
             or (not self._last_quote.error and fmt_money(self._last_quote.dark_fund) is not None))
@@ -808,6 +811,8 @@ class QuoteRow(SizedWidget):
         )
 
         if quote.error:
+            if card:
+                self.sparkline.set_live_price(None, self.price_label.font(), QColor(), visible=False)
             self.price_label.setText(quote.error)
             self.price_label.setStyleSheet(_color_style(text_color(config, "auto", MUTED, region="price")))
             self.percent_label.setText("")
@@ -824,6 +829,12 @@ class QuoteRow(SizedWidget):
         self.price_label.setStyleSheet(
             _color_style(text_color(config, config.stock_price_color, color, region="price"))
         )
+        if card:
+            self.sparkline.set_live_price(
+                quote.price, self.price_label.font(),
+                text_color(config, config.stock_price_color, color, region="price"),
+                visible=self._visible("price") and self._visible("chart"),
+            )
         percent_sign = "+" if quote.change_percent is not None and quote.change_percent > 0 else ""
         self.percent_label.setText(
             f"{percent_sign}{quote.change_percent:.2f}%"
