@@ -661,17 +661,12 @@ class QuoteRow(SizedWidget):
                 self._layout.setColumnStretch(column, 0)
             if top_bottom:
                 if card and show_chart and self.price_label.isHidden():
-                    # Two compact header rows: name above dark flow and percent.
-                    # The dark flow starts at the name X; percent follows it.
-                    if not self.name_label.isHidden():
-                        self._layout.addWidget(self.name_label, 0, 0, 1, 2)
-                    dark_visible = not self.dark_box.isHidden()
-                    if dark_visible:
-                        self._layout.addWidget(self.dark_box, 1, 0, Qt.AlignLeft)
-                    if not self.percent_label.isHidden():
-                        self._layout.addWidget(self.percent_label, 1, int(dark_visible), Qt.AlignLeft)
-                    self._layout.addWidget(self.sparkline, 2, 0, 1, 2, chart_align)
-                    self._layout.setColumnStretch(1, 1)
+                    header = (self.name_label, self.dark_box, self.percent_label)
+                    visible = [widget for widget in header if not widget.isHidden()]
+                    for i, widget in enumerate(visible):
+                        self._layout.addWidget(widget, 0, i, Qt.AlignLeft | Qt.AlignVCenter)
+                    self._layout.addWidget(self.sparkline, 1, 0, 1, len(visible) + 1, chart_align)
+                    self._layout.setColumnStretch(len(visible), 1)
                 else:
                     if card:
                         header = (self.name_label, self.dark_box, self.price_label, self.percent_label)
@@ -956,26 +951,34 @@ class QuoteRow(SizedWidget):
         prices = trend.prices if trend else self.sparkline.points
         bars = self.theme2_depth.kline.bars if self.theme2_depth.kline else []
         signals, daily, minute_power, daily_power = [], [], [], []
-        local_tdw = config.display_theme == "theme3" or (enabled and mcp_bs.get_source() == mcp_bs.SOURCE_LOCAL)
-        if enabled and not local_tdw:
-            if prices:
-                signals = mcp_bs.bs_points(quote.symbol, prices)
-            if bars:
-                daily = mcp_bs.daily_bs_points(quote.symbol, bars)
-        elif local_tdw:
+        local_source = mcp_bs.get_source() == mcp_bs.SOURCE_LOCAL
+        local_tdw = config.display_theme == "theme3" or (enabled and local_source)
+        tdw_signals = []
+        if local_tdw:
             if trend and len(trend.minutes) == len(trend.prices):
-                minute_power, signals = tdw.align(
+                minute_power, tdw_signals = tdw.align(
                     trend.tdw_points, (f"{trend.trade_date} {m}" for m in trend.minutes)
                 )
             daily_power, daily = tdw.align(self._daily_tdw, (bar.time[:10] for bar in bars))
+        if enabled and not local_source:
+            if prices:
+                if trend and len(trend.minutes) == len(prices):
+                    signals = mcp_bs.bs_points(quote.symbol, prices, minutes=trend.minutes,
+                                               trade_date=trend.trade_date)
+                else:
+                    signals = mcp_bs.bs_points(quote.symbol, prices)
+            if bars:
+                daily = mcp_bs.daily_bs_points(quote.symbol, bars)
+        elif enabled:
+            signals = tdw_signals
         tip = self.sparkline.toolTip()
         if local_tdw and trend and trend.realtime_bars and minute_power:
             stamp = next(reversed(trend.tdw_points))
             last = trend.tdw_points[stamp]
             scope = "最近 5 分钟 · " if trend.recent_view else ""
             details = [f"{scope}实时 TDW {last.power:.2f}{'*' if last.provisional else ''}"]
-            if signals:
-                index, label = signals[-1]
+            if tdw_signals:
+                index, label = tdw_signals[-1]
                 details.append(f"最近信号 {trend.minutes[index]} {label}")
             if config.show_high_low and trend.high_price is not None and trend.low_price is not None:
                 details.append(f"高 {trend.high_price:.2f}　低 {trend.low_price:.2f}")
@@ -984,7 +987,8 @@ class QuoteRow(SizedWidget):
         self.theme2_depth.set_signals(signals if trend else [], show=enabled)
         self.theme2_depth.set_daily_signals(daily)
         self.theme2_depth.set_tdw_power(minute_power, daily_power, show_levels=local_tdw)
-        self.sparkline.set_tdw_power(minute_power, show_levels=local_tdw)
+        self.sparkline.set_tdw_power(minute_power, show_levels=local_tdw,
+                                     events=tdw_signals)
         self.sparkline.set_annotations(
             trend.open_price if trend else (prices[0] if prices else None), signals,
             show_signals=enabled, show_open_line=config.show_open_line,

@@ -13,7 +13,7 @@ import requests
 
 from . import tdw
 from .intraday import PriceSeries, Trend, _trade_date
-from .kline import Bar
+from .kline import Bar, PERIOD_1M, fetch_kline
 from .market_hours import SHANGHAI_TZ, is_a_share_active_time
 from .providers.base import REQUEST_TIMEOUT, USER_AGENT
 from .symbols import classify
@@ -52,6 +52,31 @@ def second_bars(day, trades) -> list[Bar]:
     return bars
 
 
+def minute_bars(bars: list[Bar]) -> list[Bar]:
+    """Build one real OHLC candle for each traded minute, with no fake gaps."""
+    minutes: list[Bar] = []
+    for bar in bars:
+        stamp = bar.time[:16]
+        if minutes and minutes[-1].time == stamp:
+            old = minutes[-1]
+            minutes[-1] = Bar(stamp, old.open, max(old.high, bar.high),
+                              min(old.low, bar.low), bar.close, old.volume + bar.volume)
+        else:
+            minutes.append(Bar(stamp, bar.open, bar.high, bar.low, bar.close, bar.volume))
+    return minutes
+
+
+def minute_power_on_seconds(bars: list[Bar], points: dict[str, tdw.Point]) -> dict[str, tdw.Point]:
+    """Repeat each minute's value for its seconds; emit crossings only at its last trade."""
+    result = {}
+    for index, bar in enumerate(bars):
+        point = points.get(bar.time[:16])
+        if point is not None:
+            last = index + 1 == len(bars) or bars[index + 1].time[:16] != bar.time[:16]
+            result[bar.time] = replace(point, events=point.events if last else ())
+    return result
+
+
 def _tx_value(text, key):
     name, _, data = text.strip().rstrip(";").partition("=")
     if name != key:
@@ -63,7 +88,7 @@ def _tx_value(text, key):
 class RealtimeFeed:
     """One serial worker per symbol; never combine OHLC or EMA state across sources."""
 
-    def __init__(self, symbol: str, source: str, session=None):
+    def __init__(self, symbol: str, source: str, session=None, *, minute_history=False):
         self.symbol = classify(symbol)
         self.sources = (source,) if source in ("eastmoney", "tencent") else ("eastmoney", "tencent")
         self.session = session or requests.Session()
@@ -75,6 +100,31 @@ class RealtimeFeed:
         self._trend: Trend | None = None
         self._forming = ""
         self._next_probe = 0.0
+        self._load_minute_history = minute_history
+        self._history_bars: list[Bar] = []
+        self._history_day = ""
+        self._next_history_fetch = 0.0
+        # Sina has no 1-minute K API; its live transaction fallback already
+        # uses Eastmoney/Tencent, so warm the minute formula from those too.
+        self._minute_source = "auto" if source == "sina" else source
+
+    def _warm_minutes(self, at: datetime) -> list[Bar]:
+        if not self._load_minute_history:
+            return []
+        day = at.date().isoformat()
+        if day != self._history_day:
+            self._history_bars, self._next_history_fetch = [], 0.0
+            self._history_day = day
+        if at.timestamp() >= self._next_history_fetch:
+            self._next_history_fetch = at.timestamp() + 60
+            try:
+                history = fetch_kline(self.symbol.code, PERIOD_1M, limit=300,
+                                      adjust=False, source=self._minute_source)
+                if history and history.bars:
+                    self._history_bars = [bar for bar in history.bars if bar.time[:10] == day]
+            except (requests.RequestException, ValueError, TypeError, OSError):
+                pass
+        return self._history_bars
 
     def _get(self, url, params, referer):
         response = self.session.get(url, params=params, timeout=REQUEST_TIMEOUT,
@@ -202,13 +252,17 @@ class RealtimeFeed:
             return self._trend
         self._bars = self._bars[:start] + bars
         self._provider, self._forming = source, forming
+        live_minutes = minute_bars(self._bars)
+        history = [bar for bar in self._warm_minutes(at) if bar.time < live_minutes[0].time]
+        minute_points = tdw.calculate(history + live_minutes, PERIOD_1M, at,
+                                      forming=live_minutes[-1].time if forming else "")
         self._trend = Trend(
             prices=PriceSeries((bar.close for bar in self._bars), self.symbol.code),
             minutes=[bar.time[11:] for bar in self._bars], volumes=[bar.volume for bar in self._bars],
             high_price=max(bar.high for bar in self._bars), low_price=min(bar.low for bar in self._bars),
             open_price=self._bars[0].open if self._bars[0].time[11:16] == "09:30" else None,
             source=source, trade_date=day, fetched_at=at.timestamp(), realtime_bars=self._bars,
-            tdw_points=tdw.calculate(self._bars, tdw.PERIOD_REALTIME, at, forming=forming),
+            tdw_points=minute_power_on_seconds(self._bars, minute_points),
         )
         return self._trend
 

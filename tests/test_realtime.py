@@ -11,7 +11,7 @@ from stockwidget.intraday import Trend
 from stockwidget.kline import Bar
 from stockwidget.market_hours import SHANGHAI_TZ
 from stockwidget.poller import Poller
-from stockwidget.realtime import EASTMONEY, TENCENT, RealtimeFeed, second_bars, with_price_history
+from stockwidget.realtime import EASTMONEY, TENCENT, RealtimeFeed, minute_bars, second_bars, with_price_history
 from stockwidget.ui.time_axis import intraday_fraction
 
 DAY = "2026-11-05"
@@ -91,25 +91,53 @@ def test_tencent_uses_dated_index_and_handles_equal_second_across_two_pages():
     assert feed.fetch(now=at+timedelta(days=1)) is None
 
 
-def test_realtime_formula_advances_each_distinct_second_and_revises_last_in_place(monkeypatch):
+def test_realtime_formula_uses_one_minute_ohlc_and_revises_forming_minute(monkeypatch):
     feed = RealtimeFeed(CODE, "eastmoney")
-    at = START + timedelta(seconds=30)
+    at = START.replace(hour=9, minute=55, second=30)
+    warm = [Bar((START + timedelta(minutes=i)).strftime("%Y-%m-%d %H:%M"), 10, 14, 10, 10)
+            for i in range(24)]
+    monkeypatch.setattr(feed, "_warm_minutes", lambda _: warm)
     def bars(closes):
-        return [Bar((START+timedelta(seconds=i)).strftime("%Y-%m-%d %H:%M:%S"), 10, 14, 10, c)
+        return [Bar((at.replace(second=0)+timedelta(seconds=i)).strftime("%Y-%m-%d %H:%M:%S"),
+                    10, 14, 10, c)
                 for i, c in enumerate(closes)]
     original = bars([10] * 25 + [14])
     packets = [original, bars([10] * 26)[-3:], original[-3:], bars([10]*25+[14,14])[-3:]]
     monkeypatch.setattr(feed, "_eastmoney", lambda *args: packets.pop(0))
     for value, events in [(1.6, ("B1", "B2")), (0, ()), (1.6, ("B1", "B2"))]:
         current = feed.fetch(now=at)
-        point = current.tdw_points[DAY+" 09:31:25"]
+        point = current.tdw_points[DAY+" 09:55:25"]
         assert point.power == pytest.approx(value) and point.events == events and point.provisional
-        assert len(current.tdw_points) == 2
+        assert len(current.tdw_points) == 26
+        assert all(p.events == () for p in list(current.tdw_points.values())[:-1])
     current = feed.fetch(now=at)
-    first, second = (current.tdw_points[DAY+clock] for clock in (" 09:31:25", " 09:31:26"))
-    assert not first.provisional and second.provisional and second.power == pytest.approx(2.56)
+    first, second = (current.tdw_points[DAY+clock] for clock in (" 09:55:25", " 09:55:26"))
+    assert first.events == () and second.provisional and second.power == pytest.approx(1.6)
     assert intraday_fraction(25, 27, current.minutes) < intraday_fraction(26, 27, current.minutes)
-    assert tdw.align(current.tdw_points, (DAY+" "+m for m in current.minutes))[1] == [(25, "B1/B2")]
+    assert tdw.align(current.tdw_points, (DAY+" "+m for m in current.minutes))[1] == [(26, "B1/B2*")]
+    assert minute_bars(original) == [Bar(DAY+" 09:55", 10, 14, 10, 14)]
+
+
+def test_minute_history_warms_sparse_live_feed_and_is_cached(monkeypatch):
+    from stockwidget.kline import Kline
+    from stockwidget import realtime
+    feed = RealtimeFeed(CODE, "auto", minute_history=True)
+    at = START.replace(hour=10, minute=1, second=30)
+    warm = [Bar((START + timedelta(minutes=i)).strftime("%Y-%m-%d %H:%M"),
+                10, 14, 10, 10) for i in range(29)]
+    calls = []
+    def fetch(*args, **kwargs):
+        calls.append((args, kwargs))
+        return Kline(bars=warm + [Bar(DAY+" 10:01", 100, 100, 100, 100)])
+    monkeypatch.setattr(realtime, "fetch_kline", fetch)
+    bars = [Bar(DAY+" 10:00:01", 10, 14, 10, 14)]
+    trend = feed._merge("eastmoney", bars, at)
+    assert trend.tdw_points[bars[-1].time].power == pytest.approx(1.6)
+    assert len(calls) == 1 and calls[0][1]["adjust"] is False
+    feed._merge("eastmoney", bars + [Bar(DAY+" 10:00:02", 14, 14, 10, 14)],
+                at + timedelta(seconds=10))
+    assert len(calls) == 1
+    assert RealtimeFeed(CODE, "sina", minute_history=True)._minute_source == "auto"
 
 
 @pytest.mark.parametrize("configured", ["auto", "sina"])

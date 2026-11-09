@@ -66,6 +66,7 @@ class Sparkline(SizedWidget):
         self._prev_close: float | None = None
         self._open_price: float | None = None
         self._tdw_power: list[float | None] = []
+        self._tdw_events: list[tuple[int, str]] = []
         self._show_tdw_levels = False
         self._signals: list[tuple[int, str]] = []
         self._show_signals = True
@@ -203,9 +204,9 @@ class Sparkline(SizedWidget):
             self.update()
             self.depth_invalidated.emit()
 
-    def set_tdw_power(self, power, *, show_levels=True):
-        if (power, show_levels) != (self._tdw_power, self._show_tdw_levels):
-            self._tdw_power, self._show_tdw_levels = power, show_levels
+    def set_tdw_power(self, power, *, show_levels=True, events=()):
+        if (power, show_levels, events) != (self._tdw_power, self._show_tdw_levels, self._tdw_events):
+            self._tdw_power, self._show_tdw_levels, self._tdw_events = power, show_levels, list(events)
             self.update()
 
     def set_show_depth(self, enabled: bool) -> None:
@@ -307,6 +308,7 @@ class Sparkline(SizedWidget):
         self._show_volume_profile = False
         self._signals = []
         self._tdw_power = []
+        self._tdw_events = []
         self._open_price = None
         self._prev_close = None
         self.update()
@@ -691,12 +693,20 @@ class Sparkline(SizedWidget):
                 tdw_overlay.draw_event(painter, x_of(index), y_of(points[index]), kind, height,
                                        width, color, None)
 
+        if self._card_style and self._show_signals:
+            for index, kind in self._signals:
+                if not 0 <= index < len(points):
+                    continue
+                color = self._paint_color(BUY_COLOR if kind.startswith("B") else SELL_COLOR)
+                tdw_overlay.draw_event(painter, x_of(index), y_of(points[index]), kind, height,
+                                       width, color, None)
+
         if self._card_style and indicator_height:
             painter.save()
             painter.translate(0, height)
             painter.setFont(self._annotation_font)
             tdw_overlay.draw_power_panel(painter, self._tdw_power,
-                                         self._signals if self._show_signals else [], x_of,
+                                         self._tdw_events if self._show_signals else [], x_of,
                                          chart_right, self.width(), indicator_height,
                                          self._paint_color, self._text_color(self._tdw_label_color, "tdw"))
             painter.restore()

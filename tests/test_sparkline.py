@@ -164,14 +164,14 @@ def test_high_low_labels_remain_in_opposite_corners_with_book_and_tdw(app, monke
     original = QPainter.drawText
 
     def record(self, *args):
-        if args[-1] in {"高 444.38", "低 440.27"}:
+        if args[-1] in {"444.38", "440.27"}:
             labels.append(args)
         return original(self, *args)
 
     monkeypatch.setattr(QPainter, "drawText", record)
     widget.grab()
     high, low = labels[-2:]
-    assert high[-1] == "高 444.38" and low[-1] == "低 440.27"
+    assert high[-1] == "444.38" and low[-1] == "440.27"
     assert high[0].x() == 2
     assert low[0].x() == high[0].x() if card else low[0].x() > high[0].x()
     assert 0 < high[0].y() < low[0].y() < size[1]
@@ -191,7 +191,7 @@ def test_first_candle_already_has_high_low_labels(app, monkeypatch):
     labels = []
     monkeypatch.setattr(QPainter, "drawText", lambda self, *args: labels.append(args[-1]))
     widget.grab()
-    assert "高 442.00" in labels and "低 439.00" in labels
+    assert "442.00" in labels and "439.00" in labels
 
 
 def _line_extent(image, x: int, color: QColor):
@@ -885,7 +885,7 @@ def test_left_corner_prices_keep_plain_readable_font_on_short_theme3_chart(app, 
     with QPainter(image) as painter:
         draw_price_labels(painter, QRectF(0, 0, 300, 24), 241, 243, font,
                           QColor('#f4f4f1'), card=True)
-    assert [text for text, _, _, _ in labels] == ['高 243.00', '低 241.00']
+    assert [text for text, _, _, _ in labels] == ['243.00', '241.00']
     assert all(size >= 11 and not bold for _, size, _, bold in labels)
     assert labels[0][2].x() == labels[1][2].x()
 

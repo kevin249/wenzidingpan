@@ -125,6 +125,22 @@ def test_bs_points_map_morning_and_afternoon_minutes():
     assert points == [(30, "B"), (131, "S")]
 
 
+def test_bs_points_match_real_second_timestamps_instead_of_minute_ordinal():
+    day = "2026-09-14"
+    mcp_bs.record_volatility_bs({
+        "available": True, "code": "603986", "trade_date": day,
+        "markers": [{"time": "10:56:00", "signal": "B", "price": 242.32},
+                    {"time": "10:57:00", "signal": "S", "price": 242.25}],
+    })
+    minutes = ["09:30"] * 100 + ["10:56:11", "10:56:16", "10:56:55", "10:57:05"]
+    prices = [240.] * 100 + [242.30, 242.32, 242.34, 242.25]
+    now = datetime(2026, 9, 14, 11, tzinfo=TZ)
+    assert mcp_bs.bs_points("603986", prices, now, minutes=minutes, trade_date=day) == [
+        (101, "B"), (103, "S")]
+    assert mcp_bs.bs_points("603986", prices, now, minutes=minutes,
+                            trade_date="2026-09-13") == []
+
+
 
 def test_active_volatility_snapshot_supplies_all_today_bs_markers():
     prices = [100.0] * 242

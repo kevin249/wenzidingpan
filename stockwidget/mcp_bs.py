@@ -391,21 +391,35 @@ def _append_point(
     signal_at: Any,
     side: str,
     price: Any,
+    minutes: list[str] | None = None,
 ) -> None:
     parsed = _parse_datetime(signal_at)
     if parsed is None:
         return
-    index = _minute_index(parsed)
-    if index is None or index >= len(prices):
-        return
-    index = _nearest_price_index(prices, index, price)
+    if minutes is not None and len(minutes) == len(prices):
+        clock = parsed.strftime("%H:%M")
+        candidates = [i for i, stamp in enumerate(minutes) if stamp[:5] == clock]
+        if not candidates:
+            return
+        try:
+            target = float(price)
+        except (TypeError, ValueError):
+            target = 0
+        index = (min(candidates, key=lambda i: (abs(prices[i] - target), -i))
+                 if target > 0 and math.isfinite(target) else candidates[-1])
+    else:
+        index = _minute_index(parsed)
+        if index is None or index >= len(prices):
+            return
+        index = _nearest_price_index(prices, index, price)
     key = (index, side)
     if key not in seen:
         seen.add(key)
         result.append(key)
 
 
-def bs_points(symbol: str, prices: list[float], now: datetime | None = None) -> list[tuple[int, str]]:
+def bs_points(symbol: str, prices: list[float], now: datetime | None = None, *,
+              minutes: list[str] | None = None, trade_date: str = "") -> list[tuple[int, str]]:
     """把当天 MCP B/S 信号映射为当前分时曲线的点索引。
 
     若已主动拉取 get_volatility_bs，则该整包 markers 是当天权威快照；尚未拉到时才
@@ -416,6 +430,8 @@ def bs_points(symbol: str, prices: list[float], now: datetime | None = None) -> 
         return []
     local_now = (now or datetime.now(SHANGHAI_TZ)).astimezone(SHANGHAI_TZ)
     day = local_now.date()
+    if trade_date and trade_date != day.isoformat():
+        return []
     result: list[tuple[int, str]] = []
     seen: set[tuple[int, str]] = set()
 
@@ -437,6 +453,7 @@ def bs_points(symbol: str, prices: list[float], now: datetime | None = None) -> 
                 _active_marker_time(marker, day.isoformat()),
                 _display_signal(marker, side),
                 marker.get("price"),
+                minutes,
             )
         result.sort(key=lambda item: item[0])
         return result
@@ -451,7 +468,8 @@ def bs_points(symbol: str, prices: list[float], now: datetime | None = None) -> 
         if side not in {"B", "S"}:
             continue
         payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
-        _append_point(result, seen, prices, signal_at, _display_signal(payload, side), payload.get("price"))
+        _append_point(result, seen, prices, signal_at, _display_signal(payload, side),
+                      payload.get("price"), minutes)
     result.sort(key=lambda item: item[0])
     return result
 

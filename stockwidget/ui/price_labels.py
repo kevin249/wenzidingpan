@@ -9,7 +9,7 @@ def draw_price_labels(painter, rect: QRectF, low: float, high: float, font, colo
     area = rect.adjusted(2, 2, -2, -2)
     if area.width() <= 0 or area.height() <= 0:
         return
-    labels = (f"高 {high:.2f}", f"低 {low:.2f}")
+    labels = (f"{high:.2f}", f"{low:.2f}")
     font = QFont(font)
     font.setBold(not card)
     metrics = QFontMetricsF(font, painter.device())

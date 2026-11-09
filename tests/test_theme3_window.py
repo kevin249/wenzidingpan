@@ -175,7 +175,7 @@ def test_real_card_window_renders_both_price_labels_and_short_dark_caption(app, 
     original = QPainter.drawText
 
     def record(self, *args):
-        if args[-1] in {"高 10.20", "低 10.00"}:
+        if isinstance(args[0], QPointF) and args[-1] in {"10.20", "10.00"}:
             captions.append((args[0], self.fontMetrics().boundingRect(args[-1]), self.font().bold()))
         return original(self, *args)
 
@@ -242,15 +242,41 @@ def test_live_quote_uses_price_axis_and_follows_updates(app, card, monkeypatch):
     assert guides and guides[-1] != first_y
 
 
-def test_theme3_dark_and_percent_align_below_stock_name(app, card):
+def test_theme3_name_dark_and_percent_share_header_row(app, card):
     window, _, quote, _ = card
     row = window._rows[quote.symbol]
     app.processEvents()
     assert row.dark_box.isVisible() and row.percent_label.isVisible()
-    assert row.dark_box.geometry().left() == row.name_label.geometry().left()
-    assert row.dark_box.geometry().top() > row.name_label.geometry().top()
+    assert row.name_label.geometry().left() < row.dark_box.geometry().left()
+    assert 0 <= row.dark_box.geometry().left() - row.name_label.geometry().right() <= \
+        row._layout.horizontalSpacing() + 2
+    assert row.name_label.geometry().top() <= row.dark_box.geometry().center().y() <= row.name_label.geometry().bottom()
+    assert row.dark_box.geometry().top() <= row.percent_label.geometry().center().y() <= row.dark_box.geometry().bottom()
     assert 0 <= row.percent_label.geometry().left() - row.dark_box.geometry().right() <= \
         row._layout.horizontalSpacing() + 2
+
+
+def test_theme3_mcp_bs_is_drawn_on_price_chart_while_tdw_stays_local(app, card, monkeypatch):
+    from stockwidget import mcp_bs
+    from stockwidget.ui import tdw_overlay
+
+    window, store, quote, trend = card
+    row = window._rows[quote.symbol]
+    monkeypatch.setattr(mcp_bs, "get_source", lambda: "mcp")
+    monkeypatch.setattr(mcp_bs, "bs_points", lambda *args, **kwargs: [(1, "B"), (3, "S")])
+    window.apply_config(store.update({"show_bs_points": True}))
+    assert row.sparkline._signals == [(1, "B"), (3, "S")]
+    assert row.sparkline._tdw_events == [(1, "B1/B2"), (3, "S1/S2")]
+    assert row.sparkline._tdw_power == [.1, .6, 3.8, 3.1]
+    positions = []
+    original = tdw_overlay.draw_event
+    def record(painter, x, y, kind, height, *args, **kwargs):
+        positions.append((kind, y, height))
+        return original(painter, x, y, kind, height, *args, **kwargs)
+    monkeypatch.setattr(tdw_overlay, "draw_event", record)
+    row.sparkline.grab()
+    assert [kind for kind, _, _ in positions] == ["B", "S"]
+    assert all(0 <= y <= height for _, y, height in positions)
 
 
 @pytest.mark.parametrize('opacity', [.25, .7, 1.0])
