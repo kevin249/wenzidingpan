@@ -134,7 +134,8 @@ def test_dense_book_keeps_every_price_and_its_individual_volume(app, monkeypatch
     assert len(strokes) == len(levels)
     assert len({y for _, _, y in strokes}) == len(levels)
     assert [abs(x1 - x0) for x0, x1, _ in strokes] == pytest.approx([
-        max(1, span * row.volume / 100) for row in reversed(levels)])
+        (span * row.volume / 100 if kind == "spark" else max(1, span * row.volume / 100))
+        for row in reversed(levels)])
     widget.close()
 
 

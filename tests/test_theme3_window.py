@@ -186,3 +186,45 @@ def test_real_card_window_renders_both_price_labels_and_short_dark_caption(app, 
         assert sum(before.pixel(x, y) != after.pixel(x, y)
                    for x in range(rect.left(), rect.right() + 1)
                    for y in range(rect.top(), rect.bottom() + 1)) > 10
+
+
+@pytest.mark.parametrize('opacity', [.25, .7, 1.0])
+def test_live_depth_repaints_composited_window_without_forced_child_grab(app, card, monkeypatch, opacity):
+    import time
+    from stockwidget.mcp_depth import DepthLevel, DepthSnapshot
+    from stockwidget.ui.sparkline import Sparkline
+    window, store, quote, trend = card
+    window.apply_config(store.update({'opacity': opacity, 'background_alpha': 0}))
+    chart = window._rows[quote.symbol].sparkline
+    chart.set_series([10, 10.1], ['10:00', '10:01'])
+    chart.set_fill_width(True)
+    levels = tuple(DepthLevel(side, base + index * step, 1000 if index == 500 else 10)
+                   for side, base, step in [('bid', 10, -.001), ('ask', 10.01, .001)]
+                   for index in range(1000))
+    first = DepthSnapshot('603986', available=True, full_depth=True,
+                          received_at=time.time(), levels=levels)
+    second = replace(first, levels=tuple(replace(level, volume=500 if i == 700 else 2)
+                                        if level.side == 'bid' else level for i, level in enumerate(levels)))
+    paints, acknowledgments = [], []
+    window.depth_painted.connect(lambda snapshot, displayed: acknowledgments.append((snapshot, displayed)))
+    original = Sparkline._draw_depth
+    def paint(widget, *args):
+        if widget is chart:
+            paints.append(widget._depth)
+        return original(widget, *args)
+    monkeypatch.setattr(Sparkline, '_draw_depth', paint)
+    window.update_depth(first)
+    QTest.qWait(80)
+    first_image = window.grab().toImage()
+    paints.clear()
+    window.update_depth(second)
+    QTest.qWait(80)
+    assert paints and paints[-1] is second, 'screen refresh did not repaint the new depth'
+    assert acknowledgments[-1] == (second, True)
+    second_image = window.grab().toImage()
+    assert first_image != second_image, 'opacity composite kept the old chart'
+    paints.clear()
+    window.update_depth(first)
+    QTest.qWait(80)
+    assert paints and paints[-1] is first
+    assert window.grab().toImage() == first_image, 'old long bars left ghost pixels after shrink'

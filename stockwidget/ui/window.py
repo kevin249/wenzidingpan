@@ -296,12 +296,16 @@ class TickerWindow(QWidget):
     grayscale_requested = Signal()
     title_buttons_requested = Signal()
     bell_cleared = Signal()
+    depth_painted = Signal(object, bool)
 
     def __init__(self, config: Config) -> None:
         super().__init__()
         self._config = config
         self._rows: dict[str, QuoteRow] = {}
         self._depths: dict[str, DepthSnapshot] = {}
+        self._depth_repaint_timer = QTimer(self)
+        self._depth_repaint_timer.setSingleShot(True)
+        self._depth_repaint_timer.timeout.connect(self._recompose_depth_surface)
         # 主题2 的展开是**全列表级**的：点任意一行价格＝把所有行隐藏的内容一起
         # 显示出来（用户口径 2026-09-23），而不是只展开被点的那一只。
         self._theme2_all_expanded = False
@@ -650,6 +654,22 @@ class TickerWindow(QWidget):
             if symbol is not None and symbol.code == snapshot.symbol:
                 row.update_depth(snapshot)
 
+    def _schedule_depth_repaint(self) -> None:
+        if self._config.display_theme == "theme3" and not self._depth_repaint_timer.isActive():
+            self._depth_repaint_timer.start(0)
+
+    def _recompose_depth_surface(self) -> None:
+        # Drop the ancestor's cached opacity pixmap as well as the child's dirty
+        # region. Defer until callbacks finish; never recreate/delete the effect
+        # inside a paint or resize event. All stock updates in a turn coalesce.
+        effect = self.rows_host.graphicsEffect()
+        if effect is not None and effect.isEnabled():
+            effect.setEnabled(False)
+            effect.setEnabled(True)
+        self.rows_host.update()
+        self.scroll.viewport().update()
+        self.update()
+
     def show_mcp_notification(self, title: str, body: str) -> None:
         self.title_bar.push_bell(title, body)
 
@@ -675,6 +695,8 @@ class TickerWindow(QWidget):
             if row is None:
                 row = QuoteRow(quote.symbol)
                 row.apply_config(scaled)
+                row.sparkline.depth_invalidated.connect(self._schedule_depth_repaint)
+                row.sparkline.depth_painted.connect(self.depth_painted, Qt.QueuedConnection)
                 row.theme2_expand_requested.connect(self._on_theme2_expand_requested)
                 if self._theme2_all_expanded:
                     # 全展开期间来了新行：跟上当前状态，别留一只折叠的。

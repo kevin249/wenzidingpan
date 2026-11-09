@@ -80,14 +80,15 @@ with tempfile.TemporaryDirectory() as directory:
     app.window._sync_rows([Quote.from_prices('603986', 'test', 10, 10)])
     app.window.show()
     row = app.window._rows['603986']
-    images, volumes, errors = [], [], []
+    images, volumes, errors, painted = [], [], [], []
+    app.window.depth_painted.connect(lambda snapshot, shown: painted.append(snapshot) if shown else None)
     sys.excepthook = lambda *args: errors.append(str(args[1]))
     timer = QTimer()
     def check():
-        snapshot = row.sparkline._depth
+        snapshot = painted[-1] if painted else None
         if snapshot and (not volumes or snapshot.levels[0].volume != volumes[-1]):
             volumes.append(snapshot.levels[0].volume)
-            images.append(row.sparkline.grab().toImage())
+            images.append(app.window.grab().toImage())
         if len(volumes) >= 3 and bs_started.is_set():
             timer.stop()
             app.quit()

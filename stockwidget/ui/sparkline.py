@@ -10,7 +10,7 @@ from collections import deque
 from datetime import datetime
 import math
 
-from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPen, QPolygonF
 from PySide6.QtWidgets import QWidget
 
@@ -39,6 +39,9 @@ ANNOTATION_COLOR = QColor(185, 190, 202)  # 「成交量 / 十档」这类小字
 
 
 class Sparkline(SizedWidget):
+    depth_invalidated = Signal()
+    depth_painted = Signal(object, bool)
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._samples: deque[float] = deque(maxlen=SAMPLE_LEN)
@@ -78,6 +81,7 @@ class Sparkline(SizedWidget):
         self._depth: DepthSnapshot | None = None
         self._show_depth = True
         self._depth_expired = False
+        self._last_depth_paint = None
         self._depth_clock = QTimer(self)
         self._depth_clock.setInterval(1000)
         self._depth_clock.timeout.connect(self._check_depth_age)
@@ -177,12 +181,14 @@ class Sparkline(SizedWidget):
                 self.setToolTip("")
             self._check_depth_age()
             self.update()
+            self.depth_invalidated.emit()
 
     def _check_depth_age(self) -> None:
         expired = bool(self._depth and depth_is_stale(self._depth))
         if expired != self._depth_expired:
             self._depth_expired = expired
             self.update()
+            self.depth_invalidated.emit()
 
     def set_tdw_power(self, power, *, show_levels=True):
         if (power, show_levels) != (self._tdw_power, self._show_tdw_levels):
@@ -374,12 +380,13 @@ class Sparkline(SizedWidget):
             label = "L2 过期·等待新数据" if depth_is_stale(snapshot) or "source_stale" in snapshot.reason else "L2 暂无新数据"
             painter.drawText(QRectF(0, 1, width, height), Qt.AlignRight | Qt.AlignTop, label)
             painter.restore()
+            self._record_depth_paint(snapshot, False)
             return
 
         # Keep the entire book independent of the candle price window.
         pad = max(.5, self._depth_line_width / 2)
         label_height = QFontMetrics(self._annotation_font).height()
-        if self._show_high_low and height >= 4 * label_height:
+        if (self._show_high_low or self._card_style) and height >= 4 * label_height:
             pad = max(pad, label_height + 1)
         pad = min(pad, max(0.0, (height - 1) / 2))
         rows = depth_rows(snapshot.levels, pad, height - pad, center_gap=.5)
@@ -397,8 +404,11 @@ class Sparkline(SizedWidget):
         # Each source level keeps its own floating-point Y and individual size.
         # Never sum neighboring prices merely because they share a screen pixel.
         # Thin strokes leave room between levels when the price range permits it.
+        pixels_per_unit = max_width / maximum
         for y, level in sorted(rows, key=lambda item: item[1].volume, reverse=True):
-            bar_width = min(max_width, max(1.0, max_width * level.volume / maximum))
+            # A single linear scale for the whole book, including subpixel bars.
+            # No per-level cap or 1px floor that can flatten different volumes.
+            bar_width = pixels_per_unit * level.volume
             red_side = "ask" if self._card_style and self._book_scheme == "us" else "bid"
             color = self._paint_color(DEPTH_BID_COLOR if level.side == red_side else DEPTH_ASK_COLOR,
                                       255 if self._grayscale else 215)
@@ -411,7 +421,7 @@ class Sparkline(SizedWidget):
             painter.drawLine(QPointF(max(0, right - max_width), mid), QPointF(right, mid))
         painter.restore()
         painter.save()
-        status = []
+        status = [f"L2 {depth_time_label(snapshot)}"] if self._card_style else []
         if snapshot.using_cached_full_depth:
             status.append("缓存")
         if snapshot.depth_mode != DEPTH_FULL and not snapshot.full_depth:
@@ -419,9 +429,19 @@ class Sparkline(SizedWidget):
         if status:
             painter.setFont(self._annotation_font)
             painter.setPen(self._text_color(ANNOTATION_COLOR))
-            painter.drawText(QRectF(width - max_width, 1, max_width, height),
-                             Qt.AlignRight | Qt.AlignTop, "·".join(status))
+            caption = "·".join(status)
+            label_width = min(width, max(max_width, QFontMetrics(self._annotation_font).horizontalAdvance(caption) + 4))
+            painter.drawText(QRectF(width - label_width, 1, label_width, height),
+                             Qt.AlignRight | Qt.AlignTop, caption)
         painter.restore()
+        self._record_depth_paint(snapshot, True)
+
+    def _record_depth_paint(self, snapshot, displayed):
+        # Emit once per delivered frame, after drawing, never on mere receipt.
+        state = (snapshot, displayed)
+        if state != self._last_depth_paint:
+            self._last_depth_paint = state
+            self.depth_painted.emit(snapshot, displayed)
 
     def paintEvent(self, event) -> None:  # noqa: N802 - Qt 命名
         points = self.points

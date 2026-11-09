@@ -727,3 +727,29 @@ def test_depth_age_timer_invalidates_a_frozen_frame_without_quote_updates(app, m
     chart.set_depth(None)
     assert not chart._depth_clock.isActive()
     chart.close()
+
+
+def test_theme3_book_uses_one_linear_scale_even_for_subpixel_orders(app, monkeypatch):
+    from PySide6.QtGui import QPainter
+    chart = Sparkline()
+    chart.set_card_style(True)
+    chart.set_display_options(depth_width=1800, depth_line_width=.73)
+    chart.set_depth(DepthSnapshot('603986', available=True, full_depth=True,
+        levels=tuple(DepthLevel('bid', 10 - i * .01, v)
+                     for i, v in enumerate([1, 100, 1000, 100000]))))
+    image = QImage(400, 200, QImage.Format_ARGB32_Premultiplied)
+    widths = []
+    draw = QPainter.drawLine
+    def record(painter, *args):
+        if len(args) == 2 and painter.pen().widthF() == pytest.approx(.73):
+            widths.append(abs(args[1].x() - args[0].x()))
+        return draw(painter, *args)
+    monkeypatch.setattr(QPainter, 'drawLine', record)
+    for span in (399, 120):
+        widths.clear()
+        limit = chart._book_width(400, span)
+        with QPainter(image) as painter:
+            chart._draw_depth(painter, 400, 200, None, limit)
+        assert widths == pytest.approx([span * .5 * v / 100000 for v in (100000, 1000, 100, 1)])
+        assert max(widths) <= span * .5
+    chart.close()
