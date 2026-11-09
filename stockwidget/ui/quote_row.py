@@ -660,24 +660,35 @@ class QuoteRow(SizedWidget):
             for column in range(self._layout.columnCount()):
                 self._layout.setColumnStretch(column, 0)
             if top_bottom:
-                if card:
-                    header = (self.name_label, self.dark_box, self.price_label, self.percent_label)
-                elif wrap_header:
-                    header = (self.name_label, self.price_label, self.dark_box, self.percent_label)
+                if card and show_chart and self.price_label.isHidden():
+                    # Two compact header rows: name above dark flow and percent.
+                    # The dark flow starts at the name X; percent follows it.
+                    if not self.name_label.isHidden():
+                        self._layout.addWidget(self.name_label, 0, 0, 1, 2)
+                    dark_visible = not self.dark_box.isHidden()
+                    if dark_visible:
+                        self._layout.addWidget(self.dark_box, 1, 0, Qt.AlignLeft)
+                    if not self.percent_label.isHidden():
+                        self._layout.addWidget(self.percent_label, 1, int(dark_visible), Qt.AlignLeft)
+                    self._layout.addWidget(self.sparkline, 2, 0, 1, 2, chart_align)
+                    self._layout.setColumnStretch(1, 1)
                 else:
-                    header = text_widgets
-                visible = [widget for widget in header if not widget.isHidden()]
-                columns = max(1, min(2, len(visible)) if wrap_header else len(visible))
-                for i, widget in enumerate(visible):
-                    self._layout.addWidget(widget, i // columns, i % columns)
-                text_rows = (len(visible) + columns - 1) // columns
-                if show_chart:
-                    self._layout.addWidget(self.sparkline, text_rows, 0, 1, columns, chart_align)
-                # On theme 3 the name takes spare width; dark flow and percent
-                # sit next to each other at the right edge of the header.
-                stretch = (visible.index(self.name_label) if card and self.name_label in visible
-                           else columns - 1)
-                self._layout.setColumnStretch(stretch, 1)
+                    if card:
+                        header = (self.name_label, self.dark_box, self.price_label, self.percent_label)
+                    elif wrap_header:
+                        header = (self.name_label, self.price_label, self.dark_box, self.percent_label)
+                    else:
+                        header = text_widgets
+                    visible = [widget for widget in header if not widget.isHidden()]
+                    columns = max(1, min(2, len(visible)) if wrap_header else len(visible))
+                    for i, widget in enumerate(visible):
+                        self._layout.addWidget(widget, i // columns, i % columns)
+                    text_rows = (len(visible) + columns - 1) // columns
+                    if show_chart:
+                        self._layout.addWidget(self.sparkline, text_rows, 0, 1, columns, chart_align)
+                    stretch = (visible.index(self.name_label) if card and self.name_label in visible
+                               else columns - 1)
+                    self._layout.setColumnStretch(stretch, 1)
             elif stacked:
                 next_row = 0
 

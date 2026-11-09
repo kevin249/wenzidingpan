@@ -18,7 +18,7 @@ from ..config import DEFAULT_GRAYSCALE_LEVEL
 from ..local_bs import SAMPLE_LEN
 from ..kline import Bar
 from ..market_hours import SHANGHAI_TZ
-from ..mcp_depth import DEPTH_FULL, DepthSnapshot, depth_is_stale, depth_time_label
+from ..mcp_depth import DepthSnapshot, depth_is_stale, depth_time_label
 from . import tdw_overlay
 from .price_scale import PriceScale
 from .price_labels import draw_price_labels
@@ -448,29 +448,13 @@ class Sparkline(SizedWidget):
                 painter.drawLine(QPointF(max(0, right - max_width), mid), QPointF(right, mid))
             painter.restore()
         painter.save()
-        status = [f"L2 {depth_time_label(snapshot)}"] if self._card_style else []
-        if self._card_style and y_of is not None:
-            status.append(f"窗内{len(rows)}/{len(snapshot.levels)}档")
-        if snapshot.using_cached_full_depth:
-            status.append("缓存")
-        if snapshot.depth_mode != DEPTH_FULL and not snapshot.full_depth:
-            status.append("降级")
-        if status:
+        if self._card_style:
             painter.setFont(self._annotation_font)
             painter.setPen(self._text_color(ANNOTATION_COLOR))
-            caption = "·".join(status)
+            caption = depth_time_label(snapshot).rsplit(" ", 1)[-1]
             label_width = min(width, max(max_width, QFontMetrics(self._annotation_font).horizontalAdvance(caption) + 4))
             painter.drawText(QRectF(width - label_width, 1, label_width, height),
                              Qt.AlignRight | Qt.AlignTop, caption)
-            if self._card_style and width >= 300:
-                bids = (level.price for level in snapshot.levels if level.side == "bid")
-                asks = (level.price for level in snapshot.levels if level.side == "ask")
-                best_bid = max(bids, default=None)
-                best_ask = min(asks, default=None)
-                if best_bid is not None and best_ask is not None:
-                    detail = f"买{best_bid:g} 卖{best_ask:g} · 变{len(self._changed_depth_keys)}档"
-                    painter.drawText(QRectF(0, label_height + 1, width, label_height + 2),
-                                     Qt.AlignRight | Qt.AlignTop, detail)
         painter.restore()
         self._record_depth_paint(snapshot, bool(rows))
 
@@ -506,8 +490,6 @@ class Sparkline(SizedWidget):
         if axes:
             if self._minutes and total_height >= 115:
                 footer.append(f"分时 {self._minutes[-1]}")
-                if self._show_depth and self._depth and self._depth.received_at:
-                    footer.append(f"盘口{depth_time_label(self._depth)}")
                 total_height -= metrics.height() + 4
             axis_width = metrics.horizontalAdvance(f"{max(points):.2f}") + 6
             if self._card_style and self._show_live_price and self._live_price is not None:
@@ -574,7 +556,7 @@ class Sparkline(SizedWidget):
                 # what the available rows can hold without overlap.
                 plot_height = max(1, height - 2 * price_inset - 4)
                 wanted = max(3, 4 + int(4 * math.log2(1 + span)))
-                target = max(span / wanted, span * (2 * label_height) / plot_height)
+                target = max(span / (3 * wanted), span * max(8, label_height * .68) / plot_height)
             else:
                 target = span / max(2, min(8, height // (label_height + 8)))
             unit = 10 ** math.floor(math.log10(target))
@@ -612,8 +594,6 @@ class Sparkline(SizedWidget):
                 painter.setPen(self._text_color(self._color, alpha=182))
                 footer_rect = QRectF(0, total_height + 2, self.width(), label_height)
                 painter.drawText(footer_rect, Qt.AlignLeft | Qt.AlignVCenter, footer[0])
-                if len(footer) == 2 and metrics.horizontalAdvance("  ".join(footer)) <= self.width():
-                    painter.drawText(footer_rect, Qt.AlignRight | Qt.AlignVCenter, footer[1])
             if start is not None and end is not None and end > start and self._averages:
                 average_path = QPainterPath()
                 for clock, price in self._averages:

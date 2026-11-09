@@ -705,7 +705,7 @@ def test_old_depth_is_hidden_and_source_time_is_shown_even_after_fresh_receipt(a
     chart.grab()
     assert not bars
     assert 'L2 过期·等待新数据' in texts
-    assert '盘口采样 10:00:00' in texts
+    assert 'L2 过期·等待新数据' in texts
     assert not any('采样 10:35:00' in text for text in texts)
     chart.close()
 
@@ -765,7 +765,8 @@ def test_theme3_marks_live_book_changes_without_stretching_bars(app, monkeypatch
         DepthLevel('bid', 242.2, 3), DepthLevel('ask', 242.5, 3000))))
     chart.grab()
     chart.set_depth(DepthSnapshot('603986', available=True, levels=(
-        DepthLevel('bid', 242.3, 4), DepthLevel('ask', 242.5, 3000))))
+        DepthLevel('bid', 242.3, 4), DepthLevel('ask', 242.5, 3000)),
+        received_at=time.time()))
     captions, changed_widths, original_widths = [], [], []
     original_text, original_line = QPainter.drawText, QPainter.drawLine
     def record_text(painter, *args):
@@ -782,7 +783,8 @@ def test_theme3_marks_live_book_changes_without_stretching_bars(app, monkeypatch
     monkeypatch.setattr(QPainter, 'drawText', record_text)
     monkeypatch.setattr(QPainter, 'drawLine', record_line)
     chart.grab()
-    assert any('买242.3 卖242.5 · 变2档' in s for s in captions)
+    assert any(len(s) == 8 and s[2] == ':' and s[5] == ':' for s in captions)
+    assert not any('L2 ' in s or '窗内' in s or '变2档' in s for s in captions)
     assert len(changed_widths) == len(original_widths) == 1
     assert changed_widths[0] / original_widths[0] == pytest.approx(4 / 3000)
     chart.close()
@@ -823,7 +825,7 @@ def test_theme3_depth_uses_the_same_price_axis_as_candles(app, monkeypatch):
         sorted([price_to_y[0](241.5), price_to_y[0](242.5)]))
     assert max(end.x() - start.x() for start, end in positions) == pytest.approx(
         2 * min(end.x() - start.x() for start, end in positions))
-    assert any('窗内2/3档' in s for s in texts)
+    assert '时间未知' in texts
     chart.close()
 
 
@@ -849,25 +851,26 @@ def test_left_corner_prices_keep_plain_readable_font_on_short_theme3_chart(app, 
     assert labels[0][2].x() == labels[1][2].x()
 
 
-def test_tall_theme3_price_axis_uses_available_height_with_blank_rows(app, monkeypatch):
+def test_theme3_price_axis_doubles_visible_labels_at_same_height(app, monkeypatch):
     from PySide6.QtGui import QPainter
     chart = Sparkline()
-    chart.resize(420, 600)
+    chart.resize(420, 300)
     chart.set_card_style(True)
-    chart.set_display_options(show_tdw=False)
-    chart.set_series([10, 13])
+    chart.set_display_options(show_tdw=True)
+    chart.set_series([241, 243])
     chart.set_annotations(None, [], show_signals=False, show_open_line=False,
                           show_high_low=False, show_fill=False, grayscale=False)
     labels = []
     original = QPainter.drawText
     def record(painter, *args):
-        if isinstance(args[-1], str) and args[-1].replace('.', '', 1).isdigit() and '.' in args[-1]:
+        if (isinstance(args[-1], str) and args[-1].replace('.', '', 1).isdigit()
+                and '.' in args[-1] and 240 < float(args[-1]) < 244):
             labels.append(args[0].center().y())
         return original(painter, *args)
     monkeypatch.setattr(QPainter, 'drawText', record)
     chart.grab()
-    assert len(labels) > 8
-    assert all(b - a >= 2 * chart._annotation_font.pixelSize() - 2
+    assert len(labels) >= 18  # Before densification this window showed at most 9.
+    assert all(b - a >= chart._annotation_font.pixelSize() * .9
                for a, b in zip(sorted(labels), sorted(labels)[1:]))
     chart.close()
 

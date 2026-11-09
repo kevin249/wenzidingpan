@@ -9,8 +9,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 
 try:
-    from PySide6.QtCore import QEvent, QPoint, QPointF, QSize, Qt
-    from PySide6.QtGui import QColor, QImage, QMouseEvent, QPainter
+    from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, QSize, Qt
+    from PySide6.QtGui import QColor, QFontMetrics, QImage, QMouseEvent, QPainter
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication
 except (ImportError, OSError) as error:
@@ -131,7 +131,11 @@ def test_card_background_from_settings_survives_resize_and_theme_switch(app, car
     assert window.grab().toImage().pixelColor(window.scroll.mapTo(window, QPoint(2, 2))).alpha() == 0
     row = window._rows[quote.symbol]
     image = window.grab().toImage()
-    text_rect = row.price_label.geometry().translated(row.mapTo(window, QPoint()))
+    chart = row.sparkline
+    assert chart._show_live_price and row.price_label.isHidden()
+    label_width = QFontMetrics(chart._live_price_font).horizontalAdvance(f'{chart._live_price:.2f}')
+    origin = chart.mapTo(window, QPoint(chart.width() - label_width - 8, 0))
+    text_rect = QRect(origin, QSize(label_width + 8, chart.height()))
     assert max(image.pixelColor(x, y).alpha()
                for x in range(text_rect.left(), text_rect.right() + 1)
                for y in range(text_rect.top(), text_rect.bottom() + 1)) > 150
@@ -238,11 +242,13 @@ def test_live_quote_uses_price_axis_and_follows_updates(app, card, monkeypatch):
     assert guides and guides[-1] != first_y
 
 
-def test_theme3_header_keeps_percent_next_to_dark_flow(app, card):
+def test_theme3_dark_and_percent_align_below_stock_name(app, card):
     window, _, quote, _ = card
     row = window._rows[quote.symbol]
     app.processEvents()
     assert row.dark_box.isVisible() and row.percent_label.isVisible()
+    assert row.dark_box.geometry().left() == row.name_label.geometry().left()
+    assert row.dark_box.geometry().top() > row.name_label.geometry().top()
     assert 0 <= row.percent_label.geometry().left() - row.dark_box.geometry().right() <= \
         row._layout.horizontalSpacing() + 2
 
