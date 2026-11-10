@@ -140,6 +140,35 @@ def test_minute_history_warms_sparse_live_feed_and_is_cached(monkeypatch):
     assert RealtimeFeed(CODE, "sina", minute_history=True)._minute_source == "auto"
 
 
+def test_theme3_minute_history_advances_past_frozen_trades_and_live_recovers(monkeypatch):
+    from stockwidget import realtime
+    from stockwidget.kline import Kline
+
+    feed = RealtimeFeed(CODE, "eastmoney", minute_fallback=True)
+    at = START.replace(minute=30, second=30)
+    previous_day = [Bar(f"2026-11-04 14:{minute:02}", 10, 14, 10, 10) for minute in range(36, 60)]
+    minutes = previous_day + [Bar(DAY+" 09:30", 10, 14, 10, 10)]
+    trades = [Bar(DAY+" 09:30:20", 10, 14, 10, 10)]
+    monkeypatch.setattr(realtime, "fetch_kline", lambda *args, **kwargs: Kline(bars=list(minutes)))
+    monkeypatch.setattr(feed, "_eastmoney", lambda *args: trades)
+
+    opening = feed.fetch(now=at)
+    assert list(opening.tdw_points) == [DAY+" 09:30:20"]
+    assert opening.tdw_points[DAY+" 09:30:20"].power == 0
+
+    minutes.append(Bar(DAY+" 09:31", 10, 14, 10, 14))
+    at += timedelta(minutes=1)
+    fallback = feed.fetch(now=at)
+    assert fallback.minutes == ["09:30", "09:31"]
+    assert fallback.tdw_points[DAY+" 09:31"].power == pytest.approx(1.6)
+
+    trades = [Bar(DAY+" 09:31:40", 10, 14, 10, 12)]
+    recovered = feed.fetch(now=at + timedelta(seconds=15))
+    assert recovered.minutes == ["09:31:40"]
+    assert list(recovered.tdw_points) == [DAY+" 09:30", DAY+" 09:31:40"]
+    assert recovered.tdw_points[DAY+" 09:31:40"].power == pytest.approx(0.8)
+
+
 @pytest.mark.parametrize("configured", ["auto", "sina"])
 def test_fallback_only_uses_eastmoney_and_tencent_and_rewarms_on_switch(monkeypatch, configured):
     feed = RealtimeFeed(CODE, configured)

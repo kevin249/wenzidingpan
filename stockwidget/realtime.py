@@ -1,4 +1,4 @@
-"""Build local TDW bars from timestamped Eastmoney / Tencent transaction reports."""
+"""Build local TDW from minute candles and timestamped transaction reports."""
 
 from __future__ import annotations
 
@@ -12,8 +12,8 @@ from datetime import datetime, timedelta
 import requests
 
 from . import tdw
-from .intraday import PriceSeries, Trend, _trade_date
-from .kline import Bar, PERIOD_1M, fetch_kline
+from .intraday import PriceSeries, Trend, _is_trading_minute, _trade_date
+from .kline import Bar, MINUTE_CACHE_TTL, PERIOD_1M, fetch_kline
 from .market_hours import SHANGHAI_TZ, is_a_share_active_time
 from .providers.base import REQUEST_TIMEOUT, USER_AGENT
 from .symbols import classify
@@ -88,7 +88,7 @@ def _tx_value(text, key):
 class RealtimeFeed:
     """One serial worker per symbol; never combine OHLC or EMA state across sources."""
 
-    def __init__(self, symbol: str, source: str, session=None, *, minute_history=False):
+    def __init__(self, symbol: str, source: str, session=None, *, minute_history=False, minute_fallback=False):
         self.symbol = classify(symbol)
         self.sources = (source,) if source in ("eastmoney", "tencent") else ("eastmoney", "tencent")
         self.session = session or requests.Session()
@@ -100,8 +100,12 @@ class RealtimeFeed:
         self._trend: Trend | None = None
         self._forming = ""
         self._next_probe = 0.0
-        self._load_minute_history = minute_history
+        self._load_minute_history = minute_history or minute_fallback
+        self._minute_fallback = minute_fallback
         self._history_bars: list[Bar] = []
+        self._applied_history = self._history_bars
+        self._minute_trend: Trend | None = None
+        self._history_source = ""
         self._history_day = ""
         self._next_history_fetch = 0.0
         # Sina has no 1-minute K API; its live transaction fallback already
@@ -110,18 +114,27 @@ class RealtimeFeed:
 
     def _warm_minutes(self, at: datetime) -> list[Bar]:
         if not self._load_minute_history:
-            return []
+            return self._history_bars
         day = at.date().isoformat()
         if day != self._history_day:
             self._history_bars, self._next_history_fetch = [], 0.0
+            self._minute_trend = None
             self._history_day = day
         if at.timestamp() >= self._next_history_fetch:
-            self._next_history_fetch = at.timestamp() + 60
+            self._next_history_fetch = at.timestamp() + (MINUTE_CACHE_TTL if self._minute_fallback else 60)
             try:
                 history = fetch_kline(self.symbol.code, PERIOD_1M, limit=300,
                                       adjust=False, source=self._minute_source)
                 if history and history.bars:
-                    self._history_bars = [bar for bar in history.bars if bar.time[:10] == day]
+                    cutoff = at.strftime("%Y-%m-%d %H:%M")
+                    bars = [bar for bar in history.bars if bar.time <= cutoff
+                            and (self._minute_fallback or bar.time[:10] == day)
+                            and _is_trading_minute(bar.time[11:16])]
+                    if bars and (not self._history_bars or bars[-1].time >= self._history_bars[-1].time):
+                        if bars != self._history_bars or history.source != self._history_source:
+                            self._history_bars = bars
+                            self._history_source = history.source
+                            self._minute_trend = None
             except (requests.RequestException, ValueError, TypeError, OSError):
                 pass
         return self._history_bars
@@ -223,10 +236,43 @@ class RealtimeFeed:
                     self._next_probe = observed.timestamp() + 30
                     candidate = trend
                     continue
-                return trend
+                candidate = trend
+                break
             except (requests.RequestException, ValueError, TypeError, KeyError, IndexError, OverflowError, OSError):
                 continue
+        if self._minute_fallback:
+            observed = at if now is not None else datetime.now(SHANGHAI_TZ)
+            minute_trend = self._fallback_to_minutes(observed, candidate)
+            if minute_trend is not None:
+                return minute_trend
         return candidate
+
+    def _fallback_to_minutes(self, at: datetime, live: Trend | None) -> Trend | None:
+        history = self._warm_minutes(at)
+        day = at.date().isoformat()
+        if not history or history[-1].time[:10] != day:
+            return None
+        latest_live = live if live is not None else self._trend
+        # Keep the higher-resolution candle whenever transactions cover the latest minute.
+        if latest_live is not None and latest_live.realtime_bars[-1].time[:16] >= history[-1].time:
+            return None
+        latest = history[-1].time
+        forming = latest if latest == at.strftime("%Y-%m-%d %H:%M") and is_a_share_active_time(at) else ""
+        cached = self._minute_trend
+        point = cached.tdw_points.get(latest) if cached is not None else None
+        if cached is None or (point is not None and point.provisional != bool(forming)):
+            start = bisect_left(history, day, key=lambda bar: bar.time)
+            bars = history[start:]
+            points = tdw.calculate(history, PERIOD_1M, at, forming=forming)
+            self._minute_trend = Trend(
+                prices=PriceSeries((bar.close for bar in bars), self.symbol.code),
+                minutes=[bar.time[11:16] for bar in bars], volumes=[bar.volume for bar in bars],
+                high_price=max(bar.high for bar in bars), low_price=min(bar.low for bar in bars),
+                open_price=bars[0].open if bars[0].time[11:16] in ("09:30", "09:31") else None,
+                source=self._history_source, trade_date=day, fetched_at=at.timestamp(), realtime_bars=bars,
+                tdw_points={bar.time: points[bar.time] for bar in bars if bar.time in points},
+            )
+        return self._minute_trend
 
     def _merge(self, source: str, bars: list[Bar], at: datetime) -> Trend | None:
         limit = at.strftime("%Y-%m-%d %H:%M:%S")
@@ -248,27 +294,33 @@ class RealtimeFeed:
         # successful fetch confirms the last reported second, even on a quiet stock.
         same_session = (bars[-1].time[11:13] < "12") == (at.hour < 12)
         forming = bars[-1].time if same_session and is_a_share_active_time(at) and _session(limit[11:]) else ""
-        if continuous and self._forming == forming and self._bars[start:] == bars:
+        history = self._warm_minutes(at)
+        if (continuous and self._forming == forming and self._bars[start:] == bars
+                and self._applied_history is history):
             return self._trend
         self._bars = self._bars[:start] + bars
         self._provider, self._forming = source, forming
+        self._applied_history = history
         live_minutes = minute_bars(self._bars)
-        history = [bar for bar in self._warm_minutes(at) if bar.time < live_minutes[0].time]
-        minute_points = tdw.calculate(history + live_minutes, PERIOD_1M, at,
+        preceding = [bar for bar in history if bar.time < live_minutes[0].time]
+        minute_points = tdw.calculate(preceding + live_minutes, PERIOD_1M, at,
                                       forming=live_minutes[-1].time if forming else "")
+        points = {bar.time: minute_points[bar.time] for bar in preceding
+                  if self._minute_fallback and bar.time[:10] == day and bar.time in minute_points}
+        points.update(minute_power_on_seconds(self._bars, minute_points))
         self._trend = Trend(
             prices=PriceSeries((bar.close for bar in self._bars), self.symbol.code),
             minutes=[bar.time[11:] for bar in self._bars], volumes=[bar.volume for bar in self._bars],
             high_price=max(bar.high for bar in self._bars), low_price=min(bar.low for bar in self._bars),
             open_price=self._bars[0].open if self._bars[0].time[11:16] == "09:30" else None,
             source=source, trade_date=day, fetched_at=at.timestamp(), realtime_bars=self._bars,
-            tdw_points=minute_power_on_seconds(self._bars, minute_points),
+            tdw_points=points,
         )
         return self._trend
 
 
 def with_price_history(live: Trend, history: Trend | None) -> Trend:
-    """Use earlier chart prices for context. Only transaction bars carry a TDW result."""
+    """Use earlier chart prices for context on the same trading day."""
     if not history or not live.minutes or live.trade_date != history.trade_date:
         return live
     first = bisect_left(history.minutes, live.minutes[0][:5])

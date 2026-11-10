@@ -91,7 +91,8 @@ class Trend:
         if not bars:
             return self
         end = datetime.fromisoformat(bars[-1].time)
-        cutoff = (end - timedelta(minutes=5)).isoformat(sep=" ", timespec="seconds")
+        precision = "minutes" if len(bars[-1].time) == 16 else "seconds"
+        cutoff = (end - timedelta(minutes=5)).isoformat(sep=" ", timespec=precision)
         start = bisect_left(bars, cutoff, key=lambda bar: bar.time)
         bars = bars[start:]
         return replace(
@@ -103,7 +104,7 @@ class Trend:
         )
 
     def __bool__(self) -> bool:
-        return bool(self.prices) if self.recent_view else len(self.prices) >= 2
+        return bool(self.prices) if self.recent_view or self.realtime_bars else len(self.prices) >= 2
 
 
 def _secid(symbol: Symbol) -> str:

@@ -246,6 +246,9 @@ def draw_power_panel(painter, power, x_of, right, width, height, paint_color, te
             old_x, old_value = previous
             painter.setPen(QPen(red if value >= old_value else green, 1.3))
             painter.drawLine(QPointF(old_x, y_of(old_value)), QPointF(x, y_of(value)))
+        else:
+            painter.setPen(QPen(red, 1.3))
+            painter.drawPoint(QPointF(x, y_of(value)))
         previous = (x, value)
     painter.restore()
     return guide_rows
