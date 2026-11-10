@@ -288,7 +288,8 @@ def test_active_bs_fetch_requests_all_today_markers(monkeypatch):
     assert calls == [
         (
             "get_volatility_bs",
-            {"symbol": "600000", "trade_date": "", "limit": 1000},
+            {"symbol": "600000", "trade_date": "", "limit": 1000,
+             "include_candidates": False},
         )
     ]
     assert payload["markers"][0]["type"] == "buy_first"
@@ -529,14 +530,17 @@ def test_bs_push_during_request_is_coalesced_and_does_not_force_depth(monkeypatc
 
 
 def test_bs_failure_retries_without_waiting_one_minute_even_after_close(monkeypatch):
+    import time
     monkeypatch.setattr(mcp_depth, 'active_updates_allowed', lambda *_: False)
     monkeypatch.setattr(mcp_depth, 'is_a_share_active_time', lambda *_: False)
-    monkeypatch.setattr(mcp_depth, 'DEPTH_RETRY_SECONDS', .01)
+    monkeypatch.setattr(mcp_depth, 'BS_RETRY_SECONDS', .03)
     worker = mcp_depth.McpDepthPoller(Config(symbols=['600000'], mcp_api_key='test'))
     calls = []
+    started_at = []
 
     async def cycle(config, **kwargs):
         calls.append(kwargs)
+        started_at.append(time.monotonic())
         worker._bs_sync_ok = len(calls) > 1
         if len(calls) == 2:
             worker.stop()
@@ -550,8 +554,77 @@ def test_bs_failure_retries_without_waiting_one_minute_even_after_close(monkeypa
         worker.stop()
         assert worker.wait(3000)
     assert len(calls) == 2
+    assert started_at[1] - started_at[0] >= .025
     assert calls[1]['fetch_bs'] is True
     assert calls[1]['fetch_depth'] is False
+
+
+def test_bs_tool_uses_its_own_longer_deadline(monkeypatch):
+    from stockwidget import mcp_notifications
+    monkeypatch.setattr(mcp_notifications, 'REQUEST_TIMEOUT_SECONDS', .01)
+    monkeypatch.setattr(mcp_depth, 'BS_REQUEST_TIMEOUT_SECONDS', .1)
+    received = []
+    monkeypatch.setattr(mcp_depth, 'record_volatility_bs', received.append)
+
+    class SlowSession:
+        async def call_tool(self, name, arguments):
+            assert name == 'get_volatility_bs'
+            assert arguments['include_candidates'] is False
+            await asyncio.sleep(.03)
+            return _result({'symbol': '603986', 'markers': []})
+
+    payload = asyncio.run(mcp_depth._fetch_volatility_bs(SlowSession(), '603986'))
+    assert payload == {'symbol': '603986', 'markers': []}
+    assert received == [payload]
+
+
+def test_bs_timeout_diagnostic_is_deduplicated_until_recovery(monkeypatch):
+    from contextlib import asynccontextmanager
+    from PySide6.QtCore import Qt
+
+    worker = mcp_depth.McpBsPoller(Config(symbols=['603986'], mcp_api_key='test'))
+    errors, deadlines = [], []
+    worker.status_changed.connect(errors.append, Qt.DirectConnection)
+
+    @asynccontextmanager
+    async def client(**kwargs):
+        yield object()
+
+    @asynccontextmanager
+    async def transport(*args, **kwargs):
+        yield None, None
+
+    class Session:
+        def __init__(self, *args, **kwargs):
+            deadlines.append(kwargs['read_timeout_seconds'])
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+    attempts = iter((False, False, True, False))
+
+    async def fetch(*args):
+        if not next(attempts):
+            raise TimeoutError()
+
+    async def negotiate(*args):
+        return True
+
+    monkeypatch.setattr(mcp_depth.httpx2, 'AsyncClient', client)
+    monkeypatch.setattr(mcp_depth, 'streamable_http_client', transport)
+    monkeypatch.setattr(mcp_depth, 'ClientSession', Session)
+    monkeypatch.setattr(mcp_depth, 'negotiate_protocol', negotiate)
+    monkeypatch.setattr(mcp_depth, '_fetch_volatility_bs', fetch)
+    for _ in range(4):
+        worker._bs_sync_ok = True
+        asyncio.run(worker._fetch_cycle(worker._config, fetch_bs=True, fetch_depth=False))
+
+    assert len(errors) == 2
+    assert all('TimeoutError: get_volatility_bs 超过 45 秒' in error for error in errors)
+    assert deadlines == [mcp_depth.BS_REQUEST_TIMEOUT_SECONDS] * 4
 
 
 def test_mcp_bs_sync_stays_enabled_without_a_visible_chart():

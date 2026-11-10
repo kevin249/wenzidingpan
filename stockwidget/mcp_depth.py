@@ -29,6 +29,10 @@ DEPTH_RETRY_SECONDS = 5.0
 # 多股票严格串行：上一只深度链完成后至少留这个间隔，再请求下一只。
 DEPTH_INTER_SYMBOL_GAP_SECONDS = 0.75
 BS_POLL_SECONDS = 60.0
+# The volatility tool returns a large strategy payload even for one marker.
+# Keep its deadline separate from the fast depth request deadline.
+BS_REQUEST_TIMEOUT_SECONDS = 45.0
+BS_RETRY_SECONDS = 30.0
 MIN_THOUSAND_LEVELS = 11
 DEPTH_ERROR_FAILURES = 3
 DEPTH_MAX_AGE_SECONDS = 30.0
@@ -236,8 +240,9 @@ async def _fetch_volatility_bs(session: ClientSession, symbol: str) -> dict[str,
     result = await _bounded(
         session.call_tool(
             "get_volatility_bs",
-            arguments={"symbol": symbol, "trade_date": "", "limit": 1000},
-        )
+            arguments={"symbol": symbol, "trade_date": "", "limit": 1000,
+                       "include_candidates": False},
+        ), timeout_seconds=BS_REQUEST_TIMEOUT_SECONDS,
     )
     payload = _tool_payload(result)
     record_volatility_bs(payload)
@@ -366,6 +371,9 @@ class McpDepthPoller(QThread):
         self._bs_sync_ok = True
         self._last_status = ""
         self._last_bs_fetch_at = 0.0
+        self._bs_retry_at = 0.0
+        self._bs_retry_pending = False
+        self._bs_errors: dict[str, str] = {}
         self._depth_modes: dict[str, str] = {}
         self._next_depth_due: dict[str, float] = {}
         self._last_full_depth: dict[str, DepthSnapshot] = {}
@@ -406,6 +414,9 @@ class McpDepthPoller(QThread):
                 self._next_depth_due.clear()
                 self._last_full_depth.clear()
                 self._full_depth_failures.clear()
+                self._bs_retry_pending = False
+                self._bs_retry_at = 0.0
+                self._bs_errors.clear()
                 self._explicit = True
                 self._changed.set()
                 self._wake.set()
@@ -464,17 +475,23 @@ class McpDepthPoller(QThread):
 
             fetch_depth = self._depth_enabled(config) and self._should_poll(config, explicit)
             started = time.monotonic()
-            bs_allowed = bool(explicit or bs_explicit or active_updates_allowed(config.debug_mode))
+            retry_due = self._bs_retry_pending and started >= self._bs_retry_at
+            bs_allowed = bool(explicit or bs_explicit or self._bs_retry_pending
+                              or active_updates_allowed(config.debug_mode))
             fetch_bs = self._sync_bs and self._should_fetch_bs(
-                config, explicit or bs_explicit, started - self._last_bs_fetch_at
+                config, explicit or bs_explicit or retry_due, started - self._last_bs_fetch_at
             )
             if not fetch_depth and not fetch_bs:
                 self._emit_status(
                     "已连接 · 等待下一次 B/S 同步" if bs_allowed and self._sync_bs
                     else "已休眠 · 等待交易时段或手动刷新"
                 )
-                self._wake.wait(OFF_HOURS_WAKE_SECONDS if not bs_allowed else
-                                max(0.5, BS_POLL_SECONDS - (started - self._last_bs_fetch_at)))
+                wait = OFF_HOURS_WAKE_SECONDS if not bs_allowed else max(
+                    0.5, BS_POLL_SECONDS - (started - self._last_bs_fetch_at)
+                )
+                if self._bs_retry_pending:
+                    wait = min(wait, max(0.5, self._bs_retry_at - started))
+                self._wake.wait(wait)
                 continue
 
             all_full_depth = False
@@ -487,15 +504,13 @@ class McpDepthPoller(QThread):
                     ), self._stopping, self._changed,
                 ))
                 if fetch_bs:
-                    self._last_bs_fetch_at = time.monotonic() - (
-                        0 if self._bs_sync_ok else BS_POLL_SECONDS - DEPTH_RETRY_SECONDS
-                    )
-                    if not self._bs_sync_ok:
-                        with self._lock:
-                            self._bs_explicit = True
+                    finished = time.monotonic()
+                    self._last_bs_fetch_at = finished
+                    self._bs_retry_pending = not self._bs_sync_ok
+                    self._bs_retry_at = finished + BS_RETRY_SECONDS if not self._bs_sync_ok else 0.0
                 if not self._stopping.is_set():
                     self._emit_status(
-                        "B/S 同步失败 · 5 秒后重试" if not self._bs_sync_ok
+                        f"B/S 同步失败 · {BS_RETRY_SECONDS:g} 秒后重试" if not self._bs_sync_ok
                         else _status_text(all_full_depth) if fetch_depth
                         else "已连接 · B/S 同步"
                     )
@@ -518,7 +533,7 @@ class McpDepthPoller(QThread):
                 else max(0.5, BS_POLL_SECONDS - (time.monotonic() - self._last_bs_fetch_at))
             )
             if not self._bs_sync_ok:
-                remaining = min(remaining, DEPTH_RETRY_SECONDS)
+                remaining = min(remaining, BS_RETRY_SECONDS)
             if not self._stopping.is_set():
                 self._wake.wait(remaining)
 
@@ -572,7 +587,9 @@ class McpDepthPoller(QThread):
                 terminate_on_close=False,
             ) as (read_stream, write_stream):
                 async with ClientSession(
-                    read_stream, write_stream, read_timeout_seconds=REQUEST_TIMEOUT_SECONDS,
+                    read_stream, write_stream,
+                    read_timeout_seconds=(BS_REQUEST_TIMEOUT_SECONDS if self._sync_bs
+                                          else REQUEST_TIMEOUT_SECONDS),
                 ) as session:
                     await negotiate_protocol(session)
                     for raw_symbol in config.symbols:
@@ -590,14 +607,21 @@ class McpDepthPoller(QThread):
                         if fetch_bs:
                             try:
                                 await _fetch_volatility_bs(session, symbol.code)
+                                self._bs_errors.pop(symbol.code, None)
                                 # 独立通知 UI：不能等待下一次行情快照才出现标记。
                                 self.bs_ready.emit(symbol.code)
                             except Exception as exc:
                                 self._bs_sync_ok = False
-                                # B/S 与盘口恢复独立，失败可诊断但不影响千档。
-                                self.status_changed.emit(
-                                    f"B/S {symbol.code} 读取失败：{type(exc).__name__}: {str(exc)[:80]}"
-                                )
+                                detail = (f"TimeoutError: get_volatility_bs 超过 "
+                                          f"{BS_REQUEST_TIMEOUT_SECONDS:g} 秒"
+                                          if isinstance(exc, TimeoutError) else _describe_error(exc))
+                                # Keep one diagnostic per unchanged failure; success clears it.
+                                if self._bs_errors.get(symbol.code) != detail:
+                                    self._bs_errors[symbol.code] = detail
+                                    self.status_changed.emit(
+                                        f"B/S {symbol.code} 读取失败：{detail} · "
+                                        f"{BS_RETRY_SECONDS:g} 秒后重试"
+                                    )
 
                         if depth_due:
                             # 绝不并发，也不背靠背挤服务器：上一只完整结束后留空档。

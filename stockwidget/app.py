@@ -365,7 +365,7 @@ class WidgetApp:
             print(f"[MCP千档] {status}", flush=True)
 
     def _on_bs_status(self, status: str) -> None:
-        if status != "已关闭" and not status.startswith("已连接"):
+        if status != "已关闭" and not status.startswith(("已连接", "B/S 同步失败")):
             print(f"[MCP B/S] {status}", flush=True)
 
     def _on_mcp_status(self, status: str) -> None:
