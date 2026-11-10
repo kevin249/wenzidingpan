@@ -216,7 +216,7 @@ def test_all_switches_off_still_prints_the_body(dispatch, capsys):
 def test_consecutive_notifications_get_a_blank_divider_between_them(dispatch, capsys):
     dispatch(Config(), times=2)
     printed = capsys.readouterr().out
-    assert "600519 涨停封板\n\n======\n\n[MCP提醒]" in printed
+    assert "600519 涨停封板\n\n======\n\n[MCP] 盯盘提醒\n" in printed
 
 
 def test_tray_channels_are_skipped_without_a_tray(dispatch):
