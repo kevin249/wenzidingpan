@@ -326,8 +326,7 @@ def test_theme3_repaints_tdw_when_only_minute_candles_are_available(app, card, m
     poller._accept(("quotes", ""), ("test", None, [quote]), config, 0)
     feed = realtime.RealtimeFeed(quote.symbol, "eastmoney", minute_fallback=True)
     at = datetime.now(SHANGHAI_TZ).replace(hour=9, minute=30, second=30)
-    yesterday = at.date() - timedelta(days=1)
-    bars = [Bar(f"{yesterday} 14:{minute:02}", 10, 14, 10, 10) for minute in range(36, 60)]
+    bars = []
     monkeypatch.setattr(realtime, "fetch_kline", lambda *args, **kwargs: Kline(bars=list(bars)))
 
     def unavailable(*args):

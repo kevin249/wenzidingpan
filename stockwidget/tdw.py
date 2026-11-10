@@ -28,7 +28,8 @@ EVENT_NAMES = {"B1": "底部", "B2": "关注", "S1": "阶段卖出", "S2": "清�
 PERIOD_REALTIME = "realtime"
 
 
-def calculate(bars: list[Bar], period: str, as_of: datetime, *, forming: str = "") -> dict[str, Point]:
+def calculate(bars: list[Bar], period: str, as_of: datetime, *, forming: str = "",
+              partial_windows: bool = False) -> dict[str, Point]:
     """Evaluate each supplied OHLC bar once, retaining the provider's time resolution."""
     now = as_of.astimezone(SHANGHAI_TZ)
     precision = 19 if period == PERIOD_REALTIME else 16
@@ -72,7 +73,8 @@ def calculate(bars: list[Bar], period: str, as_of: datetime, *, forming: str = "
                 if crossed and index - last_event.get(tag, -21) > 20:
                     events.append(tag)
                     last_event[tag] = index
-        if len(highs) == 25 and power is not None:
+        # The phone's session chart starts with the bars available at the open.
+        if power is not None and (partial_windows or len(highs) == highs.maxlen):
             key = stamp[:10] if period == PERIOD_DAY else stamp
             points[key] = Point(power, bar.close, tuple(events), stamp == forming, bar.volume)
         previous = power

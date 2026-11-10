@@ -146,7 +146,7 @@ def test_theme3_minute_history_advances_past_frozen_trades_and_live_recovers(mon
 
     feed = RealtimeFeed(CODE, "eastmoney", minute_fallback=True)
     at = START.replace(minute=30, second=30)
-    previous_day = [Bar(f"2026-11-04 14:{minute:02}", 10, 14, 10, 10) for minute in range(36, 60)]
+    previous_day = [Bar(f"2026-11-04 14:{minute:02}", 10, 14, 10, 14) for minute in range(36, 60)]
     minutes = previous_day + [Bar(DAY+" 09:30", 10, 14, 10, 10)]
     trades = [Bar(DAY+" 09:30:20", 10, 14, 10, 10)]
     monkeypatch.setattr(realtime, "fetch_kline", lambda *args, **kwargs: Kline(bars=list(minutes)))

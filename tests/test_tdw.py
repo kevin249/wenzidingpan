@@ -41,6 +41,18 @@ def test_filters_are_independent_and_suppress_twenty_following_bars():
     assert p[data[46].time].events == ("B2",)
 
 
+def test_phone_session_window_grows_from_open_and_keeps_flat_range_undefined():
+    data = bars([10., 12., 14., 10.])
+    data[0] = Bar(data[0].time, 10, 10, 10, 10)
+    data[1] = Bar(data[1].time, 12, 12, 12, 12)
+    at = START + timedelta(minutes=3)
+    points = calculate(data, PERIOD_1M, at, forming=data[-1].time, partial_windows=True)
+    assert list(points) == [bar.time for bar in data[1:]]
+    assert [point.power for point in points.values()] == pytest.approx([4, 4, 2.4])
+    assert points[data[-1].time].provisional
+    assert not calculate(data, PERIOD_1M, at)
+
+
 def test_daily_warmup_and_flat_market_do_not_create_entries():
     flat = [Bar((START + timedelta(days=i)).strftime("%Y-%m-%d"), 10, 10, 10, 10) for i in range(30)]
     assert not calculate(flat, PERIOD_DAY, START + timedelta(days=40))

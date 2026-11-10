@@ -127,8 +127,7 @@ class RealtimeFeed:
                                       adjust=False, source=self._minute_source)
                 if history and history.bars:
                     cutoff = at.strftime("%Y-%m-%d %H:%M")
-                    bars = [bar for bar in history.bars if bar.time <= cutoff
-                            and (self._minute_fallback or bar.time[:10] == day)
+                    bars = [bar for bar in history.bars if bar.time[:10] == day and bar.time <= cutoff
                             and _is_trading_minute(bar.time[11:16])]
                     if bars and (not self._history_bars or bars[-1].time >= self._history_bars[-1].time):
                         if bars != self._history_bars or history.source != self._history_source:
@@ -261,16 +260,15 @@ class RealtimeFeed:
         cached = self._minute_trend
         point = cached.tdw_points.get(latest) if cached is not None else None
         if cached is None or (point is not None and point.provisional != bool(forming)):
-            start = bisect_left(history, day, key=lambda bar: bar.time)
-            bars = history[start:]
-            points = tdw.calculate(history, PERIOD_1M, at, forming=forming)
+            bars = history
+            points = tdw.calculate(bars, PERIOD_1M, at, forming=forming, partial_windows=True)
             self._minute_trend = Trend(
                 prices=PriceSeries((bar.close for bar in bars), self.symbol.code),
                 minutes=[bar.time[11:16] for bar in bars], volumes=[bar.volume for bar in bars],
                 high_price=max(bar.high for bar in bars), low_price=min(bar.low for bar in bars),
                 open_price=bars[0].open if bars[0].time[11:16] in ("09:30", "09:31") else None,
                 source=self._history_source, trade_date=day, fetched_at=at.timestamp(), realtime_bars=bars,
-                tdw_points={bar.time: points[bar.time] for bar in bars if bar.time in points},
+                tdw_points=points,
             )
         return self._minute_trend
 
@@ -303,8 +301,10 @@ class RealtimeFeed:
         self._applied_history = history
         live_minutes = minute_bars(self._bars)
         preceding = [bar for bar in history if bar.time < live_minutes[0].time]
-        minute_points = tdw.calculate(preceding + live_minutes, PERIOD_1M, at,
-                                      forming=live_minutes[-1].time if forming else "")
+        minute_points = tdw.calculate(
+            preceding + live_minutes, PERIOD_1M, at,
+            forming=live_minutes[-1].time if forming else "", partial_windows=self._minute_fallback,
+        )
         points = {bar.time: minute_points[bar.time] for bar in preceding
                   if self._minute_fallback and bar.time[:10] == day and bar.time in minute_points}
         points.update(minute_power_on_seconds(self._bars, minute_points))
