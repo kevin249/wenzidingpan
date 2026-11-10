@@ -3,6 +3,7 @@
 import os
 import sys
 from dataclasses import replace
+from datetime import datetime, timedelta
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -307,6 +308,49 @@ def test_theme3_only_draws_outer_tdw_crossings_without_signal_labels(app, card, 
     row.sparkline.set_display_options(show_tdw=False)
     row.sparkline.grab()
     assert len(connectors) == len(triggers) == 2
+
+
+def test_theme3_repaints_tdw_when_only_minute_candles_are_available(app, card, monkeypatch):
+    import requests
+
+    from stockwidget import realtime
+    from stockwidget.kline import Bar, Kline
+    from stockwidget.market_hours import SHANGHAI_TZ
+    from stockwidget.poller import Poller
+    from stockwidget.ui import tdw_overlay
+
+    window, store, quote, _ = card
+    config = store.get()
+    poller = Poller(config)
+    poller._prepare(config)
+    poller._accept(("quotes", ""), ("test", None, [quote]), config, 0)
+    feed = realtime.RealtimeFeed(quote.symbol, "eastmoney", minute_fallback=True)
+    at = datetime.now(SHANGHAI_TZ).replace(hour=9, minute=30, second=30)
+    yesterday = at.date() - timedelta(days=1)
+    bars = [Bar(f"{yesterday} 14:{minute:02}", 10, 14, 10, 10) for minute in range(36, 60)]
+    monkeypatch.setattr(realtime, "fetch_kline", lambda *args, **kwargs: Kline(bars=list(bars)))
+
+    def unavailable(*args):
+        raise requests.Timeout()
+
+    monkeypatch.setattr(feed, "_eastmoney", unavailable)
+    painted = []
+    draw_panel = tdw_overlay.draw_power_panel
+
+    def record_panel(painter, power, *args):
+        painted.append(list(power))
+        return draw_panel(painter, power, *args)
+
+    monkeypatch.setattr(tdw_overlay, "draw_power_panel", record_panel)
+    for minute, close in enumerate((10, 14)):
+        current = at + timedelta(minutes=minute)
+        bars.append(Bar(current.strftime("%Y-%m-%d %H:%M"), 10, 14, 10, close))
+        poller._accept(("tdw", quote.symbol), feed.fetch(now=current), config, 0)
+        window.update_snapshot(poller.take_snapshot(), "test")
+        app.processEvents()
+    assert [0] in painted
+    assert painted[-1] == pytest.approx([0, 1.6])
+    assert not feed.fetch(now=at + timedelta(minutes=2)).tdw_points[bars[-1].time].provisional
 
 
 @pytest.mark.parametrize('opacity', [.25, .7, 1.0])

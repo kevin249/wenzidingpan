@@ -330,8 +330,10 @@ class Poller(QThread):
                         fetch, args = self._fetch_dark, (config,)
                     elif kind == "tdw":
                         if symbol not in self._tdw_feeds:
-                            self._tdw_feeds[symbol] = RealtimeFeed(symbol, config.kline_source,
-                                                                    minute_history=True)
+                            self._tdw_feeds[symbol] = RealtimeFeed(
+                                symbol, config.kline_source, minute_history=True,
+                                minute_fallback=config.display_theme == "theme3",
+                            )
                         fetch = self._tdw_feeds[symbol].fetch
                         args = ()
                         tdw_slots -= 1

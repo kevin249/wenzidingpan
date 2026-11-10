@@ -826,7 +826,11 @@ class QuoteRow(SizedWidget):
             self.sparkline.setToolTip(f"报价更新失败（{quote.error}），保留最后有效图表")
         elif trend and trend.realtime_bars:
             vendor = {"eastmoney": "东方财富", "tencent": "腾讯财经"}.get(trend.source, trend.source)
-            self.sparkline.setToolTip(f"实时 K 线 · {vendor} · 最近成交 {trend.realtime_bars[-1].time}")
+            stamp = trend.realtime_bars[-1].time
+            if len(stamp) == 16:
+                self.sparkline.setToolTip(f"1 分钟 K 线 · {vendor} · {stamp}")
+            else:
+                self.sparkline.setToolTip(f"实时 K 线 · {vendor} · 最近成交 {stamp}")
         else:
             self.sparkline.setToolTip("")
         color = direction_color(config, quote.change)
