@@ -386,7 +386,7 @@ class WidgetApp:
             # Refresh it immediately; notification bursts coalesce in the worker.
             self.bs_poller.refresh_bs_now()
         print("\n======\n", flush=True)
-        print(f"[MCP] {notification.title}", flush=True)
+        print("[MCP]", flush=True)
         if notification.body:
             print(notification.body, flush=True)
         if self.config.mcp_bell_terminal:
