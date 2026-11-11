@@ -59,7 +59,7 @@ def test_depth_publishes_before_slow_bs_finishes(monkeypatch):
         return mcp_depth.DepthSnapshot(symbol='603986', full_depth=True,
                                        available=True, depth_mode=mcp_depth.DEPTH_FULL)
 
-    async def bs(*_):
+    async def bs(*_, **kwargs):
         await asyncio.sleep(.03)
         assert ['depth'] == events
         return {}
@@ -80,7 +80,7 @@ def test_bs_timeout_does_not_count_as_a_thousand_failure(monkeypatch):
     errors = []
     poller.status_changed.connect(errors.append)
 
-    async def timeout(*_):
+    async def timeout(*_, **kwargs):
         raise TimeoutError()
 
     monkeypatch.setattr(mcp_depth, '_fetch_volatility_bs', timeout)
@@ -94,7 +94,7 @@ def test_bs_timeout_does_not_count_as_a_thousand_failure(monkeypatch):
 def test_missing_today_bs_is_not_reported_as_a_depth_failure(monkeypatch):
     poller = mcp_depth.McpDepthPoller(Config(symbols=['sh603986']))
 
-    async def missing(*_):
+    async def missing(*_, **kwargs):
         return {'ok': True, 'available': False, 'message': 'today has no result'}
 
     monkeypatch.setattr(mcp_depth, '_fetch_volatility_bs', missing)

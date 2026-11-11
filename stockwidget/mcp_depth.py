@@ -117,7 +117,7 @@ def _depth_mode(
         and payload.get("distribution_ready") is True
         and payload.get("verified") is True
         and payload.get("service_ready") is True
-        and payload.get("method") == "active_protocol_0559"
+        and payload.get("method") in {"active_protocol_0559", "realtime_depth_snapshot"}
     )
     full = bool(
         upstream_available
@@ -192,7 +192,7 @@ def parse_depth_payload(
     )
 
 
-async def _fetch_volatility_bs(session: ClientSession, symbol: str) -> dict[str, Any]:
+async def _fetch_volatility_bs(session: ClientSession, symbol: str, *, store=None) -> dict[str, Any]:
     """主动读取该股票当天完整 B/S markers，并写入共享缓存。"""
     result = await _bounded(
         session.call_tool(
@@ -201,7 +201,7 @@ async def _fetch_volatility_bs(session: ClientSession, symbol: str) -> dict[str,
         ), timeout_seconds=BS_REQUEST_TIMEOUT_SECONDS,
     )
     payload = _tool_payload(result)
-    record_volatility_bs(payload)
+    (store or record_volatility_bs)(payload)
     return payload
 
 
@@ -336,6 +336,8 @@ class McpDepthPoller(QThread):
 
     @staticmethod
     def _enabled(config: Config) -> bool:
+        if config.mcp_realtime_url:
+            return False  # 实时订阅独立交付盘口和事件，不再周期查询完整 B/S。
         return bool(
             config.symbols
             and _api_key(config)
@@ -346,6 +348,7 @@ class McpDepthPoller(QThread):
         with self._lock:
             changed = (
                 config.mcp_url,
+                config.mcp_realtime_url,
                 _api_key(config),
                 tuple(config.symbols),
                 config.show_sparkline,
@@ -354,6 +357,7 @@ class McpDepthPoller(QThread):
                 config.debug_mode,
             ) != (
                 self._config.mcp_url,
+                self._config.mcp_realtime_url,
                 _api_key(self._config),
                 tuple(self._config.symbols),
                 self._config.show_sparkline,
@@ -525,7 +529,9 @@ class McpDepthPoller(QThread):
             if symbol is None:
                 continue
             try:
-                payload = await _fetch_volatility_bs(session, symbol.code)
+                payload = await _fetch_volatility_bs(session, symbol.code, store=self._store_legacy_bs)
+                if self._config.mcp_realtime_url:
+                    return
                 if payload.get('available') is False:
                     self._bs_errors[symbol.code] = payload.get('message') or 'B/S结果尚未就绪'
                     self.status_changed.emit(f"B/S {symbol.code} 暂无可用结果，千档继续刷新")
@@ -560,12 +566,20 @@ class McpDepthPoller(QThread):
             last_finished = time.monotonic()
             self._publish_depth(symbol.code, snapshot, last_finished)
 
+    def _store_legacy_bs(self, payload):
+        with self._lock:
+            if not self._config.mcp_realtime_url:
+                record_volatility_bs(payload)
+
     def _publish_depth(self, code, snapshot, finished_at):
-        self._depth_modes[code] = snapshot.depth_mode
-        display, cached_full, failures = _merge_depth_state(
-            snapshot, self._last_full_depth.get(code), self._full_depth_failures.get(code, 0))
-        if cached_full is not None:
-            self._last_full_depth[code] = cached_full
-        self._full_depth_failures[code] = failures
-        self._next_depth_due[code] = finished_at + _poll_seconds(snapshot.full_depth)
-        self.depth_ready.emit(display)
+        with self._lock:
+            if self._config.mcp_realtime_url:
+                return
+            self._depth_modes[code] = snapshot.depth_mode
+            display, cached_full, failures = _merge_depth_state(
+                snapshot, self._last_full_depth.get(code), self._full_depth_failures.get(code, 0))
+            if cached_full is not None:
+                self._last_full_depth[code] = cached_full
+            self._full_depth_failures[code] = failures
+            self._next_depth_due[code] = finished_at + _poll_seconds(snapshot.full_depth)
+            self.depth_ready.emit(display)

@@ -342,6 +342,9 @@
           <div class="field">
             <label for="mcp_url">MCP 地址</label>
             <input id="mcp_url" name="mcp_url" type="url" value="{{ config.mcp_url }}" />
+            <label for="mcp_realtime_url">实时订阅地址</label>
+            <input id="mcp_realtime_url" name="mcp_realtime_url" type="url" value="{{ config.mcp_realtime_url }}" placeholder="http://127.0.0.1:8802/mcp" />
+            <p class="hint">填写后通过实时通道接收事件和盘口；留空沿用原连接。</p>
           </div>
           <div class="field">
             <label for="mcp_api_key">MCP API Key</label>

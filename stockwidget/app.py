@@ -98,6 +98,8 @@ class WidgetApp:
             self._on_mcp_notification, Qt.QueuedConnection
         )
         self.notification_listener.status_changed.connect(self._on_mcp_status, Qt.QueuedConnection)
+        self.notification_listener.depth_ready.connect(self._on_depth_snapshot, Qt.QueuedConnection)
+        self.notification_listener.bs_updated.connect(self._on_bs_updated, Qt.QueuedConnection)
 
         if QSystemTrayIcon.isSystemTrayAvailable():
             self.tray = Tray(config)

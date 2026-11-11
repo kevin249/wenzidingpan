@@ -1,0 +1,25 @@
+{
+  "date": "2026-11-11",
+  "transport": "real localhost MCP HTTP",
+  "source": "today PostgreSQL records replay",
+  "namespace": "benchmark-desktop-377c95cef3dc4f8091d3b7b7bed9c507",
+  "entry": "stockwidget.mcp_realtime.run_listener + real DepthWorker",
+  "source_events": 66,
+  "source_depths": 20,
+  "popups_when_disabled": 0,
+  "production_config_changed": false,
+  "qt_rendering_tested": false,
+  "received_unique_events": 3,
+  "event_types": [
+    "trading.holding_t_signal",
+    "screen.v2.done",
+    "trading.holding_t_signal"
+  ],
+  "global_event_received": true,
+  "offline_event_recovered": true,
+  "cursor_survives_watchlist_change": true,
+  "depth_available": true,
+  "depth_mode": "FULL_DEPTH",
+  "bid_count": 1000,
+  "ask_count": 624
+}

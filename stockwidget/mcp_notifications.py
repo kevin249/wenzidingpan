@@ -153,6 +153,8 @@ def _notifications(payload: dict[str, Any]) -> list[McpNotification]:
 class McpNotificationListener(QThread):
     notification_ready = Signal(object)
     status_changed = Signal(str)
+    depth_ready = Signal(object)
+    bs_updated = Signal(str)
 
     def __init__(self, config: Config, parent=None) -> None:
         super().__init__(parent)
@@ -169,8 +171,9 @@ class McpNotificationListener(QThread):
         self._seen_ids: set[str] = set()
 
     @staticmethod
-    def _identity(config: Config) -> tuple[bool, str, str]:
-        return config.mcp_notifications_enabled, config.mcp_url, _api_key(config)
+    def _identity(config: Config) -> tuple:
+        return (config.mcp_notifications_enabled, config.mcp_url, config.mcp_realtime_url,
+                _api_key(config), tuple(config.symbols))
 
     def apply_config(self, config: Config) -> None:
         with self._lock:
@@ -216,7 +219,7 @@ class McpNotificationListener(QThread):
         while not self._stopping.is_set():
             with self._lock:
                 config = self._config
-            if not config.mcp_notifications_enabled:
+            if not config.mcp_notifications_enabled and not config.mcp_realtime_url:
                 self._emit_status("已关闭")
                 self._wake.wait(3600)
                 self._wake.clear()
@@ -242,7 +245,11 @@ class McpNotificationListener(QThread):
         cancel_event = asyncio.Event()
         self._set_async_state(cancel_event)
         try:
-            await self._run_session(config, key, cancel_event)
+            if config.mcp_realtime_url:
+                from .mcp_realtime import run_cancellable, run_listener
+                await run_cancellable(run_listener(self, config, cancel_event), cancel_event)
+            else:
+                await self._run_session(config, key, cancel_event)
         finally:
             self._set_async_state(None)
 
