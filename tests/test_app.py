@@ -219,6 +219,13 @@ def test_consecutive_notifications_get_a_blank_divider_between_them(dispatch, ca
     assert "600519 涨停封板\n\n======\n\n[MCP]\n" in printed
 
 
+def test_title_only_realtime_event_is_visible_in_terminal(dispatch, capsys, monkeypatch):
+    from dataclasses import replace
+    monkeypatch.setattr(__name__ + '.NOTIFICATION', replace(NOTIFICATION, body=''))
+    dispatch(Config())
+    assert NOTIFICATION.title in capsys.readouterr().out
+
+
 def test_tray_channels_are_skipped_without_a_tray(dispatch):
     assert _channels(dispatch(Config(), tray=False)) == (1, 0, 0, 1)
 

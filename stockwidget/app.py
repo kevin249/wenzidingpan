@@ -389,8 +389,8 @@ class WidgetApp:
             self.bs_poller.refresh_bs_now()
         print("\n======\n", flush=True)
         print("[MCP]", flush=True)
-        if notification.body:
-            print(notification.body, flush=True)
+        if text := notification.body or notification.title:
+            print(text, flush=True)
         if self.config.mcp_bell_terminal:
             desktop.ring_terminal_bell()
         if self.config.mcp_bell_toast and self.tray is not None:

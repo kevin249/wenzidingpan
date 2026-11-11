@@ -15,6 +15,8 @@ from mcp.client.subscriptions import listen
 from .config import config_dir
 from .mcp_endpoint import realtime_url
 
+HEARTBEAT_GRACE_SECONDS = 45
+
 
 def payload(result):
     structured = getattr(result, 'structured_content', None)
@@ -96,7 +98,10 @@ class ClientJournal:
 
 
 async def _call(session, name, arguments=None):
-    result = await asyncio.wait_for(session.call_tool(name, arguments=arguments or {}), timeout=15)
+    try:
+        result = await asyncio.wait_for(session.call_tool(name, arguments=arguments or {}), timeout=15)
+    except TimeoutError as exc:
+        raise TimeoutError(f'{name} 超过 15 秒') from exc
     if result.is_error:
         raise RuntimeError(next((item.text for item in result.content if hasattr(item, 'text')), name))
     return payload(result)
@@ -214,8 +219,11 @@ async def emit_depth(listener, session, symbol):
 async def consume(listener, session, subscription, *, journal, cursor, symbols, cancel_event, depth_updates):
     updates = asyncio.Queue(maxsize=1)
     versions = {}
+    last_notice = asyncio.get_running_loop().time()
     async def watch():
+        nonlocal last_notice
         async for event in subscription:
+            last_notice = asyncio.get_running_loop().time()
             if updates.empty():
                 updates.put_nowait(str(getattr(event, 'uri', '')))
     watcher = asyncio.create_task(watch())
@@ -233,10 +241,16 @@ async def consume(listener, session, subscription, *, journal, cursor, symbols, 
             if watcher in done:
                 await watcher
                 raise RuntimeError('实时订阅已结束')
-            cursor, fresh = await _drain(session, journal, cursor)
-            for event in fresh:
-                emit_event(listener, event, alert=journal.alertable(event))
-            state = await _call(session, 'get_stream_state')
+            try:
+                cursor, fresh = await _drain(session, journal, cursor)
+                for event in fresh:
+                    emit_event(listener, event, alert=journal.alertable(event))
+                state = await _call(session, 'get_stream_state')
+            except TimeoutError as exc:
+                if asyncio.get_running_loop().time() - last_notice > HEARTBEAT_GRACE_SECONDS:
+                    raise
+                listener._emit_status(f'{exc}；订阅心跳仍在，按游标重试', level='WARN')
+                continue
             for symbol, version in state['depth_versions'].items():
                 if symbol in symbols and versions.get(symbol) != version:
                     if not depth_updates.full():
