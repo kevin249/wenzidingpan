@@ -126,6 +126,14 @@
         <p class="hint">默认连接本机 8801 端口。Key 也可通过 GUPIAO_MCP_API_KEY 环境变量提供；事件通过 MCP 实时订阅直达，正文始终打印到启动程序的 CMD，上面四路提示可分别开关，全关就只剩 CMD 里的正文。想在任务栏上看到动静，认准「通知区图标」这一路——它归组件自己管，装没装 Windows Terminal 都一样。终端铃铛只是附带的一路，且仅 Windows Terminal 能闪任务栏：要在它的「铃声」里勾上「任务栏」，并且窗口不在前台时才会闪（这是 Windows 的规矩）；传统控制台和 MobaXterm 等终端只会响一声，没有任何设置能让它们闪。</p>
       </section>
 
+      <section class="card" data-settings-scope="common" aria-labelledby="mcp-test-title">
+        <h2 id="mcp-test-title">MCP 一键测试</h2>
+        <p class="hint">测试第一只自选股，打开千档与走势图显示，接收一条带标识的服务器测试事件，并读取真实千档。请保持行情窗口可见。</p>
+        <button id="mcp-test-start" class="primary" type="button">一键测试并显示千档</button>
+        <p id="mcp-test-summary" role="status" aria-live="polite"></p>
+        <ol id="mcp-test-results" class="mcp-test-results"></ol>
+      </section>
+
       <section class="card" id="common-theme-settings" data-settings-scope="common-theme">
         <h2>公共主题设置</h2>
         <p class="hint">以下开关对三个主题统一生效。字号、透明度、颜色和布局在下方按主题分别设置。Ctrl+F2 一键隐藏 / 恢复。</p>
@@ -500,5 +508,6 @@
       </footer>
     </main>
     <script src="{{ url_for('static', filename='settings.js') }}"></script>
+    <script src="{{ url_for('static', filename='mcp_test.js') }}"></script>
   </body>
 </html>

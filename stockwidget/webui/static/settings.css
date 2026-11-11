@@ -433,6 +433,9 @@ input[type='color'] {
 
 /* Scope and applicability hiding also wins over flex/grid display rules. */
 [hidden] { display: none !important; }
+.mcp-test-results { padding-left: 22px; line-height: 1.7; overflow-wrap: anywhere; }
+.mcp-test-results li { padding: 5px 0; }
+.mcp-test-results [data-status="fail"], .mcp-test-results [data-status="warn"] { color: #e69c61; }
 /* Common settings first, then shared display controls and theme details. */
 main { max-width: 960px; }
 .theme-selection { border-top: 3px solid var(--accent); }

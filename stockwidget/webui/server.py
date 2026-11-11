@@ -10,6 +10,7 @@ import logging
 import secrets
 import math
 import threading
+import time
 from typing import Callable
 
 from flask import Flask, abort, jsonify, render_template, request
@@ -41,11 +42,15 @@ class SettingsServer:
         port: int = 0,
         on_resize: Callable[[dict], None] | None = None,
         on_bs_source_change: Callable[[], None] | None = None,
+        on_test_depth: Callable | None = None,
     ) -> None:
         self.store = store
         self.on_change = on_change
         self.on_resize = on_resize
         self.on_bs_source_change = on_bs_source_change
+        from .mcp_test_routes import McpSelfTest
+        self.mcp_test = McpSelfTest(on_test_depth)
+        self._depth_received, self._depth_painted = {}, {}
         self._layout_metrics: dict = {}
         self.host = host
         self.token = secrets.token_urlsafe(16)
@@ -58,6 +63,14 @@ class SettingsServer:
         # GUI 线程构造一次新快照后原子替换；Flask 线程不访问 QWidget。
         self._layout_metrics = metrics
 
+    def publish_depth_received(self, snapshot) -> None:
+        self._depth_received[snapshot.symbol] = dict(source_at=snapshot.source_at,
+            bid_count=snapshot.bid_count, ask_count=snapshot.ask_count, at=time.time())
+
+    def publish_depth_painted(self, snapshot, shown) -> None:
+        self._depth_painted[snapshot.symbol] = dict(source_at=snapshot.source_at,
+            shown=bool(shown), at=time.time())
+
     def _build_app(self) -> Flask:
         app = Flask(__name__)
         app.config["JSON_AS_ASCII"] = False
@@ -66,6 +79,9 @@ class SettingsServer:
             supplied = request.args.get("token") or request.headers.get("X-Widget-Token")
             if not secrets.compare_digest(str(supplied or ""), self.token):
                 abort(403)
+
+        from .mcp_test_routes import register
+        register(app, self, require_token)
 
         @app.get("/")
         def index():

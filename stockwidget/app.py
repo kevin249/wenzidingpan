@@ -30,6 +30,7 @@ class ConfigBridge(QObject):
     changed = Signal(object)
     resize_requested = Signal(object)
     bs_source_changed = Signal()
+    test_depth_ready = Signal(object)
 
 
 class WindowActivationFilter(QObject):
@@ -101,13 +102,16 @@ class WidgetApp:
         self.bridge.changed.connect(self._apply_config, Qt.QueuedConnection)
         self.bridge.resize_requested.connect(self.window.resize_from_settings, Qt.QueuedConnection)
         self.bridge.bs_source_changed.connect(self._on_bs_source_changed, Qt.QueuedConnection)
+        self.bridge.test_depth_ready.connect(self._on_depth_snapshot, Qt.QueuedConnection)
         self.server = SettingsServer(
             self.store, on_change=self.bridge.changed.emit,
             on_resize=self.bridge.resize_requested.emit,
             on_bs_source_change=self.bridge.bs_source_changed.emit,
+            on_test_depth=self.bridge.test_depth_ready.emit,
         )
         self.window.layout_metrics_changed.connect(self.server.publish_layout_metrics)
         self.server.publish_layout_metrics(self.window.layout_metrics())
+        self.window.depth_painted.connect(self.server.publish_depth_painted)
 
         self.poller = Poller(config)
         self.poller.snapshot_ready.connect(self._on_poll_ready, Qt.QueuedConnection)
@@ -347,6 +351,8 @@ class WidgetApp:
 
     def _on_depth_snapshot(self, snapshot: DepthSnapshot) -> None:
         self.window.update_depth(snapshot)
+        if server := getattr(self, 'server', None):
+            server.publish_depth_received(snapshot)
 
     def _on_bs_source_changed(self) -> None:
         self._local_bs_notifier = LocalBsNotifier()
