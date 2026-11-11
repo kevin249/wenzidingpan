@@ -1,5 +1,6 @@
 """实时订阅消费与 SQLite 游标事务；与 AI 全量查询路径独立。"""
 import asyncio
+from contextlib import closing, contextmanager
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -12,6 +13,7 @@ from mcp.client.streamable_http import streamable_http_client
 from mcp.client.subscriptions import listen
 
 from .config import config_dir
+from .mcp_endpoint import realtime_url
 
 
 def payload(result):
@@ -34,8 +36,11 @@ class ClientJournal:
                     value TEXT NOT NULL, PRIMARY KEY(scope, signal_id));
             ''')
 
+    @contextmanager
     def connect(self):
-        return sqlite3.connect(self.path, timeout=5)
+        with closing(sqlite3.connect(self.path, timeout=5)) as db:
+            with db:
+                yield db
 
     def cursor(self):
         with self.connect() as db:
@@ -142,7 +147,7 @@ async def read_depth(session, symbol):
 async def run_listener(listener, config, cancel_event):
     from .mcp_notifications import SSE_TIMEOUT, _api_key
     from .mcp_bs import reset_realtime_cache
-    url, key = config.mcp_realtime_url, _api_key(config)
+    url, key = realtime_url(config), _api_key(config)
     from .symbols import classify
     symbols = sorted({item.code for symbol in config.symbols if (item := classify(symbol)) is not None})
     # 事件范围是当前用户全部授权通知；自选股只约束盘口，避免丢失无股票代码的系统/选股事件。
@@ -150,7 +155,7 @@ async def run_listener(listener, config, cancel_event):
     scope = hashlib.sha256(json.dumps([url, key, 'all-events-v1']).encode()).hexdigest()
     journal = ClientJournal(config_dir() / 'mcp_realtime.sqlite3', scope)
     headers = {'Authorization': 'Bearer ' + key}
-    async with httpx2.AsyncClient(headers=headers, timeout=SSE_TIMEOUT) as client:
+    async with httpx2.AsyncClient(headers=headers, timeout=SSE_TIMEOUT, trust_env=False) as client:
         async with streamable_http_client(url, http_client=client, terminate_on_close=False) as (rd, wr):
             async with ClientSession(rd, wr) as session:
                 await asyncio.wait_for(session.discover(), 15)

@@ -20,6 +20,7 @@ from mcp.shared.exceptions import MCPDeprecationWarning, MCPError
 from PySide6.QtCore import QThread, Signal
 
 from .config import Config
+from .mcp_endpoint import realtime_url
 from .mcp_bs import record_notification
 from .mcp_logger import format_mcp_status, log_mcp_status
 from .mcp_runtime import McpConnection
@@ -241,7 +242,7 @@ class McpNotificationListener(QThread):
             self._wake.clear()
             with self._lock:
                 config = self._config
-            if not config.mcp_notifications_enabled and not config.mcp_realtime_url:
+            if not config.mcp_notifications_enabled and not realtime_url(config):
                 self._emit_status("已关闭")
                 self._wake.wait(3600)
                 self._wake.clear()
@@ -266,7 +267,7 @@ class McpNotificationListener(QThread):
         if not key:
             raise RuntimeError(f"未配置 MCP API Key（设置页或环境变量 {MCP_API_KEY_ENV}）")
         cancel_event = asyncio.Event()
-        if config.mcp_realtime_url:
+        if realtime_url(config):
             from .mcp_realtime import run_listener
             await run_listener(self, config, cancel_event)
         else:
@@ -283,7 +284,7 @@ class McpNotificationListener(QThread):
                 if legacy_updates.empty():
                     legacy_updates.put_nowait(str(message.params.uri))
 
-        async with httpx2.AsyncClient(headers=headers, timeout=SSE_TIMEOUT) as client:
+        async with httpx2.AsyncClient(headers=headers, timeout=SSE_TIMEOUT, trust_env=False) as client:
             async with streamable_http_client(
                 config.mcp_url,
                 http_client=client,

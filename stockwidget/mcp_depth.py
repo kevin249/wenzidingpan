@@ -22,6 +22,7 @@ from .mcp_notifications import (
     negotiate_protocol,
 )
 from .mcp_runtime import McpConnection
+from .mcp_endpoint import realtime_url
 from .symbols import classify
 
 DEPTH_POLL_SECONDS = 5.0
@@ -381,7 +382,7 @@ class McpDepthPoller(QThread):
 
     @staticmethod
     def _enabled(config: Config) -> bool:
-        if config.mcp_realtime_url:
+        if realtime_url(config):
             return False
         return bool(config.symbols and _api_key(config))
 
@@ -584,7 +585,7 @@ class McpDepthPoller(QThread):
             for raw in config.symbols
             if (item := classify(raw)) is not None
         ]
-        async with httpx2.AsyncClient(headers=headers, timeout=SSE_TIMEOUT) as client:
+        async with httpx2.AsyncClient(headers=headers, timeout=SSE_TIMEOUT, trust_env=False) as client:
             async with streamable_http_client(
                 config.mcp_url,
                 http_client=client,
@@ -611,7 +612,7 @@ class McpDepthPoller(QThread):
                         if fetch_bs:
                             try:
                                 payload = await _fetch_volatility_bs(session, symbol.code, store=self._store_legacy_bs)
-                                if self._config.mcp_realtime_url:
+                                if realtime_url(self._config):
                                     return False
                                 if isinstance(payload, dict) and payload.get('available') is False:
                                     raise RuntimeError(payload.get('message') or 'B/S结果尚未就绪')
@@ -647,12 +648,12 @@ class McpDepthPoller(QThread):
 
     def _store_legacy_bs(self, payload):
         with self._lock:
-            if not self._config.mcp_realtime_url:
+            if not realtime_url(self._config):
                 record_volatility_bs(payload)
 
     def _publish_depth(self, code, snapshot, finished_at):
         with self._lock:
-            if self._config.mcp_realtime_url:
+            if realtime_url(self._config):
                 return
             self._depth_modes[code] = snapshot.depth_mode
             display, cached_full, failures = _merge_depth_state(

@@ -6,6 +6,7 @@ import threading
 import httpx2
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
+from .mcp_endpoint import realtime_url
 
 MAX_PENDING_SYMBOLS = 50
 RETRY_SECONDS = 3
@@ -70,8 +71,8 @@ class DepthWorker:
         self.loop, self.task = asyncio.get_running_loop(), asyncio.current_task()
         while not self.stopping.is_set():
             try:
-                async with httpx2.AsyncClient(headers={'Authorization': 'Bearer ' + _api_key(self.config)}, timeout=SSE_TIMEOUT) as client:
-                    async with streamable_http_client(self.config.mcp_realtime_url, http_client=client,
+                async with httpx2.AsyncClient(headers={'Authorization': 'Bearer ' + _api_key(self.config)}, timeout=SSE_TIMEOUT, trust_env=False) as client:
+                    async with streamable_http_client(realtime_url(self.config), http_client=client,
                                                        terminate_on_close=False) as (rd, wr):
                         async with ClientSession(rd, wr) as session:
                             await asyncio.wait_for(session.discover(), 15)
