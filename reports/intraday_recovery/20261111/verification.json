@@ -1,0 +1,17 @@
+{
+  "symbol": "603986",
+  "trade_date": "2026-11-11",
+  "history_source": "tencent",
+  "history_points": 242,
+  "history_first": "09:30",
+  "history_last": "15:00",
+  "history_low": 242.0,
+  "history_high": 260.38,
+  "live_points": 252,
+  "live_first": "14:44:32",
+  "live_last": "15:00:02",
+  "merged_points": 477,
+  "merged_first": "09:30",
+  "merged_last": "15:00:02",
+  "mcp_used_for_chart": false
+}

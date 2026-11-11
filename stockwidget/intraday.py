@@ -21,7 +21,7 @@ from .symbols import Symbol, classify
 
 EASTMONEY_ENDPOINT = "https://push2his.eastmoney.com/api/qt/stock/trends2/get"
 EASTMONEY_UT = "7eea3edcaed734bea9cbfc24409ed989"
-TENCENT_ENDPOINT = "https://web.ifzq.gtimg.cn/appstock/app/minute/query"
+TENCENT_ENDPOINT = "https://web.ifzq.gtimg.cn/appstock/app/day/query"
 
 CACHE_TTL_SECONDS = 1
 REQUEST_TIMEOUT = 8
@@ -164,10 +164,21 @@ def parse_eastmoney(payload: object) -> Trend:
     )
 
 
+def _tencent_day(payload: dict, key: str) -> dict:
+    """day/query 返回多个交易日；旧 minute/query 返回单个交易日。"""
+    block = ((payload.get('data') or {}).get(key) or {}).get('data')
+    if isinstance(block, dict):
+        return block
+    if isinstance(block, list):
+        days = [row for row in block if isinstance(row, dict) and _trade_date(row.get('date'))]
+        return max(days, key=lambda row: _trade_date(row['date']), default={})
+    return {}
+
+
 def parse_tencent(payload: object, key: str) -> Trend:
     if not isinstance(payload, dict):
         return Trend(error="返回格式异常")
-    data = (((payload.get("data") or {}).get(key) or {}).get("data") or {})
+    data = _tencent_day(payload, key)
     block = data.get("data") or []
     trade_date = _trade_date(data.get("date"))
 

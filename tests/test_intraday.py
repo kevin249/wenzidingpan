@@ -87,6 +87,41 @@ def test_trend_is_falsy_without_enough_points():
     assert Trend(prices=[10.0, 10.1])
 
 
+def test_tencent_day_query_selects_latest_day_without_joining_sessions():
+    payload = {'data': {'sh603986': {'data': [
+        {'date': '20261110', 'data': ['0930 230.00 100 2300000']},
+        {'date': '20261111', 'data': ['0930 242.00 100 2420000', '1500 259.62 200 5016200']},
+        {'date': '20261109', 'data': ['1500 220.00 100 2200000']},
+        {'date': 'invalid', 'data': ['1500 999.00 100']},
+    ]}}}
+    result = parse_tencent(payload, 'sh603986')
+    assert '2026-11-11' == result.trade_date
+    assert ['09:30', '15:00'] == result.minutes
+    assert [242.00, 259.62] == result.prices
+    assert [100, 100] == result.volumes
+    assert 'tencent' == result.source
+
+
+def test_tencent_day_endpoint_recovers_full_session_after_eastmoney_failure():
+    payload = {'data': {'sh603986': {'data': [
+        {'date': '20261111', 'data': ['0930 242.00 100', '1130 248.00 200',
+                                     '1300 250.00 300', '1500 259.62 400']},
+        {'date': '20261110', 'data': ['1500 230.00 100']},
+    ]}}}
+    class Session:
+        def get(self, url, params, **kwargs):
+            if 'eastmoney' in url:
+                raise requests.ConnectionError('primary source unavailable')
+            assert url.endswith('/appstock/app/day/query')
+            assert {'code': 'sh603986'} == params
+            return _Response(payload)
+    result = IntradayClient(session=Session()).fetch('603986')
+    assert ['09:30', '11:30', '13:00', '15:00'] == result.minutes
+    assert [242.00, 248.00, 250.00, 259.62] == result.prices
+    assert '2026-11-11' == result.trade_date
+    assert result.error is None
+
+
 def test_tencent_fallback_parses_minutes():
     payload = {"data": {"sh600000": {"data": {"date": "20261023", "data": [
         "0930 10.10 100 101000",
