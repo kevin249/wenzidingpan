@@ -606,7 +606,7 @@ def test_bs_timeout_diagnostic_is_deduplicated_until_recovery(monkeypatch):
 
     attempts = iter((False, False, True, False))
 
-    async def fetch(*args):
+    async def fetch(*args, **kwargs):
         if not next(attempts):
             raise TimeoutError()
 

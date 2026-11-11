@@ -265,6 +265,7 @@ class Config:
     mcp_bell_tray_icon: bool = True  # 通知区（任务栏）图标转提醒色并挂未读数
     mcp_bell_window: bool = True  # 在窗口标题栏 BELL 按钮上累计未读数
     mcp_url: str = "http://127.0.0.1:8801/mcp"
+    mcp_realtime_url: str = ""
     mcp_api_key: str = ""
     bounds: Bounds | None = None
     # theme1/theme2 各保存一份显示参数；当前主题的 profile 会展开到上面的字段，
@@ -496,6 +497,12 @@ def sanitize(raw: Any, *, _include_theme_profiles: bool = True) -> Config:
             out.mcp_url = candidate
 
     mcp_api_key = raw.get("mcp_api_key")
+    realtime_url = raw.get('mcp_realtime_url')
+    if isinstance(realtime_url, str):
+        candidate = realtime_url.strip()
+        parsed = urlsplit(candidate)
+        if len(candidate) <= 2048 and (not candidate or (parsed.scheme in {'http', 'https'} and parsed.hostname)):
+            out.mcp_realtime_url = candidate
     if isinstance(mcp_api_key, str):
         out.mcp_api_key = mcp_api_key.strip()[:512]
 

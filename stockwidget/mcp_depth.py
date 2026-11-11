@@ -159,7 +159,7 @@ def _depth_mode(
         and payload.get("distribution_ready") is True
         and payload.get("verified") is True
         and payload.get("service_ready") is True
-        and payload.get("method") == "active_protocol_0559"
+        and payload.get("method") in {"active_protocol_0559", "realtime_depth_snapshot"}
     )
     full = bool(
         upstream_available
@@ -235,7 +235,7 @@ def parse_depth_payload(
     )
 
 
-async def _fetch_volatility_bs(session: ClientSession, symbol: str) -> dict[str, Any]:
+async def _fetch_volatility_bs(session: ClientSession, symbol: str, *, store=None) -> dict[str, Any]:
     """主动读取该股票当天完整 B/S markers，并写入共享缓存。"""
     result = await _bounded(
         session.call_tool(
@@ -245,7 +245,7 @@ async def _fetch_volatility_bs(session: ClientSession, symbol: str) -> dict[str,
         ), timeout_seconds=BS_REQUEST_TIMEOUT_SECONDS,
     )
     payload = _tool_payload(result)
-    record_volatility_bs(payload)
+    (store or record_volatility_bs)(payload)
     return payload
 
 
@@ -381,6 +381,8 @@ class McpDepthPoller(QThread):
 
     @staticmethod
     def _enabled(config: Config) -> bool:
+        if config.mcp_realtime_url:
+            return False
         return bool(config.symbols and _api_key(config))
 
     @staticmethod
@@ -393,6 +395,7 @@ class McpDepthPoller(QThread):
         with self._lock:
             changed = (
                 config.mcp_url,
+                config.mcp_realtime_url,
                 _api_key(config),
                 tuple(config.symbols),
                 config.show_sparkline,
@@ -401,6 +404,7 @@ class McpDepthPoller(QThread):
                 config.debug_mode,
             ) != (
                 self._config.mcp_url,
+                self._config.mcp_realtime_url,
                 _api_key(self._config),
                 tuple(self._config.symbols),
                 self._config.show_sparkline,
@@ -606,7 +610,11 @@ class McpDepthPoller(QThread):
 
                         if fetch_bs:
                             try:
-                                await _fetch_volatility_bs(session, symbol.code)
+                                payload = await _fetch_volatility_bs(session, symbol.code, store=self._store_legacy_bs)
+                                if self._config.mcp_realtime_url:
+                                    return False
+                                if isinstance(payload, dict) and payload.get('available') is False:
+                                    raise RuntimeError(payload.get('message') or 'B/S结果尚未就绪')
                                 self._bs_errors.pop(symbol.code, None)
                                 # 独立通知 UI：不能等待下一次行情快照才出现标记。
                                 self.bs_ready.emit(symbol.code)
@@ -630,30 +638,32 @@ class McpDepthPoller(QThread):
                                 await asyncio.sleep(delay)
                             snapshot = await _fetch_depth_with_fallback(session, symbol.code)
                             last_depth_finished_at = time.monotonic()
-                            self._depth_modes[symbol.code] = snapshot.depth_mode
-
-                            display_snapshot, cached_full, failures = _merge_depth_state(
-                                snapshot,
-                                self._last_full_depth.get(symbol.code),
-                                self._full_depth_failures.get(symbol.code, 0),
-                            )
-                            if cached_full is not None:
-                                self._last_full_depth[symbol.code] = cached_full
-                            else:
-                                self._last_full_depth.pop(symbol.code, None)
-                            self._full_depth_failures[symbol.code] = failures
-
-                            # 每只股票独立计时：降级后至少 5 秒再尝试它自己的千档。
-                            self._next_depth_due[symbol.code] = (
-                                last_depth_finished_at + _poll_seconds(snapshot.full_depth)
-                            )
-                            # Fresh ten/five-level books must replace an older full book.
-                            self.depth_ready.emit(display_snapshot)
+                            self._publish_depth(symbol.code, snapshot, last_depth_finished_at)
 
         # 未抓过的股票也视为未恢复；它们会在下一轮立刻到期。
         return bool(valid_codes) and all(
             self._depth_modes.get(code) == DEPTH_FULL for code in valid_codes
         )
+
+    def _store_legacy_bs(self, payload):
+        with self._lock:
+            if not self._config.mcp_realtime_url:
+                record_volatility_bs(payload)
+
+    def _publish_depth(self, code, snapshot, finished_at):
+        with self._lock:
+            if self._config.mcp_realtime_url:
+                return
+            self._depth_modes[code] = snapshot.depth_mode
+            display, cached_full, failures = _merge_depth_state(
+                snapshot, self._last_full_depth.get(code), self._full_depth_failures.get(code, 0))
+            if cached_full is not None:
+                self._last_full_depth[code] = cached_full
+            else:
+                self._last_full_depth.pop(code, None)
+            self._full_depth_failures[code] = failures
+            self._next_depth_due[code] = finished_at + _poll_seconds(snapshot.full_depth)
+            self.depth_ready.emit(display)
 
 
 class McpBsPoller(McpDepthPoller):

@@ -231,6 +231,30 @@ def record_volatility_bs(payload: Any) -> None:
         _VOLATILITY_BS[code] = snapshot
 
 
+def reset_realtime_cache() -> None:
+    """实时身份/订阅重建后，仅从该身份的本地事件日志恢复图层。"""
+    with _LOCK:
+        _EVENTS.clear()
+        _EVENT_IDS.clear()
+        _VOLATILITY_BS.clear()
+
+
+def _current_signal_events(events):
+    """列表保留事件历史，图层只采用每个实时信号的最新有效修订。"""
+    legacy, latest = [], {}
+    for row in events:
+        payload = row.get('payload') or {}
+        signal_id = payload.get('signal_id')
+        if not signal_id:
+            legacy.append(row)
+            continue
+        previous = latest.get(signal_id)
+        if previous is None or payload.get('revision', 1) > previous['payload'].get('revision', 1):
+            latest[signal_id] = row
+    return legacy + [row for row in latest.values()
+                     if row['payload'].get('status', 'active') in {'active', 'confirmed'}]
+
+
 def _event_presentation(row: dict[str, Any]) -> dict[str, str]:
     """Prepare list cells without exposing payloads or changing chart labels."""
     if row.get("event_type") != BS_EVENT_TYPE:
@@ -437,7 +461,7 @@ def bs_points(symbol: str, prices: list[float], now: datetime | None = None, *,
 
     with _LOCK:
         active = dict(_VOLATILITY_BS.get(code) or {})
-        events = list(_EVENTS)
+        events = _current_signal_events(_EVENTS)
 
     if active and str(active.get("trade_date") or "") == day.isoformat():
         for marker in active.get("markers") or []:
@@ -490,7 +514,7 @@ def daily_bs_points(symbol: str, bars: list[Any]) -> list[tuple[int, str]]:
     }
     with _LOCK:
         active = dict(_VOLATILITY_BS.get(code) or {})
-        events = list(_EVENTS)
+        events = _current_signal_events(_EVENTS)
 
     points: set[tuple[int, str]] = set()
     if active:

@@ -1,0 +1,15 @@
+{
+  "related_tests_passed": 179,
+  "known_failure_reproduced": true,
+  "scheduler_matches_head": true,
+  "scheduler_test_matches_head": true,
+  "diff_check": true,
+  "javascript_syntax": true,
+  "new_python_ast_and_size": true,
+  "release_integration": {
+    "base": "42201c7",
+    "related_tests_passed": 261,
+    "known_old_branch_scheduler_failure_absent": true,
+    "main_updates_preserved": true
+  }
+}

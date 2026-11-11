@@ -74,6 +74,7 @@ const TEXTS = [
   'average_line_color',
   'background_color',
   'mcp_url',
+  'mcp_realtime_url',
   'mcp_api_key',
 ];
 const FONT_COLORS = [
@@ -616,6 +617,7 @@ for (const id of [
   'refresh_seconds',
   'chart_refresh_seconds',
   'mcp_url',
+  'mcp_realtime_url',
   'mcp_api_key',
 ]) {
   el(id).addEventListener('blur', () => apply('已应用'));
