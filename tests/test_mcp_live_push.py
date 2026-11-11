@@ -7,6 +7,12 @@ from stockwidget import mcp_realtime as realtime
 from stockwidget.mcp_realtime_depth import DepthUpdates
 
 
+@pytest.mark.parametrize('value', ['2026-11-11T15:46:35Z', '2026-11-11T23:46:35+08:00',
+                                  '2026-11-11T23:46:35'])
+def test_event_clock_displays_shanghai_time(value):
+    assert '23:46:35' == realtime.event_clock(value)
+
+
 @pytest.mark.parametrize('stage', ['delta', 'state'])
 def test_query_timeout_retries_cursor_without_closing_live_subscription(monkeypatch, stage):
     statuses, cursors = [], []

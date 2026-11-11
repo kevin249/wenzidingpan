@@ -14,6 +14,7 @@ from mcp.client.subscriptions import listen
 
 from .config import config_dir
 from .mcp_endpoint import realtime_url
+from .market_hours import SHANGHAI_TZ
 
 HEARTBEAT_GRACE_SECONDS = 45
 
@@ -261,10 +262,20 @@ async def consume(listener, session, subscription, *, journal, cursor, symbols, 
         await asyncio.gather(watcher, return_exceptions=True)
 
 
+def event_clock(value):
+    try:
+        clock = datetime.fromisoformat(value.replace('Z', '+00:00'))
+        if clock.tzinfo is not None:
+            clock = clock.astimezone(SHANGHAI_TZ)
+        return clock.strftime('%H:%M:%S')
+    except (ValueError, TypeError, AttributeError):
+        return str(value)[11:19] or str(value)
+
+
 def emit_event(listener, event, *, alert):
     from .mcp_notifications import McpNotification
     from .mcp_bs import record_notification
-    title = f"{event['occurred_at'][11:19]} {event['event']} {event.get('price') or '-'} {event.get('name') or event['symbol']}"
+    title = f"{event_clock(event['occurred_at'])} {event['event']} {event.get('price') or '-'} {event.get('name') or event['symbol']}"
     notification = McpNotification(event_id=event['event_id'], title=title, body='',
         event_type=event['event_type'], created_at=event['generated_at'], sequence=event['sequence'],
         payload=dict(code=event['symbol'][:6], name=event['name'], signal=event['event'], price=event['price'],

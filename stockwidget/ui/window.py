@@ -1261,8 +1261,15 @@ class TickerWindow(QWidget):
             return {"width": widget.width(), "height": widget.height(), "visible": widget.isVisible()}
 
         regions = {"window": measure(self)}
+        tdw = {}
         if self._rows:
             row = next(iter(self._rows.values()))
+            trend = row._display_trend
+            power = [value for value in row._minute_tdw_power if value is not None]
+            tdw = dict(trade_date=trend.trade_date if trend else '', valid_points=len(power),
+                first_time=next(iter(trend.tdw_points), '') if trend else '',
+                last_time=next(reversed(trend.tdw_points), '') if trend else '',
+                last_power=power[-1] if power else None)
             theme2 = self._config.display_theme == "theme2"
             for region, widget in (
                 ("row", row),
@@ -1278,7 +1285,7 @@ class TickerWindow(QWidget):
             else:
                 regions["price"] = measure(row.price_label)
                 regions["percent"] = measure(row.percent_label)
-        return {"theme": self._config.display_theme, "scale": self._scale, "regions": regions}
+        return {"theme": self._config.display_theme, "scale": self._scale, "regions": regions, "tdw": tdw}
 
     def _bounded_drag_size(self, size: QSize) -> QSize:
         # A width-only drag must also preserve a compact window already shorter than 80 px.

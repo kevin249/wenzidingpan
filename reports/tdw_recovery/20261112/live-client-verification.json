@@ -1,0 +1,123 @@
+{
+  "live_client_base": "http://127.0.0.1:50359",
+  "layout": {
+    "regions": {
+      "canvas": {
+        "height": 480,
+        "visible": false,
+        "width": 640
+      },
+      "chart": {
+        "height": 327,
+        "visible": true,
+        "width": 417
+      },
+      "dark": {
+        "height": 20,
+        "visible": true,
+        "width": 36
+      },
+      "name": {
+        "height": 31,
+        "visible": true,
+        "width": 153
+      },
+      "percent": {
+        "height": 31,
+        "visible": true,
+        "width": 92
+      },
+      "price": {
+        "height": 36,
+        "visible": true,
+        "width": 95
+      },
+      "row": {
+        "height": 379,
+        "visible": true,
+        "width": 433
+      },
+      "window": {
+        "height": 419,
+        "visible": true,
+        "width": 435
+      }
+    },
+    "scale": 1.0,
+    "tdw": {
+      "first_time": "2026-11-11 09:31",
+      "last_power": 3.3729462024769585,
+      "last_time": "2026-11-11 15:00:02",
+      "trade_date": "2026-11-11",
+      "valid_points": 475
+    },
+    "theme": "theme3"
+  },
+  "mcp_test": {
+    "delivered_at": 1794413616.437064,
+    "depth": {
+      "ask_count": 598,
+      "available": true,
+      "bid_count": 1000,
+      "depth_mode": "FULL_DEPTH",
+      "fetched_at": "2026-11-11T16:13:36.019000+00:00",
+      "full_depth": true,
+      "full_depth_failures": 0,
+      "latest_depth_mode": "NONE",
+      "levels": null,
+      "reason": "tdx_depth_distribution_ready",
+      "received_at": 1794413616.4318187,
+      "requested_depth": 1000,
+      "source_at": "2026-11-11T16:13:36.019000+00:00",
+      "symbol": "603986",
+      "using_cached_full_depth": false
+    },
+    "display": {
+      "detail": "窗口已绘制千档分布",
+      "painted": {
+        "at": 1794413616.635154,
+        "shown": true,
+        "source_at": "2026-11-11T16:13:36.019000+00:00"
+      },
+      "received": {
+        "ask_count": 598,
+        "at": 1794413616.575177,
+        "bid_count": 1000,
+        "source_at": "2026-11-11T16:13:36.019000+00:00"
+      },
+      "status": "pass"
+    },
+    "error": "",
+    "running": false,
+    "steps": [
+      {
+        "detail": "通过",
+        "label": "实时连接",
+        "milliseconds": 37,
+        "status": "pass"
+      },
+      {
+        "detail": "通过",
+        "label": "服务器事件回传",
+        "milliseconds": 327,
+        "status": "pass"
+      },
+      {
+        "detail": "1000 买档 / 598 卖档",
+        "label": "真实千档采集",
+        "milliseconds": 506,
+        "status": "pass"
+      },
+      {
+        "detail": "1000 买档 / 598 卖档，校验通过",
+        "label": "千档推送接收与校验",
+        "milliseconds": 128,
+        "status": "pass"
+      }
+    ],
+    "symbol": "603986"
+  },
+  "formula_changed": false,
+  "tdw_reference": 3.3729462024769585,
+  "timezone": "Asia/Shanghai"
+}

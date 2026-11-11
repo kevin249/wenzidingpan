@@ -337,6 +337,8 @@ class WidgetApp:
         if snapshot.effective_provider:
             label = f"自动 · {listing.get(snapshot.effective_provider, snapshot.effective_provider)}"
         self.window.update_snapshot(snapshot, label)
+        if server := getattr(self, 'server', None):
+            server.publish_layout_metrics(self.window.layout_metrics())
         quotes = snapshot.quotes
         if snapshot.updated_symbols is not None:
             changed = set(snapshot.updated_symbols)

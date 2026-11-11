@@ -112,10 +112,10 @@ class RealtimeFeed:
         # uses Eastmoney/Tencent, so warm the minute formula from those too.
         self._minute_source = "auto" if source == "sina" else source
 
-    def _warm_minutes(self, at: datetime) -> list[Bar]:
+    def _warm_minutes(self, at: datetime, *, trade_day: str | None = None) -> list[Bar]:
         if not self._load_minute_history:
             return self._history_bars
-        day = at.date().isoformat()
+        day = trade_day or at.date().isoformat()
         if day != self._history_day:
             self._history_bars, self._next_history_fetch = [], 0.0
             self._minute_trend = None
@@ -127,7 +127,10 @@ class RealtimeFeed:
                                       adjust=False, source=self._minute_source)
                 if history and history.bars:
                     cutoff = at.strftime("%Y-%m-%d %H:%M")
-                    bars = [bar for bar in history.bars if bar.time[:10] == day and bar.time <= cutoff
+                    selected_day = day
+                    if trade_day is None and not is_a_share_active_time(at):
+                        selected_day = max((bar.time[:10] for bar in history.bars if bar.time <= cutoff), default=day)
+                    bars = [bar for bar in history.bars if bar.time[:10] == selected_day and bar.time <= cutoff
                             and _is_trading_minute(bar.time[11:16])]
                     if bars and (not self._history_bars or bars[-1].time >= self._history_bars[-1].time):
                         if bars != self._history_bars or history.source != self._history_source:
@@ -136,6 +139,9 @@ class RealtimeFeed:
                             self._minute_trend = None
             except (requests.RequestException, ValueError, TypeError, OSError):
                 pass
+        if (self._history_bars and self._history_bars[-1].time[:10] != day
+                and (trade_day is not None or is_a_share_active_time(at))):
+            return []
         return self._history_bars
 
     def _get(self, url, params, referer):
@@ -247,13 +253,17 @@ class RealtimeFeed:
         return candidate
 
     def _fallback_to_minutes(self, at: datetime, live: Trend | None) -> Trend | None:
-        history = self._warm_minutes(at)
-        day = at.date().isoformat()
-        if not history or history[-1].time[:10] != day:
-            return None
         latest_live = live if live is not None else self._trend
+        trade_day = latest_live.trade_date if latest_live is not None else None
+        if is_a_share_active_time(at) and trade_day != at.date().isoformat():
+            trade_day = at.date().isoformat()
+        history = self._warm_minutes(at, trade_day=trade_day)
+        if not history:
+            return None
+        day = history[-1].time[:10]
         # Keep the higher-resolution candle whenever transactions cover the latest minute.
-        if latest_live is not None and latest_live.realtime_bars[-1].time[:16] >= history[-1].time:
+        if (latest_live is not None and latest_live.trade_date == day
+                and latest_live.realtime_bars[-1].time[:16] >= history[-1].time):
             return None
         latest = history[-1].time
         forming = latest if latest == at.strftime("%Y-%m-%d %H:%M") and is_a_share_active_time(at) else ""
@@ -292,7 +302,7 @@ class RealtimeFeed:
         # successful fetch confirms the last reported second, even on a quiet stock.
         same_session = (bars[-1].time[11:13] < "12") == (at.hour < 12)
         forming = bars[-1].time if same_session and is_a_share_active_time(at) and _session(limit[11:]) else ""
-        history = self._warm_minutes(at)
+        history = self._warm_minutes(at, trade_day=day)
         if (continuous and self._forming == forming and self._bars[start:] == bars
                 and self._applied_history is history):
             return self._trend
@@ -301,8 +311,13 @@ class RealtimeFeed:
         self._applied_history = history
         live_minutes = minute_bars(self._bars)
         preceding = [bar for bar in history if bar.time < live_minutes[0].time]
+        inputs = preceding + live_minutes
+        if (self._minute_fallback and not is_a_share_active_time(at) and history
+                and history[-1].time >= live_minutes[-1].time):
+            # 收盘后完整分钟 K 优先；尾部成交页可能从半分钟开始，不能替代完整 OHLC。
+            inputs = history
         minute_points = tdw.calculate(
-            preceding + live_minutes, PERIOD_1M, at,
+            inputs, PERIOD_1M, at,
             forming=live_minutes[-1].time if forming else "", partial_windows=self._minute_fallback,
         )
         points = {bar.time: minute_points[bar.time] for bar in preceding

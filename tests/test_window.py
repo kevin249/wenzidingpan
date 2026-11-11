@@ -53,6 +53,23 @@ def _install_stub_watcher(window) -> _StubClickWatcher:
     return stub
 
 
+def test_layout_metrics_exposes_actual_aligned_tdw_input(app):
+    from stockwidget.providers.base import Quote
+    from stockwidget.tdw import Point
+    window = TickerWindow(Config(symbols=['603986'], display_theme='theme3'))
+    trend = Trend(prices=[10, 11, 12], minutes=['09:30', '09:31', '09:32'], trade_date='2026-11-11',
+        tdw_points={'2026-11-11 09:31': Point(.6,11,()), '2026-11-11 09:32': Point(1.3,12,())})
+    try:
+        window._sync_rows([Quote.from_prices('603986','兆易创新',12,10)], {'603986':trend})
+        metrics = window.layout_metrics()['tdw']
+        assert 2 == metrics['valid_points']
+        assert '2026-11-11' == metrics['trade_date']
+        assert '2026-11-11 09:31' == metrics['first_time']
+        assert 1.3 == metrics['last_power']
+    finally:
+        window.close()
+
+
 def _click_away(window) -> None:
     """模拟「点屏幕任意位置」：给一个必然不在任何价格热区上的全局坐标。"""
     window._on_screen_click(QPoint(-9_999, -9_999))

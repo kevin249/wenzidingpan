@@ -96,7 +96,7 @@ def test_realtime_formula_uses_one_minute_ohlc_and_revises_forming_minute(monkey
     at = START.replace(hour=9, minute=55, second=30)
     warm = [Bar((START + timedelta(minutes=i)).strftime("%Y-%m-%d %H:%M"), 10, 14, 10, 10)
             for i in range(24)]
-    monkeypatch.setattr(feed, "_warm_minutes", lambda _: warm)
+    monkeypatch.setattr(feed, "_warm_minutes", lambda _, **kw: warm)
     def bars(closes):
         return [Bar((at.replace(second=0)+timedelta(seconds=i)).strftime("%Y-%m-%d %H:%M:%S"),
                     10, 14, 10, c)
