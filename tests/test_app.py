@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -153,7 +154,8 @@ def dispatch(monkeypatch):
         tray_icon = _FakeTray() if tray else None
         poller = _FakePoller()
         stub = SimpleNamespace(
-            config=config, window=window, tray=tray_icon, _unread=0, poller=poller
+            config=config, window=window, tray=tray_icon, _unread=0, poller=poller,
+            bs_poller=SimpleNamespace(refresh_bs_now=lambda: None),
         )
         for _ in range(times):
             app_module.WidgetApp._on_mcp_notification(stub, NOTIFICATION)
@@ -219,8 +221,25 @@ def test_consecutive_notifications_are_separated_by_one_blank_line(dispatch, cap
     assert printed == "\n[MCP]\n600519 涨停封板\n\n[MCP]\n600519 涨停封板\n"
 
 
+@pytest.mark.parametrize("event_type, payload, source", [
+    ("trading.holding_t_signal", {"channel": "page"}, "分时 B/S"),
+    ("trading.holding_t_signal", {"signal_source": "page_hybrid_trend"}, "分时 B/S"),
+    ("trading.holding_t_signal", {"channel": "strategy"}, "持仓策略 B/S"),
+    ("trading.volatility_indicators", {}, "指标公式"),
+    ("trading.volatility_indicators", {"indicator_name": "TDW"}, "TDW"),
+    ("market.main_force_monitor", {}, "主力监控"),
+    ("trading.bank_index_alert", {}, "银行指数预警"),
+    ("trading.order_filled", {}, "实盘成交"),
+    ("market.other", {}, "market.other"),
+])
+def test_terminal_notification_shows_its_source(dispatch, capsys, monkeypatch, event_type, payload, source):
+    notification = replace(NOTIFICATION, event_type=event_type, payload=payload)
+    monkeypatch.setattr(__name__ + '.NOTIFICATION', notification)
+    dispatch(Config())
+    assert capsys.readouterr().out == f"\n[MCP] {source}\n{notification.body}\n"
+
+
 def test_title_only_realtime_event_is_visible_in_terminal(dispatch, capsys, monkeypatch):
-    from dataclasses import replace
     monkeypatch.setattr(__name__ + '.NOTIFICATION', replace(NOTIFICATION, body=''))
     dispatch(Config())
     assert NOTIFICATION.title in capsys.readouterr().out

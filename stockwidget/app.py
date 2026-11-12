@@ -24,6 +24,27 @@ from .ui.window import TickerWindow
 from .webui import SettingsServer
 
 
+_MCP_EVENT_SOURCES = {
+    "market.main_force_monitor": "主力监控",
+    "market.main_force_monitor_test": "主力监控回放",
+    "system.push_test": "推送测试",
+    "trading.bank_index_alert": "银行指数预警",
+    "trading.order_filled": "实盘成交",
+}
+
+
+def _mcp_event_source(notification: McpNotification) -> str:
+    event_type = notification.event_type.strip()
+    payload = notification.payload
+    if event_type == mcp_bs.BS_EVENT_TYPE:
+        if payload.get("channel") == "page" or payload.get("signal_source") == "page_hybrid_trend":
+            return "分时 B/S"
+        return "持仓策略 B/S"
+    if event_type == "trading.volatility_indicators":
+        return str(payload.get("indicator_name") or "").strip() or "指标公式"
+    return _MCP_EVENT_SOURCES.get(event_type, event_type)
+
+
 class ConfigBridge(QObject):
     """WebUI 跑在另一个线程，配置变更通过信号回到界面线程。"""
 
@@ -395,7 +416,8 @@ class WidgetApp:
             # The full-day marker snapshot takes precedence over notifications.
             # Refresh it immediately; notification bursts coalesce in the worker.
             self.bs_poller.refresh_bs_now()
-        print("\n[MCP]", flush=True)
+        source = _mcp_event_source(notification)
+        print(f"\n[MCP] {source}".rstrip(), flush=True)
         if text := notification.body or notification.title:
             print(text, flush=True)
         if self.config.mcp_bell_terminal:

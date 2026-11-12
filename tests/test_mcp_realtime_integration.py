@@ -87,6 +87,13 @@ def _event(revision, *, status='active', price='100.00'):
         alert_until='2026-11-11T10:02:01+08:00', l2_confirmation='confirmed')
 
 
+def test_realtime_event_keeps_source_channel(monkeypatch):
+    notifications = []
+    monkeypatch.setattr(mcp_bs, 'record_notification', notifications.append)
+    mcp_realtime.emit_event(_listener(), dict(_event(1), channel='page'), alert=False)
+    assert notifications[0].payload['channel'] == 'page'
+
+
 def test_realtime_revisions_replace_chart_marker_and_invalidations_remove_it():
     mcp_bs.reset_for_tests()
     try:

@@ -279,6 +279,7 @@ def emit_event(listener, event, *, alert):
     notification = McpNotification(event_id=event['event_id'], title=title, body='',
         event_type=event['event_type'], created_at=event['generated_at'], sequence=event['sequence'],
         payload=dict(code=event['symbol'][:6], name=event['name'], signal=event['event'], price=event['price'],
+                     channel=event.get('channel', ''),
                      signal_at=event['occurred_at'], l2_confirmed=event['l2_confirmation'] == 'confirmed',
                      signal_id=event.get('signal_id', ''), revision=event.get('revision', 1),
                      status=event.get('status', 'active')))
