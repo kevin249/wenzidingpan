@@ -213,10 +213,10 @@ def test_all_switches_off_still_prints_the_body(dispatch, capsys):
     assert "[MCP]\n600519 涨停封板\n" in printed
 
 
-def test_consecutive_notifications_get_a_blank_divider_between_them(dispatch, capsys):
+def test_consecutive_notifications_are_separated_by_one_blank_line(dispatch, capsys):
     dispatch(Config(), times=2)
     printed = capsys.readouterr().out
-    assert "600519 涨停封板\n\n======\n\n[MCP]\n" in printed
+    assert printed == "\n[MCP]\n600519 涨停封板\n\n[MCP]\n600519 涨停封板\n"
 
 
 def test_title_only_realtime_event_is_visible_in_terminal(dispatch, capsys, monkeypatch):

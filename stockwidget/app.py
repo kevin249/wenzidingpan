@@ -395,8 +395,7 @@ class WidgetApp:
             # The full-day marker snapshot takes precedence over notifications.
             # Refresh it immediately; notification bursts coalesce in the worker.
             self.bs_poller.refresh_bs_now()
-        print("\n======\n", flush=True)
-        print("[MCP]", flush=True)
+        print("\n[MCP]", flush=True)
         if text := notification.body or notification.title:
             print(text, flush=True)
         if self.config.mcp_bell_terminal:
