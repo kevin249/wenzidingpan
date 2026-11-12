@@ -25,9 +25,13 @@ from .webui import SettingsServer
 
 
 _MCP_EVENT_SOURCES = {
+    "market.dark_trade_turning": "暗盘拐点",
     "market.main_force_monitor": "主力监控",
     "market.main_force_monitor_test": "主力监控回放",
     "system.push_test": "推送测试",
+    "screen.v2.market_update": "综合筛选盘中播报",
+    "topic.ths_new_post": "同花顺关注新帖",
+    "topic.xueqiu_new_post": "雪球关注新帖",
     "trading.bank_index_alert": "银行指数预警",
     "trading.order_filled": "实盘成交",
 }
@@ -418,6 +422,8 @@ class WidgetApp:
             self.bs_poller.refresh_bs_now()
         source = _mcp_event_source(notification)
         print(f"\n[MCP] {source}".rstrip(), flush=True)
+        if notification.show_title and notification.body and notification.title:
+            print(notification.title, flush=True)
         if text := notification.body or notification.title:
             print(text, flush=True)
         if self.config.mcp_bell_terminal:

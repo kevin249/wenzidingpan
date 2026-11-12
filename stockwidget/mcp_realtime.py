@@ -1,6 +1,6 @@
 """实时订阅消费与 SQLite 游标事务；与 AI 全量查询路径独立。"""
 import asyncio
-from contextlib import closing, contextmanager
+from contextlib import asynccontextmanager, closing, contextmanager
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -17,6 +17,11 @@ from .mcp_endpoint import realtime_url
 from .market_hours import SHANGHAI_TZ
 
 HEARTBEAT_GRACE_SECONDS = 45
+DETAIL_TIMEOUT_SECONDS = 4
+DETAIL_EVENT_TYPES = {
+    'screen.v2.market_update', 'market.dark_trade_turning',
+    'topic.ths_new_post', 'topic.xueqiu_new_post',
+}
 
 
 def payload(result):
@@ -180,8 +185,8 @@ async def run_listener(listener, config, cancel_event):
                         recovery_token=recovery['recovery_token'], symbols=event_symbols)
                     for event in journal.all_events() + recovery['signals']:
                         emit_event(listener, event, alert=False)
-                    for event in new:
-                        emit_event(listener, event, alert=not recovery['initial'] and journal.alertable(event))
+                    await emit_events(listener, new, alertable=lambda event: (
+                        not recovery['initial'] and journal.alertable(event)))
                     listener._emit_status('已连接 · 实时增量 / 游标已恢复')
                     from .mcp_realtime_depth import DepthWorker
                     depth_worker = DepthWorker(listener, config)
@@ -244,8 +249,8 @@ async def consume(listener, session, subscription, *, journal, cursor, symbols, 
                 raise RuntimeError('实时订阅已结束')
             try:
                 cursor, fresh = await _drain(session, journal, cursor)
-                for event in fresh:
-                    emit_event(listener, event, alert=journal.alertable(event))
+                if fresh:
+                    await emit_events(listener, fresh, alertable=journal.alertable)
                 state = await _call(session, 'get_stream_state')
             except TimeoutError as exc:
                 if asyncio.get_running_loop().time() - last_notice > HEARTBEAT_GRACE_SECONDS:
@@ -272,22 +277,88 @@ def event_clock(value):
         return str(value)[11:19] or str(value)
 
 
-def emit_event(listener, event, *, alert):
+@asynccontextmanager
+async def detail_session(config):
+    from .mcp_notifications import _api_key, negotiate_protocol
+    headers = {'Authorization': 'Bearer ' + _api_key(config)}
+    async with httpx2.AsyncClient(headers=headers, trust_env=False) as client:
+        async with streamable_http_client(config.mcp_url.strip(), http_client=client,
+                                          terminate_on_close=False) as (rd, wr):
+            async with ClientSession(rd, wr) as session:
+                await negotiate_protocol(session)
+                yield session
+
+
+async def read_event_detail(session, event_id):
+    first = await _call(session, 'get_signal_event_detail', dict(event_id=event_id))
+    fragments = [first['data_fragment']]
+    for index in range(1, first['part_count']):
+        part = await _call(session, 'get_signal_query_part',
+                           dict(snapshot_id=first['snapshot_id'], part_index=index))
+        fragments.append(part['data_fragment'])
+    text = ''.join(fragments)
+    if hashlib.sha256(text.encode()).hexdigest() != first['sha256']:
+        raise ValueError('EVENT_DETAIL_CHECKSUM_MISMATCH')
+    detail = json.loads(text)
+    if not isinstance(detail, dict) or detail.get('event_id') != event_id:
+        raise ValueError('EVENT_DETAIL_ID_MISMATCH')
+    return detail
+
+
+def _can_alert(listener, event):
+    return (listener._config.mcp_notifications_enabled
+            and datetime.fromisoformat(event['alert_until']) > datetime.now(timezone.utc))
+
+
+async def emit_events(listener, events, *, alertable):
+    pending = []
+    for event in events:
+        alert = alertable(event)
+        if alert and event['event_type'] in DETAIL_EVENT_TYPES and _can_alert(listener, event):
+            pending.append(event)
+        else:
+            emit_event(listener, event, alert=alert)
+    if not pending:
+        return
+
+    details = {}
+
+    async def fetch():
+        async with detail_session(listener._config) as session:
+            for event in pending:
+                event_id = event['event_id']
+                try:
+                    details[event_id] = await read_event_detail(session, event_id)
+                except (RuntimeError, ValueError, TypeError, KeyError):
+                    continue
+
+    try:
+        await asyncio.wait_for(fetch(), DETAIL_TIMEOUT_SECONDS)
+    except Exception:
+        # 查询端断开或超时后，仍交付已拿到的正文及其余事件的标题。
+        pass
+    for event in pending:
+        emit_event(listener, event, alert=True, detail=details.get(event['event_id']))
+
+
+def emit_event(listener, event, *, alert, detail=None):
     from .mcp_notifications import McpNotification
     from .mcp_bs import record_notification
-    title = f"{event_clock(event['occurred_at'])} {event['event']} {event.get('price') or '-'} {event.get('name') or event['symbol']}"
-    notification = McpNotification(event_id=event['event_id'], title=title, body='',
+    detail = detail or {}
+    title = ' '.join(str(part) for part in (event_clock(event['occurred_at']), event['event'],
+                     event.get('price'), event.get('name') or event['symbol']) if part)
+    notification = McpNotification(event_id=event['event_id'], title=title,
+        body=str(detail.get('body') or '').strip(), link=str(detail.get('link') or ''),
         event_type=event['event_type'], created_at=event['generated_at'], sequence=event['sequence'],
         payload=dict(code=event['symbol'][:6], name=event['name'], signal=event['event'], price=event['price'],
                      channel=event.get('channel', ''),
                      signal_at=event['occurred_at'], l2_confirmed=event['l2_confirmation'] == 'confirmed',
                      signal_id=event.get('signal_id', ''), revision=event.get('revision', 1),
-                     status=event.get('status', 'active')))
+                     status=event.get('status', 'active')), show_title=True)
     record_notification(notification)
     if cache_updated := getattr(listener, 'cache_updated', None):
         cache_updated.emit()
     if event['event_type'] == 'trading.holding_t_signal':
         listener.bs_updated.emit(event['symbol'][:6])
-    expires = datetime.fromisoformat(event['alert_until'])
-    if alert and listener._config.mcp_notifications_enabled and expires > datetime.now(timezone.utc) and listener._remember(event['event_id']):
+    if alert and _can_alert(listener, event) and listener._remember(event['event_id']):
         listener.notification_ready.emit(notification)

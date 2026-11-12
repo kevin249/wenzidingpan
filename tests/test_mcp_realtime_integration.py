@@ -2,7 +2,9 @@
 import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+import hashlib
+import json
 import queue
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
@@ -92,6 +94,58 @@ def test_realtime_event_keeps_source_channel(monkeypatch):
     monkeypatch.setattr(mcp_bs, 'record_notification', notifications.append)
     mcp_realtime.emit_event(_listener(), dict(_event(1), channel='page'), alert=False)
     assert notifications[0].payload['channel'] == 'page'
+
+
+@pytest.mark.parametrize('event_type', [
+    'screen.v2.market_update', 'market.dark_trade_turning',
+    'topic.ths_new_post', 'topic.xueqiu_new_post',
+])
+def test_realtime_alert_restores_original_body_and_keeps_title(monkeypatch, event_type):
+    event = dict(_event(1), event_type=event_type, event='原始标题', symbol='', name='', price=None,
+                 alert_until=(datetime.now(timezone.utc) + timedelta(minutes=1)).isoformat())
+    text = json.dumps(dict(event_id=event['event_id'], body='第一行\n第二行', link='/original'), ensure_ascii=False)
+    calls, alerts = [], []
+    listener = SimpleNamespace(_config=Config(mcp_notifications_enabled=True), _remember=lambda event_id: True,
+                               notification_ready=SimpleNamespace(emit=alerts.append))
+
+    @asynccontextmanager
+    async def session(config):
+        yield object()
+
+    async def call(session, tool, args):
+        calls.append((tool, args))
+        if tool == 'get_signal_event_detail':
+            return dict(data_fragment=text[:30], part_count=2, snapshot_id='snapshot',
+                        sha256=hashlib.sha256(text.encode()).hexdigest())
+        return dict(data_fragment=text[30:])
+
+    monkeypatch.setattr(mcp_realtime, 'detail_session', session)
+    monkeypatch.setattr(mcp_realtime, '_call', call)
+    monkeypatch.setattr(mcp_bs, 'record_notification', lambda notification: None)
+    asyncio.run(mcp_realtime.emit_events(listener, [event], alertable=lambda _: True))
+    assert calls == [('get_signal_event_detail', dict(event_id=event['event_id'])),
+                     ('get_signal_query_part', dict(snapshot_id='snapshot', part_index=1))]
+    assert len(alerts) == 1
+    assert (alerts[0].title, alerts[0].body, alerts[0].link) == ('10:00:00 原始标题', '第一行\n第二行', '/original')
+
+
+def test_realtime_detail_timeout_still_delivers_compact_alert(monkeypatch):
+    event = dict(_event(1), event_type='market.dark_trade_turning',
+                 alert_until=(datetime.now(timezone.utc) + timedelta(minutes=1)).isoformat())
+    alerts = []
+    listener = SimpleNamespace(_config=Config(mcp_notifications_enabled=True), _remember=lambda event_id: True,
+                               notification_ready=SimpleNamespace(emit=alerts.append))
+
+    @asynccontextmanager
+    async def session(config):
+        await asyncio.Event().wait()
+        yield
+
+    monkeypatch.setattr(mcp_realtime, 'detail_session', session)
+    monkeypatch.setattr(mcp_realtime, 'DETAIL_TIMEOUT_SECONDS', 0.01)
+    monkeypatch.setattr(mcp_bs, 'record_notification', lambda notification: None)
+    asyncio.run(mcp_realtime.emit_events(listener, [event], alertable=lambda _: True))
+    assert [(notice.event_id, notice.body) for notice in alerts] == [(event['event_id'], '')]
 
 
 def test_realtime_revisions_replace_chart_marker_and_invalidations_remove_it():

@@ -44,6 +44,7 @@ class McpNotification:
     link: str = ""
     payload: dict[str, Any] = field(default_factory=dict)
     sequence: int = 0
+    show_title: bool = False
 
 
 def _positive_int(value: Any) -> int:

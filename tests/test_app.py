@@ -245,6 +245,14 @@ def test_title_only_realtime_event_is_visible_in_terminal(dispatch, capsys, monk
     assert NOTIFICATION.title in capsys.readouterr().out
 
 
+def test_realtime_detail_prints_title_and_body(dispatch, capsys, monkeypatch):
+    notification = replace(NOTIFICATION, event_type='market.dark_trade_turning', show_title=True,
+                           title='14:23:00 【暗盘拐点】1只下降｜13:50', body='兆易创新 13:50 暗盘下降')
+    monkeypatch.setattr(__name__ + '.NOTIFICATION', notification)
+    dispatch(Config())
+    assert capsys.readouterr().out == f'\n[MCP] 暗盘拐点\n{notification.title}\n{notification.body}\n'
+
+
 def test_tray_channels_are_skipped_without_a_tray(dispatch):
     assert _channels(dispatch(Config(), tray=False)) == (1, 0, 0, 1)
 
