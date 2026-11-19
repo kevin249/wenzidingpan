@@ -274,6 +274,7 @@ def test_theme3_price_layouts_keep_geometry_and_repaint_live_prices(app, card, m
     original_geometry = [widget.geometry() for widget in widgets]
     original_draw_text = QPainter.drawText
     calls = []
+    fonts = []
 
     def record_text(painter, *args):
         if len(args) == 3 and isinstance(args[0], QRect):
@@ -281,11 +282,17 @@ def test_theme3_price_layouts_keep_geometry_and_repaint_live_prices(app, card, m
             assert QFontMetrics(painter.font()).horizontalAdvance(text) <= rect.width()
             assert QFontMetrics(painter.font()).height() <= rect.height()
             calls.append((rect, text))
+            fonts.append(painter.font())
         return original_draw_text(painter, *args)
 
     def painted(label):
         calls.clear()
+        fonts.clear()
         label.grab()
+        if fonts:
+            expected = label.font()
+            expected.setPixelSize(fonts[0].pixelSize())
+            assert all(font == expected for font in fonts)
         return list(calls)
 
     monkeypatch.setattr(QPainter, "drawText", record_text)
@@ -316,7 +323,15 @@ def test_theme3_price_layouts_keep_geometry_and_repaint_live_prices(app, card, m
     window._sync_rows([updated], {quote.symbol: trend})
     app.processEvents()
     assert [text for _, text in painted(row.price_label)] == ["10.35", "+3.50%"]
+    price_size = fonts[0].pixelSize()
     assert [text for _, text in painted(row.percent_label)] == ["10.45", "10.25"]
+    percent_size = fonts[0].pixelSize()
+    window.apply_config(store.update({"component_sizes": {
+        "price": {"width": 44, "height": 20}, "percent": {"width": 38, "height": 20},
+    }}))
+    app.processEvents()
+    assert len(painted(row.price_label)) == 2 and fonts[0].pixelSize() < price_size
+    assert len(painted(row.percent_label)) == 2 and fonts[0].pixelSize() < percent_size
     window._sync_rows([Quote.failed(quote.symbol, "报价失败")])
     app.processEvents()
     assert row.price_label.text() == "报价失败"

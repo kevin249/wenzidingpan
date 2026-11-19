@@ -75,7 +75,7 @@ def _color_style(color) -> str:
 class _QuoteLabel(SizedLabel):
     """在原标签区域内画两行，仍由原始单行文字决定布局尺寸。"""
 
-    _lines: tuple[tuple[tuple[str, QFont, QColor], ...], ...] = ()
+    _lines: tuple[tuple[tuple[str, QColor], ...], ...] = ()
 
     def set_lines(self, lines=(), tooltip: str = "") -> None:
         if self._lines != lines:
@@ -90,26 +90,35 @@ class _QuoteLabel(SizedLabel):
             return
 
         area = self.contentsRect()
-        painter = QPainter(self)
+        cells = []
         for row, line in enumerate(self._lines):
             top = area.y() + row * area.height() // 2
             bottom = area.y() + (row + 1) * area.height() // 2
             width, gap = divmod(area.width(), len(line))
             alignment = Qt.AlignCenter if len(line) == 2 else self.alignment()
-            for column, (text, base_font, color) in enumerate(line):
+            for column, (text, color) in enumerate(line):
                 rect = QRect(area.x() + column * (width + gap), top, width, bottom - top)
-                if not text or rect.isEmpty():
-                    continue
-                font = QFont(base_font)
-                for size in range(min(base_font.pixelSize(), rect.height()), 0, -1):
-                    font.setPixelSize(size)
-                    metrics = QFontMetrics(font, self)
-                    if (metrics.height() <= rect.height()
-                            and metrics.horizontalAdvance(text) <= rect.width()):
-                        break
-                painter.setFont(font)
-                painter.setPen(color)
-                painter.drawText(rect, alignment, text)
+                if text and not rect.isEmpty():
+                    cells.append((rect, alignment, text, color))
+        if not cells:
+            return
+
+        # 同一区域两行共用一个字号，由所有文字中最先受限的一格决定缩放。
+        height = min(rect.height() for rect, _, _, _ in cells)
+        font = QFont(self.font())
+        for size in range(min(font.pixelSize(), height), 0, -1):
+            font.setPixelSize(size)
+            metrics = QFontMetrics(font, self)
+            if metrics.height() <= height and all(
+                metrics.horizontalAdvance(text) <= rect.width() for rect, _, text, _ in cells
+            ):
+                break
+
+        painter = QPainter(self)
+        painter.setFont(font)
+        for rect, alignment, text, color in cells:
+            painter.setPen(color)
+            painter.drawText(rect, alignment, text)
         painter.end()
 
 
@@ -942,20 +951,17 @@ class QuoteRow(SizedWidget):
             self.percent_label.set_lines()
             return
 
-        price_text = (self.price_label.text(), self.price_label.font(), price_color)
+        price_text = (self.price_label.text(), price_color)
         up, down = fmt_price(price * 1.01), fmt_price(price * 0.99)
         tooltip = f"以实时价为基准：+1% {up} / −1% {down}"
-        if mode == "range_above":
-            region, label = "price", self.price_label
-        else:
-            region, label = "percent", self.percent_label
-        upper = (up, label.font(), text_color(config, "auto", direction_color(config, 1), region=region))
-        lower = (down, label.font(), text_color(config, "auto", direction_color(config, -1), region=region))
+        region = "price" if mode == "range_above" else "percent"
+        upper = (up, text_color(config, "auto", direction_color(config, 1), region=region))
+        lower = (down, text_color(config, "auto", direction_color(config, -1), region=region))
         if mode == "range_above":
             self.price_label.set_lines(((upper, lower), (price_text,)), tooltip)
             self.percent_label.set_lines()
         elif self._visible("percent"):
-            percent_text = (self.percent_label.text(), self.percent_label.font(), percent_color)
+            percent_text = (self.percent_label.text(), percent_color)
             self.price_label.set_lines(((price_text,), (percent_text,)) if percent_text[0] else ())
             self.percent_label.set_lines(((upper,), (lower,)), tooltip)
         else:
