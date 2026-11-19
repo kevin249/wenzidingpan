@@ -404,6 +404,15 @@
               <option value="us" {% if config.color_scheme == 'us' %}selected{% endif %}>绿涨红跌（欧美）</option>
             </select>
           </div>
+          <div class="field" data-themes="theme3" {% if config.display_theme != 'theme3' %}hidden{% endif %}>
+            <label for="theme3_price_layout">股价显示</label>
+            <select id="theme3_price_layout">
+              <option value="classic" {% if config.theme3_price_layout == 'classic' %}selected{% endif %}>原版</option>
+              <option value="range_above" {% if config.theme3_price_layout == 'range_above' %}selected{% endif %}>方案 1 · 上方并排 ±1%，下方现价</option>
+              <option value="split_columns" {% if config.theme3_price_layout == 'split_columns' %}selected{% endif %}>方案 2 · 现价和涨跌幅上下排列，右侧上下显示 ±1%</option>
+            </select>
+            <p class="hint">±1% 价格以实时股价为基准，随行情刷新。</p>
+          </div>
         </div>
 
         <h3>K 线与均线</h3>

@@ -46,6 +46,7 @@ THEME3_DEFAULTS = {
 # stockwidget/kline.py 直接读它，两边不会再各写一份。
 KLINE_SOURCES = ("auto", "eastmoney", "tencent", "sina")
 THEME2_SIDES = ("right", "left")
+THEME3_PRICE_LAYOUTS = ("classic", "range_above", "split_columns")
 # sides = 左中右，stacked = 上中下，top_bottom = 信息在上、K 线在下
 ROW_STYLES = ("sides", "stacked", "top_bottom")
 COLOR_SCHEMES = ("cn", "us")
@@ -82,6 +83,7 @@ THEME_SCOPED_FIELDS = (
     "chart_fill_width",
     "tdw_recent_five",
     "theme3_show_tdw",
+    "theme3_price_layout",
     "chart_depth_width",
     "chart_line_width",
     "chart_line_color",
@@ -213,6 +215,7 @@ class Config:
     chart_fill_width: bool = False  # 默认完整交易日横轴；开启后已有分时数据铺满宽度
     tdw_recent_five: bool = False
     theme3_show_tdw: bool = True
+    theme3_price_layout: str = "classic"
     chart_depth_width: int = 0  # 主题 1、3 挂单条最长长度；0 自动
     chart_line_width: float = 1.4
     chart_line_color: str = "#000000"
@@ -368,6 +371,8 @@ def sanitize(raw: Any, *, _include_theme_profiles: bool = True) -> Config:
         out.display_theme = raw["display_theme"]
     if raw.get("theme2_side") in THEME2_SIDES:
         out.theme2_side = raw["theme2_side"]
+    if raw.get("theme3_price_layout") in THEME3_PRICE_LAYOUTS:
+        out.theme3_price_layout = raw["theme3_price_layout"]
     if raw.get("layout") in LAYOUTS:
         out.layout = raw["layout"]
     if raw.get("row_style") in ROW_STYLES:
