@@ -260,6 +260,70 @@ def test_theme3_header_orders_name_price_percent_dark(app, card, width):
         assert abs(rects[1].center().x() - row.rect().center().x()) <= 1
 
 
+@pytest.mark.parametrize("fixed_size", [False, True])
+def test_theme3_price_layouts_keep_geometry_and_repaint_live_prices(app, card, monkeypatch, fixed_size):
+    window, store, quote, trend = card
+    row = window._rows[quote.symbol]
+    if fixed_size:
+        config = store.update({"component_sizes": {
+            "price": {"width": 85, "height": 27}, "percent": {"width": 69, "height": 25},
+        }})
+        window.apply_config(config)
+    widgets = (window, row, row.name_label, row.price_label, row.percent_label, row.dark_box, row.sparkline)
+    app.processEvents()
+    original_geometry = [widget.geometry() for widget in widgets]
+    original_draw_text = QPainter.drawText
+    calls = []
+
+    def record_text(painter, *args):
+        if len(args) == 3 and isinstance(args[0], QRect):
+            rect, _, text = args
+            assert QFontMetrics(painter.font()).horizontalAdvance(text) <= rect.width()
+            assert QFontMetrics(painter.font()).height() <= rect.height()
+            calls.append((rect, text))
+        return original_draw_text(painter, *args)
+
+    def painted(label):
+        calls.clear()
+        label.grab()
+        return list(calls)
+
+    monkeypatch.setattr(QPainter, "drawText", record_text)
+    for mode in ("range_above", "split_columns", "classic"):
+        window.apply_config(store.update({"theme3_price_layout": mode}))
+        app.processEvents()
+        assert [widget.geometry() for widget in widgets] == original_geometry
+        price = painted(row.price_label)
+        percent = painted(row.percent_label)
+        if mode == "range_above":
+            assert [text for _, text in price] == ["10.30", "10.10", "10.20"]
+            left, right, lower = [rect for rect, _ in price]
+            assert left.top() == right.top() < lower.top()
+            assert left.width() == right.width()
+            assert left.right() < right.left()
+            assert not percent
+            assert row.percent_label.text() == "+2.00%"
+        elif mode == "split_columns":
+            assert [text for _, text in price] == ["10.20", "+2.00%"]
+            assert [text for _, text in percent] == ["10.30", "10.10"]
+            assert price[0][0].top() < price[1][0].top()
+            assert percent[0][0].top() < percent[1][0].top()
+        else:
+            assert not price and not percent
+
+    window.apply_config(store.update({"theme3_price_layout": "split_columns"}))
+    updated = Quote.from_prices(quote.symbol, quote.name, 10.35, 10)
+    window._sync_rows([updated], {quote.symbol: trend})
+    app.processEvents()
+    assert [text for _, text in painted(row.price_label)] == ["10.35", "+3.50%"]
+    assert [text for _, text in painted(row.percent_label)] == ["10.45", "10.25"]
+    window._sync_rows([Quote.failed(quote.symbol, "报价失败")])
+    app.processEvents()
+    assert row.price_label.text() == "报价失败"
+    assert not painted(row.price_label) and not painted(row.percent_label)
+    assert not row.percent_label.toolTip()
+
+
 def test_theme3_only_draws_outer_tdw_crossings_without_signal_labels(app, card, monkeypatch):
     from stockwidget import mcp_bs
     from stockwidget.ui import tdw_overlay

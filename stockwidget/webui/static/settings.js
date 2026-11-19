@@ -65,6 +65,7 @@ const TEXTS = [
   'kline_source',
   'display_theme',
   'theme2_side',
+  'theme3_price_layout',
   'layout',
   'row_style',
   'color_scheme',
@@ -559,7 +560,7 @@ for (const axis of ['width', 'height']) {
 }
 
 // 开关和下拉改完即时生效；字号短延迟自动保存，避免改完直接退出时丢失。
-for (const id of [...CHECKBOXES, 'provider', 'kline_source', 'theme2_side', 'layout', 'row_style', 'color_scheme', 'background_color']) {
+for (const id of [...CHECKBOXES, 'provider', 'kline_source', 'theme2_side', 'theme3_price_layout', 'layout', 'row_style', 'color_scheme', 'background_color']) {
   el(id).addEventListener('change', () => apply('已应用'));
 }
 for (const choice of document.querySelectorAll('[name="theme-choice"]')) {

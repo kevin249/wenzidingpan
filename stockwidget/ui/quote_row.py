@@ -24,12 +24,13 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
+import math
 import time
+from dataclasses import replace
 from datetime import datetime
 
-from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtGui import QColor, QFontMetrics
+from PySide6.QtCore import QRect, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter
 from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
@@ -69,6 +70,47 @@ MAX_WIDGET_SIZE = 16777215  # QWIDGETSIZE_MAX：解除之前设过的高度上�
 
 def _color_style(color) -> str:
     return f"color: rgba({color.red()},{color.green()},{color.blue()},{color.alpha()});"
+
+
+class _QuoteLabel(SizedLabel):
+    """在原标签区域内画两行，仍由原始单行文字决定布局尺寸。"""
+
+    _lines: tuple[tuple[tuple[str, QFont, QColor], ...], ...] = ()
+
+    def set_lines(self, lines=(), tooltip: str = "") -> None:
+        if self._lines != lines:
+            self._lines = lines
+            self.update()
+        if self.toolTip() != tooltip:
+            self.setToolTip(tooltip)
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        if not self._lines:
+            super().paintEvent(event)
+            return
+
+        area = self.contentsRect()
+        painter = QPainter(self)
+        for row, line in enumerate(self._lines):
+            top = area.y() + row * area.height() // 2
+            bottom = area.y() + (row + 1) * area.height() // 2
+            width, gap = divmod(area.width(), len(line))
+            alignment = Qt.AlignCenter if len(line) == 2 else self.alignment()
+            for column, (text, base_font, color) in enumerate(line):
+                rect = QRect(area.x() + column * (width + gap), top, width, bottom - top)
+                if not text or rect.isEmpty():
+                    continue
+                font = QFont(base_font)
+                for size in range(min(base_font.pixelSize(), rect.height()), 0, -1):
+                    font.setPixelSize(size)
+                    metrics = QFontMetrics(font, self)
+                    if (metrics.height() <= rect.height()
+                            and metrics.horizontalAdvance(text) <= rect.width()):
+                        break
+                painter.setFont(font)
+                painter.setPen(color)
+                painter.drawText(rect, alignment, text)
+        painter.end()
 
 
 class _ElidedLabel(SizedLabel):
@@ -139,8 +181,8 @@ class QuoteRow(SizedWidget):
         self._theme2_expanded = False
 
         self.name_label = _ElidedLabel()
-        self.price_label = SizedLabel()
-        self.percent_label = SizedLabel()
+        self.price_label = _QuoteLabel()
+        self.percent_label = _QuoteLabel()
         self.dark_label = QLabel("暗")
         self.dark_value = QLabel()
         self.sparkline = Sparkline()
@@ -854,6 +896,8 @@ class QuoteRow(SizedWidget):
             self.price_label.setText(quote.error)
             self.price_label.setStyleSheet(_color_style(text_color(config, "auto", MUTED, region="price")))
             self.percent_label.setText("")
+            self.price_label.set_lines()
+            self.percent_label.set_lines()
             # 报价错误只更新错误文字，不把已经画出的曲线清空后重画。
             if trend:
                 self._update_sparkline_data(quote, config, trend, primary_color)
@@ -863,14 +907,12 @@ class QuoteRow(SizedWidget):
             self._apply_component_sizes()
             return
 
+        price_color = text_color(config, config.stock_price_color, color, region="price")
         self.price_label.setText(fmt_price(quote.price))
-        self.price_label.setStyleSheet(
-            _color_style(text_color(config, config.stock_price_color, color, region="price"))
-        )
+        self.price_label.setStyleSheet(_color_style(price_color))
         if card:
             self.sparkline.set_live_price(
-                quote.price, self.price_label.font(),
-                text_color(config, config.stock_price_color, color, region="price"),
+                quote.price, self.price_label.font(), price_color,
                 visible=self._visible("price") and self._visible("chart"),
             )
         percent_sign = "+" if quote.change_percent is not None and quote.change_percent > 0 else ""
@@ -879,9 +921,8 @@ class QuoteRow(SizedWidget):
             if quote.change_percent is not None
             else ""
         )
-        self.percent_label.setStyleSheet(
-            _color_style(text_color(config, config.stock_percent_color, color, region="percent"))
-        )
+        percent_color = text_color(config, config.stock_percent_color, color, region="percent")
+        self.percent_label.setStyleSheet(_color_style(percent_color))
 
         self._update_sparkline_data(quote, config, trend, primary_color)
         self.refresh_bs_signals()
@@ -889,6 +930,37 @@ class QuoteRow(SizedWidget):
         # 文本写入后 minimumSizeHint 才准确；必要时切到更窄的堆叠布局。
         self._update_layout_mode()
         self._apply_component_sizes()
+        self._update_price_display(quote.price, config, price_color, percent_color)
+
+    def _update_price_display(
+        self, price: float | None, config: Config, price_color: QColor, percent_color: QColor,
+    ) -> None:
+        mode = config.theme3_price_layout
+        if (config.display_theme != "theme3" or mode == "classic" or not self._visible("price")
+                or price is None or not math.isfinite(price) or price <= 0):
+            self.price_label.set_lines()
+            self.percent_label.set_lines()
+            return
+
+        price_text = (self.price_label.text(), self.price_label.font(), price_color)
+        up, down = fmt_price(price * 1.01), fmt_price(price * 0.99)
+        tooltip = f"以实时价为基准：+1% {up} / −1% {down}"
+        if mode == "range_above":
+            region, label = "price", self.price_label
+        else:
+            region, label = "percent", self.percent_label
+        upper = (up, label.font(), text_color(config, "auto", direction_color(config, 1), region=region))
+        lower = (down, label.font(), text_color(config, "auto", direction_color(config, -1), region=region))
+        if mode == "range_above":
+            self.price_label.set_lines(((upper, lower), (price_text,)), tooltip)
+            self.percent_label.set_lines()
+        elif self._visible("percent"):
+            percent_text = (self.percent_label.text(), self.percent_label.font(), percent_color)
+            self.price_label.set_lines(((price_text,), (percent_text,)) if percent_text[0] else ())
+            self.percent_label.set_lines(((upper,), (lower,)), tooltip)
+        else:
+            self.price_label.set_lines()
+            self.percent_label.set_lines()
 
     def _update_sparkline_data(self, quote: Quote, config: Config, trend: Trend | None, color) -> None:
         if not quote.error:

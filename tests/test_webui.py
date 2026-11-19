@@ -32,6 +32,26 @@ def test_requires_token(server):
     assert client.post("/api/config", json={}).status_code == 403
 
 
+def test_theme3_price_layout_is_validated_and_restored_with_its_theme(server):
+    client = _client(server)
+    url = f"/api/config?token={server.token}"
+    config = client.post(url, json={"display_theme": "theme3"}).get_json()["config"]
+    assert config["theme3_price_layout"] == "classic"
+    for mode in ("range_above", "split_columns"):
+        config = client.post(url, json={"theme3_price_layout": mode}).get_json()["config"]
+        assert config["theme3_price_layout"] == server.applied[-1].theme3_price_layout == mode
+        body = client.get(f"/?token={server.token}").get_data(as_text=True)
+        field = body.split('id="theme3_price_layout"')[1].split("</select>")[0]
+        assert f'value="{mode}" selected' in field
+
+    config = client.post(url, json={"display_theme": "radar"}).get_json()["config"]
+    assert config["theme3_price_layout"] == "classic"
+    config = client.post(url, json={"display_theme": "theme3"}).get_json()["config"]
+    assert config["theme3_price_layout"] == Store(server.store.path).get().theme3_price_layout == "split_columns"
+    config = client.post(url, json={"theme3_price_layout": "invalid"}).get_json()["config"]
+    assert config["theme3_price_layout"] == "classic"
+
+
 def test_settings_page_renders(server):
     response = _client(server).get(f"/?token={server.token}")
     assert response.status_code == 200
@@ -418,7 +438,8 @@ def test_shared_controls_and_theme_controls_have_separate_sections(server):
         assert parser.controls[field] == "common"
     for field in ("always_on_top", "click_through", "show_dark_trade", "show_sparkline", "show_bs_points", "show_stock_name", "show_stock_price"):
         assert parser.controls[field] == "common-theme"
-    for field in ("theme3_show_tdw", "chart_depth_width", "chart_line_width", "depth_line_width", "background_alpha"):
+    for field in ("theme3_show_tdw", "theme3_price_layout", "chart_depth_width", "chart_line_width",
+                  "depth_line_width", "background_alpha"):
         assert parser.controls[field] == "theme"
     for region, _ in TEXT_REGIONS:
         assert parser.controls[f"text-opacity-{region}"] == "theme"
