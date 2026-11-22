@@ -6,11 +6,16 @@
 
 from __future__ import annotations
 
+import json
 import logging
-import secrets
 import math
+import re
+import secrets
+import tempfile
 import threading
 import time
+from contextlib import suppress
+from pathlib import Path
 from typing import Callable
 
 from flask import Flask, abort, jsonify, render_template, request
@@ -22,6 +27,8 @@ from ..config import (
     GRAYSCALE_LEVEL_MAX,
     GRAYSCALE_LEVEL_MIN,
     MIN_OPACITY,
+    THEME4_MAX_WIDTH,
+    THEME4_MIN_WIDTH,
     Config,
     Store,
 )
@@ -29,6 +36,7 @@ from ..market_hours import active_updates_allowed
 from ..search import StockSearch
 
 DEFAULT_HOST = "127.0.0.1"
+LOG = logging.getLogger(__name__)
 
 
 class SettingsServer:
@@ -43,6 +51,7 @@ class SettingsServer:
         on_resize: Callable[[dict], None] | None = None,
         on_bs_source_change: Callable[[], None] | None = None,
         on_test_depth: Callable | None = None,
+        session_path: Path | None = None,
     ) -> None:
         self.store = store
         self.on_change = on_change
@@ -56,6 +65,7 @@ class SettingsServer:
         self.token = secrets.token_urlsafe(16)
         self.search = StockSearch()
         self._port = port
+        self._session_path = session_path if host == DEFAULT_HOST and port == 0 else None
         self._thread: threading.Thread | None = None
         self.app = self._build_app()
 
@@ -94,6 +104,8 @@ class SettingsServer:
                 component_regions=COMPONENT_REGIONS,
                 text_regions=TEXT_REGIONS,
                 min_opacity=MIN_OPACITY,
+                theme4_min_width=THEME4_MIN_WIDTH,
+                theme4_max_width=THEME4_MAX_WIDTH,
                 grayscale_level_min=GRAYSCALE_LEVEL_MIN,
                 grayscale_level_max=GRAYSCALE_LEVEL_MAX,
             )
@@ -207,13 +219,60 @@ class SettingsServer:
         from werkzeug.serving import make_server
 
         logging.getLogger("werkzeug").setLevel(logging.ERROR)
-        server = make_server(self.host, self._port, self.app, threaded=True)
+        session = self._saved_session()
+        if session is not None:
+            port, token = session
+            try:
+                server = make_server(self.host, port, self.app, threaded=True)
+                self.token = token
+            except SystemExit:
+                LOG.warning("原设置页端口不可用，改用新地址")
+                server = make_server(self.host, 0, self.app, threaded=True)
+        else:
+            server = make_server(self.host, self._port, self.app, threaded=True)
         self._port = server.server_port
+        if session != (self._port, self.token):
+            self._save_session()
         self._server = server
         self._thread = threading.Thread(target=server.serve_forever, daemon=True, name="webui")
         self._thread.start()
         return self.url
 
+    def _saved_session(self) -> tuple[int, str] | None:
+        if self._session_path is None:
+            return None
+        try:
+            saved = json.loads(self._session_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        if not isinstance(saved, dict):
+            return None
+        port, token = saved.get("port"), saved.get("token")
+        if (type(port) is int and 1024 <= port <= 65535 and isinstance(token, str)
+                and re.fullmatch(r"[A-Za-z0-9_-]{22}", token)):
+            return port, token
+        return None
+
+    def _save_session(self) -> None:
+        path = self._session_path
+        if path is None:
+            return
+        temp = None
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                             prefix=path.stem, delete=False) as stream:
+                temp = Path(stream.name)
+                json.dump({"port": self._port, "token": self.token}, stream)
+            temp.replace(path)
+        except OSError:
+            LOG.warning("无法保存本地设置页地址")
+        finally:
+            if temp is not None:
+                with suppress(OSError):
+                    temp.unlink(missing_ok=True)
+
     def stop(self) -> None:
         if getattr(self, "_server", None) is not None:
             self._server.shutdown()
+            self._server.server_close()

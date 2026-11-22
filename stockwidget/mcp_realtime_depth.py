@@ -6,10 +6,12 @@ import threading
 import httpx2
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
+from .market_hours import OFF_HOURS_WAKE_SECONDS, active_updates_allowed
 from .mcp_endpoint import realtime_url
 
 MAX_PENDING_SYMBOLS = 50
 RETRY_SECONDS = 3
+DIRECT_RETRY_SECONDS = 10  # 复用查询端盘口缓存，避免每次实时读取失败都采集一次
 IDLE_SECONDS = 0.05
 
 
@@ -84,6 +86,9 @@ class DepthWorker:
     async def _consume(self, session):
         from .mcp_realtime import emit_depth
         retries = {}
+        using_direct = set()
+        url = realtime_url(self.config)
+        has_query_endpoint = bool(url and url != self.config.mcp_url.strip())
         while not self.stopping.is_set():
             try:
                 symbol = self.updates.get_nowait()
@@ -101,6 +106,32 @@ class DepthWorker:
                 raise
             if received:
                 retries.pop(symbol, None)
+                using_direct.discard(symbol)
             else:
-                retries[symbol] = self.loop.time() + RETRY_SECONDS
+                delay = RETRY_SECONDS
+                if has_query_endpoint:
+                    if await self._read_direct_depth(symbol):
+                        if symbol not in using_direct:
+                            using_direct.add(symbol)
+                            self.listener._emit_status(f'{symbol} 实时盘口不可用，已从 TDX 查询端补齐千档')
+                    delay = (DIRECT_RETRY_SECONDS if active_updates_allowed(self.config.debug_mode)
+                             else OFF_HOURS_WAKE_SECONDS)
+                retries[symbol] = self.loop.time() + delay
                 self.updates.put_nowait(symbol)
+
+    async def _read_direct_depth(self, symbol):
+        from .mcp_depth import _fetch_requested_depth
+        from .mcp_realtime import detail_session
+
+        async def fetch():
+            async with detail_session(self.config) as session:
+                return await _fetch_requested_depth(session, symbol, 1000, force=False)
+
+        try:
+            snapshot = await asyncio.wait_for(fetch(), timeout=15)
+        except Exception:
+            return False
+        if not snapshot.full_depth:
+            return False
+        self.listener.depth_ready.emit(snapshot)
+        return True

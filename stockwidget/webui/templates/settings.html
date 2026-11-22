@@ -36,7 +36,7 @@
             <option value="sina" {% if config.kline_source == 'sina' %}selected{% endif %}>新浪（不复权）</option>
           </select>
           <p class="hint">只影响 K 线取数，与上面的行情快照数据源相互独立。K 线一律直连这三个公开接口，
-            不经过 MCP；固定成单一源后不再降级。新浪不支持 1 分钟与周 / 月 K，且仅提供不复权。</p>
+            不经过 MCP；固定成单一源后不再降级。新浪不支持 1 分钟与周 / 月 K，且仅提供不复权。主题 4 的全天秒级图使用腾讯逐笔成交。</p>
         </div>
 
         <div class="grid">
@@ -61,7 +61,7 @@
                    placeholder="输入代码、名称、拼音或首字母，如 600519 / 茅台 / gzmt" />
             <ul class="suggestions" id="suggestions" hidden></ul>
           </div>
-          <p class="hint" id="search-hint">最多 50 只，可拖不动就用按钮调整顺序。</p>
+          <p class="hint" id="search-hint" aria-live="polite">最多 50 只，可拖不动就用按钮调整顺序。</p>
           <ul class="watchlist" id="watchlist"></ul>
           <p class="hint">每只股票可独立开关股票名称、股价、涨跌幅、暗盘、K线，默认全部开启；关闭后其余内容自动收拢。蓝色为开启，划线为关闭，仍受下方全局显示开关控制。</p>
         </div>
@@ -136,7 +136,7 @@
 
       <section class="card" id="common-theme-settings" data-settings-scope="common-theme">
         <h2>公共主题设置</h2>
-        <p class="hint">以下开关对三个主题统一生效。字号、透明度、颜色和布局在下方按主题分别设置。Ctrl+F2 一键隐藏 / 恢复。</p>
+        <p class="hint">以下开关由各主题共用。字号、配色和布局可按主题分别设置。Ctrl+F2 一键隐藏 / 恢复。</p>
         <div class="checks">
           <label><input id="always_on_top" name="always_on_top" type="checkbox"
                         {% if config.always_on_top %}checked{% endif %} /> 最前显示（始终置于所有窗口之上）</label>
@@ -163,7 +163,7 @@
           <legend>显示主题 · 独立设置</legend>
           <input type="hidden" id="display_theme" value="{{ config.display_theme }}" />
           <div class="theme-cards">
-            {% for key, title, preview in [('depth', '一行文字', 'depth-preview.png'), ('radar', '贴边小列', 'radar-preview.png'), ('theme3', '分时＋TDW', 'theme3-preview.png')] %}
+            {% for key, title, preview in [('depth', '一行文字', 'depth-preview.png'), ('radar', '贴边小列', 'radar-preview.png'), ('theme3', '分时＋TDW', 'theme3-preview.png'), ('theme4', '贴边盘口', 'theme4-preview.png')] %}
               <label class="theme-card">
                 <input type="radio" name="theme-choice" value="{{ key }}"
                        {% if config.display_theme == key %}checked{% endif %} />
@@ -175,7 +175,7 @@
         </fieldset>
         <p class="hint">各主题独立保存字号、透明度和位置。Ctrl+F2 一键隐藏 / 恢复。</p>
       </section>
-      <section class="card" id="theme-settings" data-settings-scope="theme">
+      <section class="card" id="theme-settings" data-settings-scope="theme" data-active="{{ config.display_theme }}">
         <h2 id="theme-settings-heading">当前主题设置</h2>
       <aside class="live-preview" aria-label="主题预览">
         <h2>主题预览</h2>
@@ -183,6 +183,26 @@
         <p id="preview-caption" class="hint"></p>
         <p class="hint">预览为布局示意；实时行情以桌面窗口为准。</p>
       </aside>
+
+        <div class="dock-options" data-themes="theme4" {% if config.display_theme != 'theme4' %}hidden{% endif %}>
+          <div class="checks">
+            <label><input id="theme4_snap" name="theme4_snap" type="checkbox" aria-describedby="theme4-position-hint"
+                          {% if config.theme4_snap %}checked{% endif %} /> 吸附到屏幕边缘</label>
+          </div>
+          <div class="grid">
+            <div class="field"><label for="theme4_side">吸附位置</label>
+              <select id="theme4_side" {% if not config.theme4_snap %}disabled{% endif %}><option value="left">屏幕左侧</option><option value="right">屏幕右侧</option></select></div>
+            <div class="field"><label for="theme4_tone">桌面明暗</label>
+              <select id="theme4_tone"><option value="light">浅色桌面</option><option value="dark">深色桌面</option></select></div>
+            <div class="field"><label for="theme4_width">侧栏宽度（px）</label>
+              <input id="theme4_width" type="number" min="{{ theme4_min_width }}" max="{{ theme4_max_width }}" step="1" value="{{ config.theme4_width }}" /></div>
+            <div class="field"><label for="theme4_height">侧栏高度（px）</label>
+              <input id="theme4_height" type="number" min="0" max="8192" step="1" value="{{ config.theme4_height }}" />
+              <p class="hint">0 为自动高度。<output id="dock-size-current"></output></p></div>
+          </div>
+          <p class="hint" id="theme4-position-hint">按住股票名称或空白处拖动。关闭吸附后，窗口可以放在屏幕任意位置，重启后会恢复。开启鼠标穿透时，用左上角把手移动。</p>
+          <p class="hint">自由放置时拖右边、底边或右下角调整大小。吸附时从内侧边和下方调整。单击股票展开或收起全天分时线、均价和 TDW，滚轮查看更多股票。</p>
+        </div>
 
         <p class="hint" data-themes="depth radar">平时只显示小字行情；鼠标悬停查看分时、暗盘和 B/S，移开即收起。拖动文字可移动窗口，右键打开设置。Ctrl+F2 同时隐藏悬浮条和详情。</p>
 
@@ -239,14 +259,14 @@
           </div>
         </div>
         <p class="hint" id="row_style-hint" data-themes="theme1"></p>
-        <p class="hint" data-stealth-hide>K 线高度填 0 表示按字号自动推算；填了具体像素就固定成该高度，并随窗口拖拽等比缩放。
+        <p class="hint" data-stealth-hide data-dock-hide>K 线高度填 0 表示按字号自动推算；填了具体像素就固定成该高度，并随窗口拖拽等比缩放。
           行数多到窗口放不下时，走势图会自动压扁，保证每只股票都还在可视区里。</p>
 
-        <h3 data-stealth-hide>显示区域宽高</h3>
-        <p class="hint" data-stealth-hide>单位为 px；窗口填 0 保持该方向的当前尺寸，其余区域填 0 自动适配。
+        <h3 data-stealth-hide data-dock-hide>显示区域宽高</h3>
+        <p class="hint" data-stealth-hide data-dock-hide>单位为 px；窗口填 0 保持该方向的当前尺寸，其余区域填 0 自动适配。
           当前实际宽高取第一张股票卡片并自动更新；未显示的区域会标记为隐藏。
           区域尺寸按当前主题保存，经典主题随右下角拖拽缩放，空间不足时自动压缩。</p>
-        <div class="dimensions-wrap" data-stealth-hide>
+        <div class="dimensions-wrap" data-stealth-hide data-dock-hide>
           <table class="dimensions-table">
             <thead><tr><th scope="col">显示区域</th><th scope="col">宽度</th><th scope="col">高度</th><th scope="col">当前实际宽 × 高</th></tr></thead>
             <tbody>
@@ -274,9 +294,9 @@
             </tbody>
           </table>
         </div>
-        <p class="hint" id="size-scale-hint" data-stealth-hide></p>
-        <button type="button" id="reset-window-scale" data-stealth-hide>恢复 100% 缩放</button>
-        <p class="hint" data-stealth-hide>恢复设置中的字号和区域尺寸，保留窗口位置与各项设置。
+        <p class="hint" id="size-scale-hint" data-stealth-hide data-dock-hide></p>
+        <button type="button" id="reset-window-scale" data-stealth-hide data-dock-hide>恢复 100% 缩放</button>
+        <p class="hint" data-stealth-hide data-dock-hide>恢复设置中的字号和区域尺寸，保留窗口位置与各项设置。
           仅调整窗口宽度不会改变字号；调整高度时按本次变化比例缩放。</p>
 
         <div class="grid">
@@ -298,7 +318,7 @@
                    value="{{ config.font_size }}" />
           </div>
         </div>
-        <p class="hint" data-stealth-hide>字体留空表示跟随系统；以下字号会按各自设置的比例随窗口拖拽统一缩放。</p>
+        <p class="hint" data-stealth-hide data-dock-hide>字体留空表示跟随系统；以下字号会按各自设置的比例随窗口拖拽统一缩放。</p>
         <p class="hint" data-themes="depth radar">悬浮条和详情统一按上方字号调整；窗口随文字自动适配大小。建议 11–13 px。</p>
 
         <div class="field">
@@ -316,7 +336,7 @@
                    min="7" max="48" step="1" value="{{ config.stock_name_font_size }}" />
           </div>
           <div class="field">
-            <label for="stock_price_font_size">现价字号（px）</label>
+            <label for="stock_price_font_size">{{ '现价与盘口时间字号（px）' if config.display_theme == 'theme4' else '现价字号（px）' }}</label>
             <input id="stock_price_font_size" name="stock_price_font_size" type="number"
                    min="7" max="48" step="1" value="{{ config.stock_price_font_size }}" />
           </div>
@@ -329,7 +349,7 @@
                    min="7" max="48" step="1" value="{{ config.stock_percent_font_size }}" />
           </div>
           <div class="field">
-            <label for="dark_trade_font_size">暗盘字号（px）</label>
+            <label for="dark_trade_font_size">暗盘金额字号（px）</label>
             <input id="dark_trade_font_size" name="dark_trade_font_size" type="number"
                    min="7" max="48" step="1" value="{{ config.dark_trade_font_size }}" />
           </div>
@@ -337,44 +357,44 @@
 
         <div class="grid">
           <div class="field">
-            <label id="chart-label-font-heading" for="chart_label_font_size">走势图图注字号（px）</label>
+            <label id="chart-label-font-heading" for="chart_label_font_size">{{ '±1% 价格与图表坐标字号（px）' if config.display_theme == 'theme4' else '走势图图注字号（px）' }}</label>
             <input id="chart_label_font_size" name="chart_label_font_size" type="number"
                    min="7" max="48" step="1" value="{{ config.chart_label_font_size }}" />
           </div>
         </div>
 
-        <h2 id="theme-font-heading">字体颜色与字重</h2>
-        <p class="hint">取消“跟随涨跌”可选择固定颜色。字体、字号、颜色和背景透明度按当前主题独立保存。</p>
+        <h2 id="theme-font-heading">{{ '字体颜色与样式' if config.display_theme == 'theme4' else '字体颜色与字重' }}</h2>
+        <p class="hint">取消自动配色可选择固定颜色。字体、字号、颜色和背景透明度按当前主题独立保存。</p>
         <div class="grid font-style-grid">
+          {% for region, title, fallback in [('name', '股票名称', '#000000'), ('price', '股价', '#f04f5a')] %}
+          {% set color = 'stock_' + region + '_color' %}
+          {% set bold = 'stock_' + region + '_bold' %}
           <div class="font-style-field">
-            <label class="font-style-title" for="stock_name_color">股票名称</label>
+            <label class="font-style-title" for="{{ color }}">{{ title }}</label>
             <div class="font-style-controls">
-              <input id="stock_name_color" type="color" aria-label="股票名称颜色"
-                     value="{{ config.stock_name_color if config.stock_name_color != 'auto' else '#000000' }}" />
-              <label><input id="stock_name_color_auto" type="checkbox"
-                            {% if config.stock_name_color == 'auto' %}checked{% endif %} /> 跟随涨跌</label>
-              <label><input id="stock_name_bold" type="checkbox"
-                            {% if config.stock_name_bold %}checked{% endif %} /> 加粗</label>
+              <input id="{{ color }}" type="color" aria-label="{{ title }}颜色"
+                     value="{{ config[color] if config[color] != 'auto' else fallback }}" />
+              <label><input id="{{ color }}_auto" type="checkbox"
+                            {% if config[color] == 'auto' %}checked{% endif %} /> <span class="automatic-ink">跟随涨跌</span></label>
+              <label><input id="{{ bold }}" type="checkbox" aria-label="{{ title }}加粗"
+                            {% if config[bold] %}checked{% endif %} /> 加粗</label>
+              {% for effect, label in [('italic', '斜体'), ('shadow', '阴影')] %}
+              {% set field = 'theme4_' + region + '_' + effect %}
+              <label data-themes="theme4" {% if config.display_theme != 'theme4' %}hidden{% endif %}>
+                <input id="{{ field }}" type="checkbox" aria-label="{{ title }}{{ label }}"
+                       {% if config[field] %}checked{% endif %} /> {{ label }}
+              </label>
+              {% endfor %}
             </div>
           </div>
-          <div class="font-style-field">
-            <label class="font-style-title" for="stock_price_color">股价</label>
-            <div class="font-style-controls">
-              <input id="stock_price_color" type="color" aria-label="股价颜色"
-                     value="{{ config.stock_price_color if config.stock_price_color != 'auto' else '#f04f5a' }}" />
-              <label><input id="stock_price_color_auto" type="checkbox"
-                            {% if config.stock_price_color == 'auto' %}checked{% endif %} /> 跟随涨跌</label>
-              <label><input id="stock_price_bold" type="checkbox"
-                            {% if config.stock_price_bold %}checked{% endif %} /> 加粗</label>
-            </div>
-          </div>
+          {% endfor %}
           <div class="font-style-field">
             <label class="font-style-title" for="stock_percent_color">涨跌幅</label>
             <div class="font-style-controls">
               <input id="stock_percent_color" type="color" aria-label="涨跌幅颜色"
                      value="{{ config.stock_percent_color if config.stock_percent_color != 'auto' else '#f04f5a' }}" />
               <label><input id="stock_percent_color_auto" type="checkbox"
-                            {% if config.stock_percent_color == 'auto' %}checked{% endif %} /> 跟随涨跌</label>
+                            {% if config.stock_percent_color == 'auto' %}checked{% endif %} /> <span class="automatic-ink">跟随涨跌</span></label>
               <label><input id="stock_percent_bold" type="checkbox"
                             {% if config.stock_percent_bold %}checked{% endif %} /> 加粗</label>
             </div>
@@ -385,9 +405,16 @@
               <input id="dark_trade_color" type="color" aria-label="暗盘颜色"
                      value="{{ config.dark_trade_color if config.dark_trade_color != 'auto' else '#000000' }}" />
               <label><input id="dark_trade_color_auto" type="checkbox"
-                            {% if config.dark_trade_color == 'auto' %}checked{% endif %} /> 跟随涨跌</label>
+                            {% if config.dark_trade_color == 'auto' %}checked{% endif %} /> <span class="automatic-ink">跟随涨跌</span></label>
               <label><input id="dark_trade_bold" type="checkbox"
                             {% if config.dark_trade_bold %}checked{% endif %} /> 加粗</label>
+              {% for effect, label in [('italic', '斜体'), ('shadow', '阴影')] %}
+              {% set field = 'theme4_dark_' + effect %}
+              <label data-themes="theme4" {% if config.display_theme != 'theme4' %}hidden{% endif %}>
+                <input id="{{ field }}" type="checkbox" aria-label="暗盘{{ label }}"
+                       {% if config[field] %}checked{% endif %} /> {{ label }}
+              </label>
+              {% endfor %}
             </div>
           </div>
           <div class="font-style-field" id="tdw-label-field" data-themes="theme3 depth radar" {% if config.display_theme not in ('theme3', 'depth', 'radar') %}hidden{% endif %}>
@@ -415,9 +442,10 @@
           </div>
         </div>
 
-        <h3>K 线与均线</h3>
+        <h3 id="chart-style-heading">{{ '实时分时线与均价' if config.display_theme == 'theme4' else 'K 线与均线' }}</h3>
         <div class="grid">
           {% for prefix, label in [('chart', 'K 线'), ('average', '均线')] %}
+          {% set label = '分时线' if prefix == 'chart' and config.display_theme == 'theme4' else label %}
           <div class="field">
             <label for="{{ prefix }}_line_color">{{ label }}颜色</label>
             <input id="{{ prefix }}_line_color" type="color" value="{{ config[prefix + '_line_color'] }}" />
@@ -428,7 +456,8 @@
           </div>
           {% endfor %}
         </div>
-        <p class="hint">默认 K 线为黑色、均线为黄色，颜色和线宽按当前主题独立保存。均线使用行情源提供的分时均价数据；开启灰度显示时，两条线仍使用设定的灰度值。</p>
+        <p class="hint" data-dock-hide>默认 K 线为黑色、均线为黄色，颜色和线宽按当前主题独立保存。均线使用行情源提供的分时均价数据；开启灰度显示时，两条线仍使用设定的灰度值。</p>
+        <p class="hint" data-themes="theme4" {% if config.display_theme != 'theme4' %}hidden{% endif %}>黄色曲线显示当日分时均价，下方显示 TDW 动力线。均价的颜色和线宽可单独调整。</p>
 
         <h3 data-stealth-hide>图表与千档挂单</h3>
         <div class="checks" data-themes="theme3">
@@ -453,7 +482,7 @@
         <p class="hint">0% 完全透明，100% 完全显示。只调整文字，不影响曲线、挂单条或背景；最终显示还受整窗透明度影响。</p>
         <div class="grid">
           {% for region, label in text_regions %}
-          <div class="field" {% if region == 'code' %}data-themes="theme2"{% endif %}>
+          <div class="field" {% if region == 'code' %}data-themes="theme2"{% endif %}{% if region not in ('name', 'price', 'percent', 'chart', 'dark') %} data-dock-hide{% endif %}>
             <label for="text-opacity-{{ region }}">{{ label }} · 不透明度 <output id="text-opacity-{{ region }}-value"></output></label>
             <input id="text-opacity-{{ region }}" type="range" min="0" max="1" step="0.05" value="{{ config.text_opacities.get(region, 1) }}" />
           </div>
@@ -480,27 +509,29 @@
             显示右上角按钮（刷新 / 设置 / 灰度 / 退出；关掉后整条标题栏收起，在组件上点右键或从托盘菜单都能开回来）</label>
           <label data-themes="theme1 theme3 depth radar"><input id="show_chart_depth" name="show_chart_depth" type="checkbox"
                         {% if config.show_chart_depth %}checked{% endif %} /> 在价格轴上显示逐价位千档挂单</label>
-          <label><input id="chart_fill_width" name="chart_fill_width" type="checkbox"
+          <label data-dock-hide><input id="chart_fill_width" name="chart_fill_width" type="checkbox"
                         {% if config.chart_fill_width %}checked{% endif %} /> K 线按已有数据铺满宽度</label>
-          <label><input id="tdw_recent_five" name="tdw_recent_five" type="checkbox"
+          <label data-dock-hide><input id="tdw_recent_five" name="tdw_recent_five" type="checkbox"
                         {% if config.tdw_recent_five %}checked{% endif %} /> 实时走势图只显示最近 5 分钟（TDW 仍按 1 分钟 K 计算）</label>
           <label data-themes="theme1 theme3 depth radar"><input id="show_sparkline_fill" name="show_sparkline_fill" type="checkbox"
                         {% if config.show_sparkline_fill %}checked{% endif %} /> 填充走势图下方颜色</label>
           <label data-themes="theme1 theme3 depth radar"><input id="show_open_line" name="show_open_line" type="checkbox"
                         {% if config.show_open_line %}checked{% endif %} /> 显示开盘价横向虚线</label>
-          <label><input id="show_high_low" name="show_high_low" type="checkbox"
+          <label data-dock-hide><input id="show_high_low" name="show_high_low" type="checkbox"
                         {% if config.show_high_low %}checked{% endif %} /> 显示 K 线角标：左上最高价 / 右下最低价</label>
           <label><input id="grayscale" name="grayscale" type="checkbox"
-                        {% if config.grayscale %}checked{% endif %} /> 灰度显示（所有颜色统一成一个灰，灰阶见下方「灰度值」）</label>
-          <label><input id="intraday_chart" name="intraday_chart" type="checkbox"
+                        {% if config.grayscale %}checked{% endif %} />
+            <span data-dock-hide>灰度显示（灰阶见下方「灰度值」）</span>
+            <span data-themes="theme4" {% if config.display_theme != 'theme4' %}hidden{% endif %}>黑白显示（取消勾选使用彩色）</span></label>
+          <label data-dock-hide><input id="intraday_chart" name="intraday_chart" type="checkbox"
                         {% if config.intraday_chart %}checked{% endif %} /> 走势图使用当日分时数据</label>
           <label data-themes="theme1 theme3"><input id="compact" name="compact" type="checkbox"
                         {% if config.compact %}checked{% endif %} /> 紧凑模式</label>
         </div>
-        <p class="hint" data-stealth-hide>「K 线按已有数据铺满宽度」默认关闭：分时横轴固定为 09:30–15:00（压缩午休），未交易的时间留白；
+        <p class="hint" data-stealth-hide data-dock-hide>「K 线按已有数据铺满宽度」默认关闭：分时横轴固定为 09:30–15:00（压缩午休），未交易的时间留白；
           开启后，已有分时数据从首个点到末个点铺满宽度。三个主题均生效，日 K 仍按日期显示。</p>
 
-        <div class="field">
+        <div class="field" data-dock-hide>
           <label for="grayscale_level">灰度值 <span class="value" id="grayscale_level-value"></span></label>
           <input id="grayscale_level" name="grayscale_level" type="range" min="{{ grayscale_level_min }}"
                  max="{{ grayscale_level_max }}" step="1" value="{{ config.grayscale_level }}" />

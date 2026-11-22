@@ -23,6 +23,7 @@ class Element {
     return this.selectors.get(selector);
   }
   setAttribute(name, value) { this[name] = value; }
+  checkValidity() { return this.valid !== false; }
   focus() {}
   addEventListener(name, callback) { this.listeners[name] = callback; }
   dispatch(name, extra = {}) { this.listeners[name]({ target: this, ...extra }); }
@@ -142,6 +143,53 @@ test('HTTP failures clear old suggestions and show a useful error', async () => 
   await pending;
   assert.equal(el('suggestions').hidden, true);
   assert.match(el('search-hint').textContent, /HTTP 503/);
+});
+
+test('disconnected settings page gives restart guidance and ignores a stale 403', async () => {
+  const { context, requests, el } = setup();
+  const old = context.search('zycx');
+  const current = context.search('掌阅科技');
+  requests[0].resolve({ok: false, status: 403});
+  await old;
+  assert.match(el('search-hint').textContent, /搜索中/);
+  requests[1].reject(new TypeError('Failed to fetch'));
+  await current;
+  assert.match(el('search-hint').textContent, /刷新此页或从组件重新打开设置/);
+});
+
+test('line widths save on valid input without waiting for blur', async () => {
+  const { configRequests, el, timers } = setup();
+  const chart = el('chart_line_width');
+  const average = el('average_line_width');
+  chart.value = '2.6';
+  chart.dispatch('input');
+  assert.equal(timers.size, 1);
+  average.value = '3.8';
+  average.dispatch('input');
+  assert.equal(timers.size, 1);
+  assert.equal(configRequests.length, 0);
+  [...timers.values()][0]();
+  await new Promise(resolve => setImmediate(resolve));
+  const patch = JSON.parse(configRequests[0].options.body);
+  assert.equal(patch.chart_line_width, 2.6);
+  assert.equal(patch.average_line_width, 3.8);
+  assert.equal('depth_line_width' in patch, false);
+});
+
+test('editing the dark trade font ignores older settings responses', async () => {
+  const { configRequests, context, el, timers } = setup();
+  const darkSize = el('dark_trade_font_size');
+  darkSize.value = '10';
+  const first = context.apply();
+  await new Promise(resolve => setImmediate(resolve));
+  darkSize.value = '21';
+  darkSize.dispatch('input');
+  configRequests[0].resolve({ok: true, json: async () => ({config: {dark_trade_font_size: 10}})});
+  await first;
+  assert.equal(darkSize.value, '21');
+  [...timers.values()][0]();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(JSON.parse(configRequests[1].options.body).dark_trade_font_size, 21);
 });
 
 

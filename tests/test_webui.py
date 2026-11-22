@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
+from urllib.request import urlopen
 
 import pytest
 
-from stockwidget.config import MIN_OPACITY, Store
+from stockwidget.config import MIN_OPACITY, THEME4_MAX_WIDTH, THEME4_MIN_WIDTH, Store
 from stockwidget.webui import SettingsServer
 
 
@@ -30,6 +31,58 @@ def test_requires_token(server):
     assert client.get("/").status_code == 403
     assert client.get("/api/config").status_code == 403
     assert client.post("/api/config", json={}).status_code == 403
+
+
+def test_desktop_settings_url_survives_restart(tmp_path):
+    store = Store(tmp_path / "config.json")
+    path = tmp_path / "webui-session.json"
+    first = SettingsServer(store, lambda _: None, session_path=path)
+    original = first.start()
+    first.stop()
+    restarted = SettingsServer(store, lambda _: None, session_path=path)
+    try:
+        assert restarted.start() == original
+        with urlopen(original, timeout=2) as response:
+            assert response.status == 200
+        assert _client(restarted).get("/api/search?q=zycx").status_code == 403
+    finally:
+        restarted.stop()
+
+
+def test_theme4_snap_setting_defaults_on_and_is_saved_per_theme(server):
+    client = _client(server)
+    url = f"/api/config?token={server.token}"
+    config = client.post(url, json={"display_theme": "theme4"}).get_json()["config"]
+    assert config["theme4_snap"] is True
+    config = client.post(url, json={"theme4_snap": False}).get_json()["config"]
+    assert config["theme4_snap"] is False and server.applied[-1].theme4_snap is False
+    body = client.get(f"/?token={server.token}").get_data(as_text=True)
+    assert "checked" not in body.split('id="theme4_snap"', 1)[1].split(">", 1)[0]
+    assert 'id="theme4_side" disabled' in body
+    client.post(url, json={"display_theme": "theme3"})
+    config = client.post(url, json={"display_theme": "theme4"}).get_json()["config"]
+    assert config["theme4_snap"] is Store(server.store.path).get().theme4_snap is False
+
+
+def test_theme4_narrow_width_and_font_styles_are_saved(server):
+    client = _client(server)
+    url = f"/api/config?token={server.token}"
+    patch = {"display_theme": "theme4", "theme4_width": 120,
+             "theme4_name_italic": True, "theme4_price_shadow": True,
+             "theme4_dark_italic": True, "theme4_dark_shadow": True,
+             "dark_trade_font_size": 21, "stock_percent_font_size": 14}
+    config = client.post(url, json=patch).get_json()["config"]
+    assert {key: config[key] for key in patch} == patch
+    saved = Store(server.store.path).get()
+    assert {key: getattr(saved, key) for key in patch} == patch
+    body = client.get(f"/?token={server.token}").get_data(as_text=True)
+    assert f'id="theme4_width" type="number" min="{THEME4_MIN_WIDTH}" max="{THEME4_MAX_WIDTH}"' in body
+    assert '黑白显示（取消勾选使用彩色）' in body
+    assert '现价与盘口时间字号（px）' in body
+    for field in ("theme4_name_italic", "theme4_price_shadow", "theme4_dark_italic", "theme4_dark_shadow"):
+        assert "checked" in body.split(f'id="{field}"', 1)[1].split(">", 1)[0]
+    config = client.post(url, json={"theme4_width": 1000, "grayscale": False}).get_json()["config"]
+    assert config["theme4_width"] == 1000 and config["grayscale"] is False
 
 
 def test_theme3_price_layout_is_validated_and_restored_with_its_theme(server):
@@ -61,7 +114,7 @@ def test_settings_page_renders(server):
     assert "显示 TDW 穿线箭头" in body
     assert "显示左侧股票名称" in body
     assert "股票名称字号" in body
-    assert "暗盘字号" in body
+    assert "暗盘金额字号" in body
     assert 'id="reset-window-scale"' in body
     assert "恢复 100% 缩放" in body
     assert "填充走势图下方颜色" in body
@@ -71,9 +124,10 @@ def test_settings_page_renders(server):
     assert "主题 1 · 一行文字" in body
     assert "主题 2 · 贴边小列" in body
     assert '主题 3 · 分时＋TDW' in body
-    assert body.count('name="theme-choice"') == 3
+    assert "主题 4 · 贴边盘口" in body
+    assert body.count('name="theme-choice"') == 4
     assert '<select id="display_theme"' not in body
-    for theme in ("depth", "radar", "theme3"):
+    for theme in ("depth", "radar", "theme3", "theme4"):
         assert _client(server).get(f"/static/{theme}-preview.png").mimetype == "image/png"
     assert "主题 2 停靠侧" in body
     assert "靠左 · 镜像" in body

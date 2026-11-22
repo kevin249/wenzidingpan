@@ -22,7 +22,7 @@ APP_DIR_NAME = "stock-ticker-widget"
 CONFIG_FILE_NAME = "config.json"
 
 LAYOUTS = ("multi", "single")
-DISPLAY_THEMES = ("theme1", "theme2", "theme3", "depth", "radar")
+DISPLAY_THEMES = ("theme1", "theme2", "theme3", "theme4", "depth", "radar")
 STEALTH_DEFAULTS = {
     "font_size": 12, "stock_name_font_size": 12, "stock_price_font_size": 12,
     "stock_percent_font_size": 11, "dark_trade_font_size": 11, "chart_label_font_size": 11,
@@ -47,6 +47,14 @@ THEME3_DEFAULTS = {
 KLINE_SOURCES = ("auto", "eastmoney", "tencent", "sina")
 THEME2_SIDES = ("right", "left")
 THEME3_PRICE_LAYOUTS = ("classic", "range_above", "split_columns")
+THEME4_MIN_WIDTH = 64
+THEME4_MAX_WIDTH = 8192
+THEME4_DEFAULTS = {
+    "opacity": 1.0, "background_alpha": 0.0, "show_title_buttons": False,
+    "grayscale": True,
+    "stock_name_font_size": 19, "stock_price_font_size": 27, "chart_label_font_size": 13,
+    "stock_name_color": "auto", "stock_name_bold": True, "dark_trade_color": "auto", "visible_rows": 2,
+}
 # sides = 左中右，stacked = 上中下，top_bottom = 信息在上、K 线在下
 ROW_STYLES = ("sides", "stacked", "top_bottom")
 COLOR_SCHEMES = ("cn", "us")
@@ -84,6 +92,17 @@ THEME_SCOPED_FIELDS = (
     "tdw_recent_five",
     "theme3_show_tdw",
     "theme3_price_layout",
+    "theme4_snap",
+    "theme4_side",
+    "theme4_width",
+    "theme4_height",
+    "theme4_tone",
+    "theme4_name_italic",
+    "theme4_name_shadow",
+    "theme4_price_italic",
+    "theme4_price_shadow",
+    "theme4_dark_italic",
+    "theme4_dark_shadow",
     "chart_depth_width",
     "chart_line_width",
     "chart_line_color",
@@ -216,6 +235,17 @@ class Config:
     tdw_recent_five: bool = False
     theme3_show_tdw: bool = True
     theme3_price_layout: str = "classic"
+    theme4_snap: bool = True
+    theme4_side: str = "left"
+    theme4_width: int = 360
+    theme4_height: int = 0  # 0 随报价字号自动排版
+    theme4_tone: str = "light"
+    theme4_name_italic: bool = False
+    theme4_name_shadow: bool = False
+    theme4_price_italic: bool = False
+    theme4_price_shadow: bool = False
+    theme4_dark_italic: bool = False
+    theme4_dark_shadow: bool = False
     chart_depth_width: int = 0  # 主题 1、3 挂单条最长长度；0 自动
     chart_line_width: float = 1.4
     chart_line_color: str = "#000000"
@@ -302,7 +332,8 @@ def _theme_profile_from_config(config: Config) -> dict[str, Any]:
 
 
 def _default_theme_profile(theme: str) -> dict[str, Any]:
-    defaults = STEALTH_DEFAULTS if theme in ("depth", "radar") else THEME3_DEFAULTS if theme == "theme3" else {}
+    defaults = {"depth": STEALTH_DEFAULTS, "radar": STEALTH_DEFAULTS,
+                "theme3": THEME3_DEFAULTS, "theme4": THEME4_DEFAULTS}.get(theme, {})
     base = Config(display_theme=theme, **defaults)
     return _theme_profile_from_config(base)
 
@@ -316,6 +347,8 @@ def sanitize(raw: Any, *, _include_theme_profiles: bool = True) -> Config:
         raw = {**STEALTH_DEFAULTS, **raw, "layout": "multi"}
     elif raw.get("display_theme") == "theme3":
         raw = {**THEME3_DEFAULTS, **raw, "layout": "multi"}
+    elif raw.get("display_theme") == "theme4":
+        raw = {**THEME4_DEFAULTS, **raw, "layout": "multi"}
     if raw.get("stealth_revision") == 1:
         out.stealth_revision = 1
 
@@ -371,6 +404,16 @@ def sanitize(raw: Any, *, _include_theme_profiles: bool = True) -> Config:
         out.display_theme = raw["display_theme"]
     if raw.get("theme2_side") in THEME2_SIDES:
         out.theme2_side = raw["theme2_side"]
+    if raw.get("theme4_side") in THEME2_SIDES:
+        out.theme4_side = raw["theme4_side"]
+    if raw.get("theme4_tone") in ("light", "dark"):
+        out.theme4_tone = raw["theme4_tone"]
+    width = _as_number(raw.get("theme4_width"))
+    if width is not None:
+        out.theme4_width = round(_clamp(width, THEME4_MIN_WIDTH, THEME4_MAX_WIDTH))
+    height = _as_number(raw.get("theme4_height"))
+    if height is not None:
+        out.theme4_height = round(_clamp(height, 0, 8192))
     if raw.get("theme3_price_layout") in THEME3_PRICE_LAYOUTS:
         out.theme3_price_layout = raw["theme3_price_layout"]
     if raw.get("layout") in LAYOUTS:
@@ -531,6 +574,13 @@ def sanitize(raw: Any, *, _include_theme_profiles: bool = True) -> Config:
         "show_dark_trade",
         "compact",
         "theme2_always_expanded",
+        "theme4_snap",
+        "theme4_name_italic",
+        "theme4_name_shadow",
+        "theme4_price_italic",
+        "theme4_price_shadow",
+        "theme4_dark_italic",
+        "theme4_dark_shadow",
         "click_through",
         "stock_name_bold",
         "stock_price_bold",

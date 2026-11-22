@@ -109,6 +109,8 @@ class WidgetApp:
         self.window.settings_requested.connect(self.open_settings)
         self.window.quit_requested.connect(self.quit)
         self.window.bounds_changed.connect(self._save_bounds)
+        self.window.dock_settings_requested.connect(
+            lambda patch: self._apply_config(self.store.update(patch)))
         self.window.bell_cleared.connect(self._clear_unread)
         self.qt.aboutToQuit.connect(self._flush_bounds)
         self.qt.aboutToQuit.connect(self._stop_workers)
@@ -133,6 +135,7 @@ class WidgetApp:
             on_resize=self.bridge.resize_requested.emit,
             on_bs_source_change=self.bridge.bs_source_changed.emit,
             on_test_depth=self.bridge.test_depth_ready.emit,
+            session_path=self.store.path.with_name("webui-session.json"),
         )
         self.window.layout_metrics_changed.connect(self.server.publish_layout_metrics)
         self.server.publish_layout_metrics(self.window.layout_metrics())

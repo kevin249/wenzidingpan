@@ -193,12 +193,10 @@ def draw_power(painter, power, x_of, height, color, *, text_opacity=1.0):
     painter.restore()
 
 
-def draw_power_panel(painter, power, x_of, right, width, height, paint_color, text_color):
+def draw_power_panel(painter, power, x_of, right, width, height, paint_color, text_color, *, show_caption=True):
     """绘制独立的动力轴，返回参考线实际绘制的像素行。"""
     painter.save()
     painter.setClipRect(QRectF(0, 0, width, height), Qt.IntersectClip)
-    metrics = painter.fontMetrics()
-    caption_h = metrics.height()
     latest = next((v for v in reversed(power) if v is not None), None)
     painter.setPen(QPen(paint_color(LEVEL_COLOR, 85), 1))
     painter.drawLine(QPointF(0, 0), QPointF(width, 0))
@@ -206,12 +204,15 @@ def draw_power_panel(painter, power, x_of, right, width, height, paint_color, te
     if height < 4 or right < 1:
         painter.restore()
         return {}
-    # Guides take priority over captions in a compact panel.
-    caption = f"TDW  {latest:.2f}" if latest is not None else "TDW  等待成交数据"
-    show_caption = height >= caption_h + 36 and width >= metrics.horizontalAdvance(caption)
+    top, bottom = 0, height - 1
     if show_caption:
-        painter.drawText(QRectF(0, 1, width, caption_h), Qt.AlignLeft | Qt.AlignVCenter, caption)
-    top, bottom = (caption_h + 4 if show_caption else 0), height - 1
+        # Guides take priority over captions in a compact panel.
+        metrics = painter.fontMetrics()
+        caption_h = metrics.height()
+        caption = f"TDW  {latest:.2f}" if latest is not None else "TDW  等待成交数据"
+        if height >= caption_h + 36 and width >= metrics.horizontalAdvance(caption):
+            painter.drawText(QRectF(0, 1, width, caption_h), Qt.AlignLeft | Qt.AlignVCenter, caption)
+            top = caption_h + 4
 
     def y_of(value):
         return bottom - (bottom - top) * value / 4

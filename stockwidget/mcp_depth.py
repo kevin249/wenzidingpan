@@ -254,13 +254,15 @@ async def _fetch_requested_depth(
     session: ClientSession,
     symbol: str,
     requested_depth: int,
+    *,
+    force: bool = True,
 ) -> DepthSnapshot:
     result = await _bounded(
         session.call_tool(
             "get_tdx_depth",
             arguments={
                 "symbol": symbol,
-                "force": True,
+                "force": force,
                 "requested_depth": requested_depth,
             },
         )
@@ -389,7 +391,7 @@ class McpDepthPoller(QThread):
     @staticmethod
     def _depth_enabled(config: Config) -> bool:
         return bool(
-            config.display_theme in {"theme2", "theme3"} or config.show_sparkline
+            config.display_theme in {"theme2", "theme3", "theme4"} or config.show_sparkline
         )
 
     def apply_config(self, config: Config) -> None:

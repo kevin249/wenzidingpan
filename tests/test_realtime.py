@@ -91,6 +91,33 @@ def test_tencent_uses_dated_index_and_handles_equal_second_across_two_pages():
     assert feed.fetch(now=at+timedelta(days=1)) is None
 
 
+def test_full_session_loads_opening_pages_reuses_history_and_retries_missing_page():
+    times = ["09:30:01", "09:45:00", "10:30:00", "11:30:00", "13:00:00", "14:30:00", "15:00:02"]
+    at = START.replace(hour=15, minute=1)
+    fail_once = {2}
+    def respond(url, params):
+        if params["action"] == "t":
+            spans = "|".join(f"{clock}~{clock}" for clock in times)
+            return "v_detail_time_sh603986=" + json.dumps([20261105, spans])
+        n = params["p"]
+        if n in fail_once:
+            fail_once.remove(n)
+            raise requests.Timeout()
+        return "v_detail_data_sh603986=" + json.dumps([n, f"{n}/{times[n]}/{10+n}/0/5/0/B"])
+
+    session = Session(respond)
+    feed = RealtimeFeed(CODE, "tencent", session, full_session=True)
+    assert feed.fetch(now=at) is None
+    assert sorted(p["p"] for _, p in session.calls if "p" in p) == list(range(len(times)))
+    session.calls.clear()
+    trend = feed.fetch(now=at)
+    assert trend.minutes == times and trend.prices == list(range(10, 17))
+    assert sorted(p["p"] for _, p in session.calls if "p" in p) == [2, 6]
+    session.calls.clear()
+    assert feed.fetch(now=at) is trend
+    assert [p["p"] for _, p in session.calls if "p" in p] == [6]
+
+
 def test_realtime_formula_uses_one_minute_ohlc_and_revises_forming_minute(monkeypatch):
     feed = RealtimeFeed(CODE, "eastmoney")
     at = START.replace(hour=9, minute=55, second=30)

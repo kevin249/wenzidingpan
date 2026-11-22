@@ -21,12 +21,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..config import Bounds, Config
+from ..config import THEME4_MAX_WIDTH, THEME4_MIN_WIDTH, Bounds, Config
 from ..desktop import keep_visible_when_inactive
 from ..mcp_depth import DepthSnapshot
 from ..poller import Snapshot
 from ..symbols import classify
 from .depth_ladder import DepthLadder
+from .docked_book import DockedBook
 from .marquee import Marquee
 from .quote_row import QuoteRow
 from .screen_click import ScreenClickWatcher
@@ -67,6 +68,7 @@ class TitleBar(QWidget):
         super().__init__(parent)
         self._drag_offset: QPoint | None = None
         self._bell_unread = 0
+        self._config: Config | None = None
 
         self.refresh_button = self._button("⟳", "立即刷新", self.refresh_requested)
         self.bell_button = self._button("BELL", "暂无 MCP 提醒", None)
@@ -121,16 +123,41 @@ class TitleBar(QWidget):
         self.bell_button.setStyleSheet(BUTTON_STYLE)
 
     def apply_config(self, config: Config) -> None:
+        self._config = config
         self.grayscale_button.setText("彩" if config.grayscale else "灰")
         # BELL 这一路单独可关；藏起来之前先清掉未读数，免得下次开回来还挂着过期计数。
         show_bell = config.mcp_notifications_enabled and config.mcp_bell_window
         if not show_bell:
             self.clear_bell()
         self.bell_button.setVisible(show_bell)
-        for button in (self.refresh_button, self.bell_button, self.settings_button, self.grayscale_button, self.quit_button):
-            button.setFont(make_font(config, 0.95))
-            button.setFixedSize(round(config.font_size * 1.7), round(config.font_size * 1.7))
-        self.bell_button.setFixedWidth(round(config.font_size * 4.5))
+        self._size_buttons(config)
+
+    def _size_buttons(self, config: Config) -> None:
+        layout = self.layout()
+        left, right, spacing = 12, 8, 8
+        size = float(config.font_size)
+        if config.display_theme in ("theme3", "theme4"):
+            show_bell = not self.bell_button.isHidden()
+            left = min(left, self.width() // 12)
+            right = min(right, self.width() // 16)
+            spacing = min(spacing, self.width() // 20)
+            available = self.width() - left - right - (3 + show_bell) * spacing
+            # Leave room for the pixel rounding of each fixed-width button.
+            size = max(1, min(size, (available - 3) / (4 * 1.7 + show_bell * 4.5)))
+        layout.setContentsMargins(left, 5, right, 5)
+        layout.setSpacing(spacing)
+        extent = round(size * 1.7)
+        font = make_font(config, pixel_size=round(size * 0.95))
+        for button in (self.refresh_button, self.settings_button, self.grayscale_button, self.quit_button):
+            button.setFont(font)
+            button.setFixedSize(extent, extent)
+        self.bell_button.setFont(font)
+        self.bell_button.setFixedSize(round(size * 4.5), extent)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt 命名
+        super().resizeEvent(event)
+        if self._config is not None and self._config.display_theme in ("theme3", "theme4"):
+            self._size_buttons(self._config)
 
     # 无边框窗口没有系统标题栏，拖拽要自己实现。
     def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt 命名
@@ -298,6 +325,7 @@ class TickerWindow(QWidget):
     title_buttons_requested = Signal()
     bell_cleared = Signal()
     depth_painted = Signal(object, bool)
+    dock_settings_requested = Signal(dict)
 
     def __init__(self, config: Config) -> None:
         super().__init__()
@@ -306,6 +334,13 @@ class TickerWindow(QWidget):
         self._focus_symbol: str | None = None
         self._focus_quotes: list = []
         self._depths: dict[str, DepthSnapshot] = {}
+        self._latest_snapshot = None
+        self._dock_origin: QPoint | None = None
+        self._dock_timer = QTimer(self, singleShot=True, interval=0)
+        self._dock_timer.timeout.connect(self._position_dock)
+        for screen in QApplication.screens():
+            self._watch_dock_screen(screen)
+        QApplication.instance().screenAdded.connect(self._watch_dock_screen)
         self._depth_repaint_timer = QTimer(self)
         self._depth_repaint_timer.setSingleShot(True)
         self._depth_repaint_timer.timeout.connect(self._recompose_depth_surface)
@@ -341,6 +376,7 @@ class TickerWindow(QWidget):
 
         self.handle = DragHandle()
         self.handle.moved.connect(self._on_handle_moved)
+        self.handle.installEventFilter(self)
         self.handle.context_menu_requested.connect(self.popup_menu)
 
         self.title_bar = TitleBar(self)
@@ -383,6 +419,10 @@ class TickerWindow(QWidget):
 
         self.marquee = Marquee()
         self.stealth = StealthPanel(self)
+        self.docked_book = DockedBook(self)
+        self.docked_book.depth_painted.connect(self.depth_painted, Qt.QueuedConnection)
+        self.docked_book.resize_preview.connect(self._position_dock)
+        self.docked_book.resize_requested.connect(self._commit_dock_resize)
         self.empty_label = QLabel("自选列表为空\n点击 ⚙ 在浏览器里添加代码")
         self.empty_label.setAlignment(Qt.AlignCenter)
         self.empty_label.setStyleSheet("color: #8b93a7;")
@@ -408,11 +448,12 @@ class TickerWindow(QWidget):
         layout.addWidget(self.focus_host, 1)
         layout.addWidget(self.marquee)
         layout.addWidget(self.stealth)
+        layout.addWidget(self.docked_book, 1)
 
         # 顶层透明特效在 Windows 上可能漏掉使用系统调色板的 QLabel。
         # 按主要内容层分别合成，既完整覆盖子控件，又不会重复叠加透明度。
         self._opacity_effects: list[QGraphicsOpacityEffect] = []
-        for surface in (self.title_bar, self.empty_label, self.rows_host, self.marquee, self.grip, self.stealth):
+        for surface in (self.title_bar, self.empty_label, self.rows_host, self.marquee, self.grip, self.stealth, self.docked_book):
             effect = QGraphicsOpacityEffect(surface)
             surface.setGraphicsEffect(effect)
             self._opacity_effects.append(effect)
@@ -446,7 +487,7 @@ class TickerWindow(QWidget):
 
     def scaled_config(self) -> Config:
         """主题1按窗口缩放字体；主题2只调整几何尺寸，字体始终保持配置值。"""
-        if self._config.display_theme in ("theme2", *STEALTH_THEMES):
+        if self._config.display_theme in ("theme2", "theme4", *STEALTH_THEMES):
             return self._config
         if abs(self._scale - 1.0) < 0.01:
             return self._config
@@ -494,7 +535,10 @@ class TickerWindow(QWidget):
     def apply_config(self, config: Config) -> None:
         previous = self._config
         theme_changed = previous.display_theme != config.display_theme
+        if not theme_changed and config.display_theme == "theme4" and previous.theme4_snap and not config.theme4_snap:
+            self._dock_origin = self.pos()
         if theme_changed:
+            self._cancel_window_drag()
             self._pending_card_scale = None
             self._scale_timer.stop()
             # 几何 profile 虽然由 app 最后 restore，但布局重算发生在它之前。
@@ -511,6 +555,12 @@ class TickerWindow(QWidget):
             self._hidden_title_frame = 0
 
         self._config = config
+        docked = config.display_theme == "theme4"
+        self.docked_book.setVisible(docked)
+        if docked:
+            self.docked_book.configure(config, self._depths)
+            if self._latest_snapshot is not None:
+                self.docked_book.set_snapshot(self._latest_snapshot)
         self.stealth.apply_config(config)
         chart_height_changed = previous.chart_height != config.chart_height
         component_sizes_changed = previous.component_sizes != config.component_sizes
@@ -579,7 +629,7 @@ class TickerWindow(QWidget):
 
         stealth = config.display_theme in STEALTH_THEMES
         self.stealth.setVisible(stealth)
-        self.focus_host.setVisible(not stealth)
+        self.focus_host.setVisible(not stealth and not docked)
         self._render_focus_navigation()
         single = config.layout == "single" and config.display_theme not in ("theme2", "depth", "radar")
         self.marquee.setVisible(single)
@@ -587,9 +637,9 @@ class TickerWindow(QWidget):
         self.scroll.setVerticalScrollBarPolicy(
             Qt.ScrollBarAsNeeded if config.display_theme == "theme2" else Qt.ScrollBarAlwaysOff
         )
-        self.empty_label.setVisible(not stealth and not single and not self._rows)
+        self.empty_label.setVisible(not docked and not stealth and not single and not self._rows)
         # Keep the resize hit area available even when the title bar is hidden.
-        self.grip.setVisible(not stealth and not config.click_through)
+        self.grip.setVisible(not docked and not stealth and not config.click_through)
         self.grip.set_always_visible(config.show_title_buttons)
         self._position_grip()
 
@@ -617,6 +667,8 @@ class TickerWindow(QWidget):
             ensure_chart_height=chart_height_changed,
             ensure_component_size=component_sizes_changed,
         )
+        if previous.display_theme == "theme4" and not docked and self._latest_snapshot is not None:
+            self.update_snapshot(replace(self._latest_snapshot, updated_symbols=None), "")
         self._schedule_layout_metrics()
 
     # ------------------------------------------------------------ 右键菜单
@@ -658,6 +710,9 @@ class TickerWindow(QWidget):
         painter.setCompositionMode(QPainter.CompositionMode_Source)
         painter.fillRect(self.rect(), Qt.transparent)
         painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
+        if self._config.display_theme == "theme4":
+            # Windows 会把全透明像素当成穿透区；让空白边缘也能拖拽。
+            painter.fillRect(self.rect(), QColor(128, 128, 128, 1))
         painter.setRenderHint(QPainter.Antialiasing)
         path = QPainterPath()
         path.addRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 12, 12)
@@ -674,6 +729,10 @@ class TickerWindow(QWidget):
     # ------------------------------------------------------------ 数据
 
     def update_snapshot(self, snapshot: Snapshot, _provider_label: str) -> None:
+        self._latest_snapshot = snapshot
+        if self._config.display_theme == "theme4":
+            self.docked_book.set_snapshot(snapshot)
+            return
         quotes = snapshot.quotes
         if self._config.layout == "single" and self._config.display_theme not in ("theme2", "depth", "radar"):
             self.marquee.set_quotes(quotes)
@@ -691,6 +750,9 @@ class TickerWindow(QWidget):
 
     def update_depth(self, snapshot: DepthSnapshot) -> None:
         self._depths[snapshot.symbol] = snapshot
+        if self._config.display_theme == "theme4":
+            self.docked_book.update()
+            return
         for raw_symbol, row in self._rows.items():
             symbol = classify(raw_symbol)
             if symbol is not None and symbol.code == snapshot.symbol:
@@ -948,6 +1010,11 @@ class TickerWindow(QWidget):
     ) -> None:
         """高度按网格行数算，宽度按列数摊开——1 行就是全部横向铺满。"""
         chrome = self._chrome_height()
+        if self._config.display_theme == "theme4":
+            self.setMinimumHeight(0)
+            self.setMaximumHeight(16777215)
+            self._position_dock()
+            return
         if self._config.display_theme in ("depth", "radar"):
             self.setMinimumHeight(0)
             self.setMaximumHeight(16777215)
@@ -1057,6 +1124,17 @@ class TickerWindow(QWidget):
 
     def restore_bounds(self, bounds: Bounds | None, available: list) -> None:
         """恢复上次位置前先确认它仍落在某块屏幕上（外接显示器可能已拔掉）。"""
+        if self._config.display_theme == "theme4":
+            self._dock_origin = None
+            if bounds and available:
+                saved = QRect(bounds.x, bounds.y, bounds.width, bounds.height)
+                target = max(available, key=lambda r: _intersection_area(r, saved))
+                if target.intersects(saved):
+                    self._dock_origin = saved.topLeft()
+                    self._position_dock(rect=target)
+                    return
+            self._position_dock()
+            return
         if self._config.display_theme in STEALTH_THEMES:
             self._scale = 1.0
             self._manual_size = False
@@ -1095,7 +1173,9 @@ class TickerWindow(QWidget):
     def moveEvent(self, event) -> None:  # noqa: N802 - Qt 命名
         if hasattr(self, "stealth"):
             self.stealth.dismiss()
-        if not self._transient_geometry_change:
+        if not self._transient_geometry_change and not (
+            self._config.display_theme == "theme4" and self._move_drag_active
+        ):
             self._save_timer.start()
         self._move_handle()
 
@@ -1134,24 +1214,35 @@ class TickerWindow(QWidget):
         )
         if not mouse_event:
             return super().eventFilter(watched, event)
+        docked = self._config.display_theme == "theme4"
+        if docked and watched not in (self, self.docked_book, self.title_bar, self.handle):
+            return False
+        if not docked and watched is self.handle:
+            return False
 
         # 标题栏已有等价的原生处理；滚动条、缩放柄和主题2盘口都不能被
         # 整窗移动手势抢占。DepthLadder 内部负责“点股价展开”，若允许这里
         # 把轻微鼠标移动判成拖窗，会导致 mouseRelease 收不到而经常点不开。
-        if watched is self.title_bar or isinstance(
+        if (not docked and watched is self.title_bar) or isinstance(
             watched, (QAbstractSlider, ResizeGrip, DepthLadder)
         ):
             return super().eventFilter(watched, event)
 
-        if self._config.click_through:
+        if self._config.click_through and watched is not self.handle:
             self._cancel_window_drag()
             return False
 
         if event_type == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
+            if docked and watched is self.docked_book and any(self.docked_book.resize_edges(event.position())):
+                self._cancel_window_drag()
+                return False
             position = event.globalPosition().toPoint()
             self._move_drag_origin = position
             self._move_drag_offset = position - self.frameGeometry().topLeft()
             self._move_drag_active = False
+            if docked and watched in (self.title_bar, self.handle):
+                event.accept()
+                return True
             return False  # 未达到拖动阈值时，按钮仍可正常单击。
 
         if (
@@ -1166,6 +1257,10 @@ class TickerWindow(QWidget):
                 if distance < QApplication.startDragDistance():
                     return False
                 self._move_drag_active = True
+                if docked:
+                    self._save_timer.stop()
+                    self.docked_book.cancel_click()
+                    watched.setCursor(Qt.SizeAllCursor)
                 if isinstance(watched, QAbstractButton):
                     watched.setDown(False)
             self.move(position - self._move_drag_offset)
@@ -1174,10 +1269,16 @@ class TickerWindow(QWidget):
 
         if event_type == QEvent.MouseButtonRelease and event.button() == Qt.LeftButton:
             was_dragging = self._move_drag_active
+            offset = self._move_drag_offset
             if was_dragging and isinstance(watched, QAbstractButton):
                 watched.setDown(False)
             self._cancel_window_drag()
             if was_dragging:
+                if docked and offset is not None:
+                    point = event.globalPosition().toPoint()
+                    self._finish_dock_drag(point, point - offset)
+                    if watched is not self.handle:
+                        watched.unsetCursor()
                 event.accept()
                 return True
 
@@ -1233,6 +1334,12 @@ class TickerWindow(QWidget):
 
     def resize_from_settings(self, dimensions: dict) -> None:
         """数字输入与右下角拖拽走同一条缩放路径，位置不变，0 保持当前轴。"""
+        if self._config.display_theme == "theme4":
+            patch = {f"theme4_{axis}": dimensions[axis] for axis in ("width", "height")
+                     if dimensions.get(axis, 0) > 0}
+            if patch:
+                self._commit_dock_resize(patch)
+            return
         if dimensions.get("reset_scale") is True:
             self._scale_timer.stop()
             self._scale = 1.0
@@ -1262,6 +1369,9 @@ class TickerWindow(QWidget):
 
         regions = {"window": measure(self)}
         tdw = {}
+        if self._config.display_theme == "theme4":
+            regions["canvas"] = measure(self.docked_book)
+            return {"theme": "theme4", "scale": 1, "regions": regions, "tdw": tdw}
         if self._rows:
             row = next(iter(self._rows.values()))
             trend = row._display_trend
@@ -1317,12 +1427,17 @@ class TickerWindow(QWidget):
             self.setGeometry(x, y, width, height)
 
     def showEvent(self, event) -> None:  # noqa: N802 - Qt 命名
+        if self._config.display_theme == "theme4":
+            self._dock_timer.start()
         if self._config.display_theme == "theme2" and self._config.theme2_always_expanded:
             self._set_theme2_all_expanded(True)
         self.handle.setVisible(self._config.click_through)
         self._move_handle()
 
     def hideEvent(self, event) -> None:  # noqa: N802 - Qt 命名
+        self._dock_timer.stop()
+        if self._config.display_theme == "theme4":
+            self._cancel_window_drag()
         self.handle.hide()
         self.stealth.dismiss()
         # 窗口藏起来就不再占着「全屏点击收起」的钩子（进程退出前 Windows 也会
@@ -1350,6 +1465,63 @@ class TickerWindow(QWidget):
 
     def _on_handle_moved(self, position: QPoint) -> None:
         self.move(position.x() - 2, position.y() - 2)
+
+    def _finish_dock_drag(self, point: QPoint, origin: QPoint) -> None:
+        screen = QApplication.screenAt(point) or self.screen()
+        if not screen:
+            return
+        patch = {}
+        if self._config.theme4_snap:
+            patch["theme4_side"] = "left" if point.x() < screen.geometry().center().x() else "right"
+        self._dock_origin = origin
+        self._position_dock(rect=screen.availableGeometry(), side=patch.get("theme4_side"))
+        self._dock_origin = self.pos()
+        patch["bounds"] = self.current_bounds(stop_pending=True)
+        self.dock_settings_requested.emit(patch)
+
+    def _watch_dock_screen(self, screen):
+        screen.availableGeometryChanged.connect(self._dock_work_area_changed)
+
+    def _dock_work_area_changed(self, _area):
+        if self.isVisible() and self._config.display_theme == "theme4":
+            self._dock_timer.start()
+
+    def _commit_dock_resize(self, dimensions):
+        self._position_dock(dimensions)
+        self._dock_origin = self.pos()
+        actual = {"theme4_width": self.width(), "theme4_height": self.height()}
+        patch = {key: actual[key] for key in dimensions}
+        patch["bounds"] = self.current_bounds(stop_pending=True)
+        self.dock_settings_requested.emit(patch)
+        self._schedule_layout_metrics()
+
+    def _position_dock(self, dimensions=None, *, rect=None, side=None):
+        if self._config.display_theme != "theme4" or self._move_drag_active:
+            return
+        if rect is None:
+            screen = self.screen()
+            if screen is None:
+                return
+            rect = screen.availableGeometry()
+        sizes = dimensions or {}
+        width = min(THEME4_MAX_WIDTH, rect.width(),
+                    max(THEME4_MIN_WIDTH, sizes.get("theme4_width", self._config.theme4_width)))
+        chrome = self._chrome_height()
+        requested_height = sizes.get("theme4_height", self._config.theme4_height)
+        height = requested_height or self.docked_book.preferred_height() + chrome
+        minimum_height = self.docked_book.minimum_height() + chrome
+        height = min(max(height, minimum_height), rect.height())
+        side = side or self._config.theme4_side
+        edge = rect.left() if side == "left" else rect.right() - width + 1
+        origin = self._dock_origin if self._dock_origin is not None else QPoint(edge, rect.top())
+        if "theme4_height" in sizes:
+            height = min(height, max(minimum_height, rect.bottom() - max(origin.y(), rect.top()) + 1))
+        x = edge if self._config.theme4_snap else origin.x()
+        if not self._config.theme4_snap and "theme4_width" in sizes:
+            width = min(width, max(THEME4_MIN_WIDTH, rect.right() - max(x, rect.left()) + 1))
+        x = round(_clamp(x, rect.left(), rect.right() - width + 1))
+        y = round(_clamp(origin.y(), rect.top(), rect.bottom() - height + 1))
+        self.setGeometry(x, y, width, height)
 
     def current_bounds(self, *, stop_pending: bool = False) -> dict:
         """返回当前真实窗口几何；切主题时可先截住旧主题尚未落盘的防抖保存。"""

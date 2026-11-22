@@ -215,6 +215,39 @@ def test_unavailable_depth_retries_without_another_resource_update(monkeypatch):
     assert ['603986', '600000', '603986'] == calls
 
 
+def test_missing_realtime_book_uses_tdx_query_session(monkeypatch):
+    captured = []
+    listener = SimpleNamespace(depth_ready=SimpleNamespace(emit=captured.append),
+                               _emit_status=lambda *args: None)
+    worker = DepthWorker(listener, Config(mcp_realtime_url=URL))
+    worker.updates.put_nowait('603533')
+    query_session = object()
+
+    async def missing(session, symbol):
+        raise RuntimeError('Error executing tool get_depth_snapshot')
+
+    @asynccontextmanager
+    async def connect(config):
+        assert config is worker.config
+        yield query_session
+
+    async def fetch(session, symbol, requested_depth, *, force):
+        assert (session, symbol, requested_depth, force) == (query_session, '603533', 1000, False)
+        worker.stopping.set()
+        return mcp_depth.DepthSnapshot(symbol, full_depth=True, available=True)
+
+    monkeypatch.setattr(mcp_realtime, 'read_depth', missing)
+    monkeypatch.setattr(mcp_realtime, 'detail_session', connect)
+    monkeypatch.setattr(mcp_depth, '_fetch_requested_depth', fetch)
+
+    async def scenario():
+        worker.loop = asyncio.get_running_loop()
+        await asyncio.wait_for(worker._consume(object()), 1)
+
+    asyncio.run(scenario())
+    assert len(captured) == 1 and captured[0].symbol == '603533'
+
+
 def test_cancel_during_initial_recovery_stops_immediately():
     closed = []
     async def scenario():

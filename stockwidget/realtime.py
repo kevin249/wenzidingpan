@@ -6,6 +6,7 @@ import json
 import math
 import re
 from bisect import bisect_left
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime, timedelta
 
@@ -88,13 +89,15 @@ def _tx_value(text, key):
 class RealtimeFeed:
     """One serial worker per symbol; never combine OHLC or EMA state across sources."""
 
-    def __init__(self, symbol: str, source: str, session=None, *, minute_history=False, minute_fallback=False):
+    def __init__(self, symbol: str, source: str, session=None, *, minute_history=False,
+                 minute_fallback=False, full_session=False):
         self.symbol = classify(symbol)
         self.sources = (source,) if source in ("eastmoney", "tencent") else ("eastmoney", "tencent")
         self.session = session or requests.Session()
         self._em_day = ""
         self._tx_pages: dict[int, tuple[str, list[str]]] = {}
         self._tx_day = ""
+        self._full_session = full_session
         self._provider = ""
         self._bars: list[Bar] = []
         self._trend: Trend | None = None
@@ -183,7 +186,8 @@ class RealtimeFeed:
         day = _trade_date(date_id)
         if not day:
             raise ValueError("腾讯成交明细日期不可用")
-        if day != self._tx_day:
+        new_day = day != self._tx_day
+        if new_day:
             self._tx_pages.clear()
             self._tx_day = day
         pages = []
@@ -193,21 +197,36 @@ class RealtimeFeed:
                 raise ValueError("腾讯成交时间段无效")
             if first[:5] <= "15:00" and last[:5] >= "09:30":
                 pages.append(number)
-        rows = []
-        selected = pages[-(4 if warm else 2):]
-        for n in selected:
-            cached = self._tx_pages.get(n)
-            if n == len(ranges) - 1 or not cached or cached[0] != ranges[n]:
-                page = self._get(TENCENT, {**params, "action": "data", "p": n}, referer)
-                page_number, lines = _tx_value(page.text, "v_detail_data_" + key)
-                if page_number != n or not lines:
-                    raise ValueError("腾讯成交页不匹配")
-                first, last = ranges[n].split("~")
-                if lines[0].split("/")[1] != first or lines[-1].split("/")[1] < last:
-                    raise ValueError("腾讯成交页时间不匹配")
-                self._tx_pages[n] = ranges[n], lines
-            rows.extend(self._tx_pages[n][1])
-        records = [line.split("/") for line in rows]
+        selected = pages if self._full_session and (warm or new_day) else pages[-(4 if warm else 2):]
+        missing = [n for n in selected if n == len(ranges) - 1
+                   or n not in self._tx_pages or self._tx_pages[n][0] != ranges[n]]
+
+        def load_page(n):
+            page = self._get(TENCENT, {**params, "action": "data", "p": n}, referer)
+            page_number, lines = _tx_value(page.text, "v_detail_data_" + key)
+            if page_number != n or not lines:
+                raise ValueError("腾讯成交页不匹配")
+            first, last = ranges[n].split("~")
+            if lines[0].split("/")[1] != first or lines[-1].split("/")[1] < last:
+                raise ValueError("腾讯成交页时间不匹配")
+            return ranges[n], lines
+
+        if self._full_session and len(missing) > 1:
+            with ThreadPoolExecutor(max_workers=4, thread_name_prefix="transactions") as pool:
+                pending = {n: pool.submit(load_page, n) for n in missing}
+                # 即使部分页超时，也留住其余已成功的历史页供下一轮补齐。
+                error = None
+                for n, future in pending.items():
+                    try:
+                        self._tx_pages[n] = future.result()
+                    except (requests.RequestException, ValueError, TypeError, KeyError, IndexError, OSError) as exc:
+                        error = exc
+                if error is not None:
+                    raise error
+        else:
+            for n in missing:
+                self._tx_pages[n] = load_page(n)
+        records = [line.split("/") for n in selected for line in self._tx_pages[n][1]]
         # Do not count a partial second at the oldest page boundary.
         partial = records[0][1] if records and selected[0] > 0 else ""
         trades = ((r[1], r[2], r[4]) for r in records if len(r) >= 7 and r[1] != partial)
@@ -318,7 +337,8 @@ class RealtimeFeed:
             inputs = history
         minute_points = tdw.calculate(
             inputs, PERIOD_1M, at,
-            forming=live_minutes[-1].time if forming else "", partial_windows=self._minute_fallback,
+            forming=live_minutes[-1].time if forming else "",
+            partial_windows=self._minute_fallback or self._full_session,
         )
         points = {bar.time: minute_points[bar.time] for bar in preceding
                   if self._minute_fallback and bar.time[:10] == day and bar.time in minute_points}

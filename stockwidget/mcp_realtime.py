@@ -213,12 +213,15 @@ async def recover(session, journal, cursor, *, symbols, listener):
 
 
 async def emit_depth(listener, session, symbol):
-    from .mcp_depth import parse_depth_payload
+    from .mcp_depth import depth_is_stale, parse_depth_payload
     try:
         value = await read_depth(session, symbol)
     except RuntimeError:
         return False
-    listener.depth_ready.emit(parse_depth_payload(symbol, value))
+    snapshot = parse_depth_payload(symbol, value)
+    if not snapshot.available or depth_is_stale(snapshot):
+        return False
+    listener.depth_ready.emit(snapshot)
     return True
 
 

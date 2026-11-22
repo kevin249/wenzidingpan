@@ -10,7 +10,8 @@
 
 .theme-picker { border: 0; min-width: 0; }
 .theme-picker legend { margin-bottom: 8px; font-weight: 600; }
-.theme-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.theme-cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+#theme-settings[data-active="theme4"] [data-dock-hide] { display: none; }
 .theme-cards .theme-card {
   position: relative; display: flex; flex-direction: column; gap: 6px;
   border: 1px solid var(--border); border-radius: 9px; padding: 5px; cursor: pointer;

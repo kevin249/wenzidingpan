@@ -93,6 +93,8 @@ class Poller(QThread):
 
     @staticmethod
     def _chart_enabled(config: Config) -> bool:
+        if config.display_theme == "theme4":
+            return config.show_sparkline and (config.provider != "mock" or config.intraday_chart)
         return bool(config.intraday_chart and (config.show_sparkline or config.display_theme == "theme2"))
 
     @staticmethod
@@ -199,7 +201,7 @@ class Poller(QThread):
 
     @staticmethod
     def _needs_tdw(config: Config) -> bool:
-        return (config.display_theme in ("theme3", "depth", "radar")
+        return (config.display_theme in ("theme3", "theme4", "depth", "radar")
                 or config.show_bs_points and mcp_bs.get_source() == mcp_bs.SOURCE_LOCAL)
 
     @staticmethod
@@ -330,8 +332,10 @@ class Poller(QThread):
                         fetch, args = self._fetch_dark, (config,)
                     elif kind == "tdw":
                         if symbol not in self._tdw_feeds:
+                            full_session = config.display_theme == "theme4"
                             self._tdw_feeds[symbol] = RealtimeFeed(
-                                symbol, config.kline_source, minute_history=True,
+                                symbol, "tencent" if full_session else config.kline_source,
+                                minute_history=not full_session, full_session=full_session,
                                 minute_fallback=config.display_theme == "theme3",
                             )
                         fetch = self._tdw_feeds[symbol].fetch

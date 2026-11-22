@@ -10,6 +10,13 @@ const CHECKBOXES = [
   'click_through',
   'show_title_buttons',
   'theme2_always_expanded',
+  'theme4_snap',
+  'theme4_name_italic',
+  'theme4_name_shadow',
+  'theme4_price_italic',
+  'theme4_price_shadow',
+  'theme4_dark_italic',
+  'theme4_dark_shadow',
   'show_dark_trade',
   'show_sparkline',
   'show_chart_depth',
@@ -45,14 +52,15 @@ const FONT_SIZES = [
   'theme2_popup_font_size',
   'tray_unread_font_size',
 ];
+const LINE_WIDTHS = ['chart_line_width', 'average_line_width', 'depth_line_width'];
 const NUMBERS = [
   'visible_rows',
+  'theme4_width',
+  'theme4_height',
   'chart_height',
   'theme2_depth_width',
   'chart_depth_width',
-  'chart_line_width',
-  'average_line_width',
-  'depth_line_width',
+  ...LINE_WIDTHS,
   ...FONT_SIZES,
   'refresh_seconds',
   'chart_refresh_seconds',
@@ -65,6 +73,8 @@ const TEXTS = [
   'kline_source',
   'display_theme',
   'theme2_side',
+  'theme4_side',
+  'theme4_tone',
   'theme3_price_layout',
   'layout',
   'row_style',
@@ -111,7 +121,9 @@ let searchTimer = null;
 let searchSequence = 0;
 let searchController = null;
 let fontApplyTimer = null;
+let lineWidthTimer = null;
 let activeTheme = el('display_theme')?.value || 'theme1';
+let loadedDockGeometry = {};
 
 /* ------------------------------------------------------------ 自选列表 */
 
@@ -270,6 +282,12 @@ async function search(text) {
     const response = await fetch(api(`/api/search?q=${encodeURIComponent(text)}`), {
       signal: controller.signal,
     });
+    if (sequence !== searchSequence) return;
+    if (response.status === 403) {
+      hideSuggestions();
+      el('search-hint').textContent = '当前设置页已失效，请从桌面组件重新打开设置。';
+      return;
+    }
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json();
     if (sequence !== searchSequence) return;
@@ -282,7 +300,9 @@ async function search(text) {
   } catch (error) {
     if (sequence !== searchSequence || error.name === 'AbortError') return;
     hideSuggestions();
-    el('search-hint').textContent = `搜索失败：${error.message}`;
+    el('search-hint').textContent = error.name === 'TypeError'
+      ? '暂时连不上行情组件。若刚重启，请刷新此页或从组件重新打开设置。'
+      : `搜索失败：${error.message}`;
   } finally {
     if (sequence === searchSequence) searchController = null;
   }
@@ -298,7 +318,15 @@ function collect() {
     if (region !== 'chart') patch.component_sizes[region].height = Number(sizeInput(region, 'height').value);
   }
   for (const id of TEXTS) patch[id] = el(id).value;
-  for (const id of NUMBERS) patch[id] = Number(el(id).value);
+  for (const id of NUMBERS) {
+    const field = el(id);
+    if ((LINE_WIDTHS.includes(id) || FONT_SIZES.includes(id)) && (!field.value || !field.checkValidity())) continue;
+    patch[id] = Number(field.value);
+  }
+  // 侧栏也可在桌面拖动；保存其他选项时不要把打开设置页时的旧位置写回去。
+  for (const [id, value] of Object.entries(loadedDockGeometry)) {
+    if (patch[id] === value) delete patch[id];
+  }
   for (const id of CHECKBOXES) patch[id] = el(id).checked;
   for (const id of FONT_COLORS) {
     patch[id] = el(`${id}_auto`).checked ? 'auto' : el(id).value;
@@ -309,6 +337,9 @@ function collect() {
 
 function fill(config) {
   activeTheme = config.display_theme;
+  loadedDockGeometry = {
+    theme4_width: config.theme4_width, theme4_height: config.theme4_height, theme4_side: config.theme4_side,
+  };
   symbols = [...config.symbols];
   stockVisibility = structuredClone(config.stock_visibility || {});
   for (const id of TEXTS) el(id).value = config[id];
@@ -351,13 +382,16 @@ function refreshHints() {
   const theme2 = el('display_theme').value === 'theme2';
   const focused = activeTheme === 'depth' || activeTheme === 'radar';
   const theme3 = activeTheme === 'theme3';
-  const names = { depth: '一行文字', radar: '贴边小列', theme3: '分时＋TDW', theme1: '经典网格', theme2: '千档竖列' };
-  const previews = { depth: 'depth-preview.png', radar: 'radar-preview.png', theme3: 'theme3-preview.png' };
+  const theme4 = activeTheme === 'theme4';
+  el('theme-settings').dataset.active = activeTheme;
+  const names = { depth: '一行文字', radar: '贴边小列', theme3: '分时＋TDW', theme4: '贴边盘口', theme1: '经典网格', theme2: '千档竖列' };
+  const previews = { depth: 'depth-preview.png', radar: 'radar-preview.png', theme3: 'theme3-preview.png', theme4: 'theme4-preview.png' };
   const preview = el('active-theme-preview');
-  preview.src = preview.src.replace(/(?:depth|radar|theme[123])-preview\.png$/, previews[activeTheme] || 'theme3-preview.png');
+  preview.src = preview.src.replace(/(?:depth|radar|theme[1-4])-preview\.png$/, previews[activeTheme] || 'theme3-preview.png');
   el('preview-caption').textContent = activeTheme === 'depth'
     ? '透明文字横条 · 悬停展开 · Ctrl+F2 隐藏'
-    : activeTheme === 'radar' ? '贴边小列 · 微型走势 · 悬停展开' : '分时图与 TDW 副图';
+    : activeTheme === 'radar' ? '贴边小列 · 微型走势 · 悬停展开'
+    : activeTheme === 'theme4' ? '透明盘口 · 点击查看全天实时分时线、均价和 TDW' : '分时图与 TDW 副图';
   for (const choice of document.querySelectorAll('[name="theme-choice"]')) {
     choice.checked = choice.value === activeTheme;
   }
@@ -376,14 +410,24 @@ function refreshHints() {
     const field = el(`text-opacity-${region}`).closest('.field');
     field.hidden = focused || (region === 'code' && !theme2);
   }
-  document.querySelector('label[for="font_size"]').textContent = focused ? '悬浮文字字号（px）' : '基础 / 控件字号（px）';
+  document.querySelector('label[for="font_size"]').textContent = focused ? '悬浮文字字号（px）'
+    : theme4 ? '标题栏控件字号（px）' : '基础 / 控件字号（px）';
+  document.querySelector('label[for="stock_price_font_size"]').textContent = theme4
+    ? '现价与盘口时间字号（px）' : '现价字号（px）';
   el('theme-settings-heading').textContent = `${names[activeTheme] || activeTheme} · 独立设置`;
-  el('theme-font-heading').textContent = `${names[activeTheme] || activeTheme} · 字体颜色与字重`;
+  el('theme-font-heading').textContent = `${names[activeTheme] || activeTheme} · ${theme4 ? '字体颜色与样式' : '字体颜色与字重'}`;
+  el('chart-style-heading').textContent = theme4 ? '实时分时线与均价' : 'K 线与均线';
+  document.querySelector('label[for="chart_line_color"]').textContent = theme4 ? '分时线颜色' : 'K 线颜色';
+  document.querySelector('label[for="chart_line_width"]').textContent = theme4 ? '分时线线宽（px）' : 'K 线线宽（px）';
+  for (const label of document.querySelectorAll('.automatic-ink')) {
+    label.textContent = theme4 && el('grayscale').checked ? '跟随桌面明暗' : '跟随涨跌';
+  }
   el('tdw-label-field').hidden = !theme3;
   const mirrorLeft = el('theme2_side').value === 'left';
   const single = !theme2 && !focused && el('layout').value === 'single';
   el('show_chart_depth').disabled = focused || theme2 || single;
   el('theme2_side').disabled = !theme2;
+  el('theme4_side').disabled = !el('theme4_snap').checked;
   el('theme2_depth_width').disabled = !theme2;
   el('theme2_popup_font_size').disabled = !theme2;
   el('theme2_always_expanded').disabled = !theme2;
@@ -411,9 +455,10 @@ function refreshHints() {
     : theme2
     ? `股价轴靠${mirrorLeft ? '左' : '右'}，盘口条向内延伸。可以点击价格展开详情，或开启始终展开。字号、线宽、文字透明度和窗口尺寸只保存到主题 2。`
     : theme3 ? '上方分时图与下方 TDW 共用时间轴。TDW 副图可单独关闭，关闭后分时图自动扩展。挂单条逐价位绘制。'
+    : theme4 ? ''
              : '经典网格支持左中右、上中下、上下布局，也可选择单行滚动。所有显示参数只保存到主题 1。';
   el('chart-label-font-heading').textContent = theme2 ? '高低价字号（px）'
-    : theme3 ? '走势图 / TDW 图注字号（px）' : '走势图图注字号（px）';
+    : theme3 ? '走势图 / TDW 图注字号（px）' : theme4 ? '±1% 价格与图表坐标字号（px）' : '走势图图注字号（px）';
 
   el('row_style-hint').textContent = theme2
     ? '主题 2 不使用行内样式。'
@@ -473,6 +518,8 @@ async function switchTheme(nextTheme) {
 
   clearTimeout(fontApplyTimer);
   fontApplyTimer = null;
+  clearTimeout(lineWidthTimer);
+  lineWidthTimer = null;
   ++applySequence;
   const main = document.querySelector('main');
   main.inert = true;
@@ -538,6 +585,9 @@ async function refreshLayoutMetrics() {
     }
     const windowSize = metrics.regions?.window;
     if (windowSize) {
+      if (activeTheme === 'theme4') {
+        el('dock-size-current').textContent = `当前 ${windowSize.width} × ${windowSize.height} px`;
+      }
       for (const axis of ['width', 'height']) {
         const input = el(`window_${axis}`);
         if (document.activeElement !== input && !input.dataset.dirty) input.value = windowSize[axis];
@@ -560,8 +610,15 @@ for (const axis of ['width', 'height']) {
 }
 
 // 开关和下拉改完即时生效；字号短延迟自动保存，避免改完直接退出时丢失。
-for (const id of [...CHECKBOXES, 'provider', 'kline_source', 'theme2_side', 'theme3_price_layout', 'layout', 'row_style', 'color_scheme', 'background_color']) {
+for (const id of [...CHECKBOXES, 'provider', 'kline_source', 'theme2_side', 'theme3_price_layout', 'theme4_side', 'theme4_tone', 'layout', 'row_style', 'color_scheme', 'background_color']) {
   el(id).addEventListener('change', () => apply('已应用'));
+}
+for (const id of ['theme4_width', 'theme4_height']) {
+  const field = el(id);
+  field.addEventListener('change', () => {
+    if (field.value !== '' && field.checkValidity()) apply('尺寸已应用');
+    else field.value = loadedDockGeometry[id];
+  });
 }
 for (const choice of document.querySelectorAll('[name="theme-choice"]')) {
   choice.addEventListener('change', () => switchTheme(choice.value));
@@ -587,8 +644,21 @@ el('grayscale_level').addEventListener('input', () => {
   el('grayscale_level-value').textContent = el('grayscale_level').value;
 });
 el('grayscale_level').addEventListener('change', () => apply('已应用'));
-for (const id of ['chart_depth_width', 'chart_line_width', 'average_line_width', 'depth_line_width']) {
-  el(id).addEventListener('change', () => apply('已应用'));
+el('chart_depth_width').addEventListener('change', () => apply('已应用'));
+for (const id of LINE_WIDTHS) {
+  const field = el(id);
+  const applyWidth = () => {
+    clearTimeout(lineWidthTimer);
+    lineWidthTimer = null;
+    if (field.value && field.checkValidity()) apply('线宽已应用');
+  };
+  field.addEventListener('input', () => {
+    // 旧保存响应不能覆盖正在输入的新线宽。
+    ++applySequence;
+    clearTimeout(lineWidthTimer);
+    if (field.value && field.checkValidity()) lineWidthTimer = setTimeout(applyWidth, 350);
+  });
+  field.addEventListener('change', applyWidth);
 }
 for (const region of TEXT_REGIONS) {
   const id = `text-opacity-${region}`;
@@ -596,19 +666,19 @@ for (const region of TEXT_REGIONS) {
   el(id).addEventListener('change', () => apply('已应用'));
 }
 for (const id of FONT_SIZES) {
-  el(id).addEventListener('input', () => {
-    clearTimeout(fontApplyTimer);
-    if (!el(id).value || !el(id).checkValidity()) return;
-    fontApplyTimer = setTimeout(() => {
-      fontApplyTimer = null;
-      apply('已应用');
-    }, 450);
-  });
-  el(id).addEventListener('blur', () => {
+  const field = el(id);
+  const applySize = () => {
     clearTimeout(fontApplyTimer);
     fontApplyTimer = null;
-    apply('已应用');
+    if (field.value && field.checkValidity()) apply('已应用');
+  };
+  field.addEventListener('input', () => {
+    // 字号仍在编辑时，旧保存响应不能把它改回去。
+    ++applySequence;
+    clearTimeout(fontApplyTimer);
+    if (field.value && field.checkValidity()) fontApplyTimer = setTimeout(applySize, 450);
   });
+  field.addEventListener('change', applySize);
 }
 for (const id of [
   'visible_rows',
