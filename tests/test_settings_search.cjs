@@ -29,7 +29,7 @@ class Element {
   dispatch(name, extra = {}) { this.listeners[name]({ target: this, ...extra }); }
 }
 
-function setup() {
+function setup(theme = '') {
   const elements = new Map();
   const requests = [];
   const configRequests = [];
@@ -39,6 +39,7 @@ function setup() {
     if (!elements.has(id)) elements.set(id, new Element());
     return elements.get(id);
   };
+  el('display_theme').value = theme;
   const choices = ['theme1', 'theme2', 'theme3'].map(value => Object.assign(new Element(), {value}));
   const commonSection = Object.assign(new Element(), {dataset: {settingsScope: 'common'}});
   const themeSection = Object.assign(new Element(), {dataset: {settingsScope: 'theme'}});
@@ -174,6 +175,19 @@ test('line widths save on valid input without waiting for blur', async () => {
   assert.equal(patch.chart_line_width, 2.6);
   assert.equal(patch.average_line_width, 3.8);
   assert.equal('depth_line_width' in patch, false);
+});
+
+test('theme 4 book opacity shows a percentage and saves when changed', async () => {
+  const {configRequests, el} = setup('theme4');
+  const slider = el('theme4_depth_opacity');
+  slider.value = '0.35';
+  slider.dispatch('input');
+  assert.equal(el('theme4_depth_opacity-value').textContent, '35%');
+  slider.dispatch('change');
+  await new Promise(resolve => setImmediate(resolve));
+  const patch = JSON.parse(configRequests[0].options.body);
+  assert.equal(patch.display_theme, 'theme4');
+  assert.equal(patch.theme4_depth_opacity, 0.35);
 });
 
 test('editing the dark trade font ignores older settings responses', async () => {
