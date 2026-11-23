@@ -487,14 +487,15 @@ class DockedBook(QWidget):
         def y(price):
             return plot_bottom - (price - low) * scale if span else price_height / 2
 
+        opacity = config.theme4_depth_opacity
+
         def chart_ink(color, alpha=None):
             color = QColor(ink if config.grayscale else color)
             if alpha is not None:
                 color.setAlpha(alpha)
-            return color
+            return with_opacity(color, opacity)
 
-        opacity = config.theme4_depth_opacity
-        color = with_opacity(chart_ink(config.chart_line_color), opacity)
+        color = chart_ink(config.chart_line_color)
         pen = QPen(color, line_width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
         path = tdw_overlay.series_path(closes, x, y, spacing=1)
         if path.elementCount() > 1:

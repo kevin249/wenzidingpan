@@ -34,8 +34,12 @@ def test_docked_watchlist_and_theme_roundtrip(tmp_path, monkeypatch):
             Bar("2026-11-20 10:30:00", 101, 101, 101, 101),
             Bar("2026-11-20 13:00:00", 102, 102, 102, 102),
             Bar("2026-11-20 15:00:00", 103, 103, 103, 103)]
-    trend = Trend(realtime_bars=bars, average_prices=[("09:30", 100), ("15:00", 101.5)],
-                  tdw_points={b.time: tdw.Point(i, b.close, ()) for i, b in enumerate(bars)})
+    trend = Trend(
+        realtime_bars=bars,
+        average_prices=[("09:30", 100), ("15:00", 101.5)],
+        tdw_points={bar.time: tdw.Point(i, bar.close, ("B1",) if i == 1 else ())
+                    for i, bar in enumerate(bars)},
+    )
     snap = Snapshot("mock", quotes, trends={s: trend for s in symbols})
     window.update_snapshot(snap, "")
     cfg = store.update({"display_theme": "theme4", "tdw_recent_five": True, "grayscale": False})
@@ -59,7 +63,7 @@ def test_docked_watchlist_and_theme_roundtrip(tmp_path, monkeypatch):
         QTest.mouseClick(panel, Qt.LeftButton, pos=QPoint(55, panel.height() * 3 // 4))
         assert panel.expanded == {symbols[1]}
         draw, paths, power_draws, candles, axis_labels = [], [], [], [], []
-        guide_alphas = []
+        guide_alphas, tdw_alphas = [], []
         original = panel._draw_chart
         stroke_path = QPainter.strokePath
         draw_line = QPainter.drawLine
@@ -78,6 +82,8 @@ def test_docked_watchlist_and_theme_roundtrip(tmp_path, monkeypatch):
             pen = painter.pen()
             if pen.style() == Qt.DashLine:
                 guide_alphas.append(pen.color().alphaF())
+            elif pen.style() == Qt.CustomDashLine or (power_draws and painter.transform().dy() == power_draws[-1][2]):
+                tdw_alphas.append(pen.color().alphaF())
             return draw_line(painter, *args)
 
         def record_tdw(p, power, x, *args, **kwargs):
@@ -117,17 +123,22 @@ def test_docked_watchlist_and_theme_roundtrip(tmp_path, monkeypatch):
         price_top = axis_labels[0][3]
         assert power_top - price_top - first.y == pytest.approx(max(chart_width, average_width) / 2)
         assert guide_alphas == [1] * 6
+        # 分隔线、四条参考线、三段动力线和信号连线各自保留原始不透明度。
+        base_tdw_alphas = [85 / 255] + [220 / 255] * 4 + [1] * 4
+        assert tdw_alphas == pytest.approx(base_tdw_alphas, abs=1 / 255)
         for opacity in (.35, 0):
             window.apply_config(store.update({"chart_line_width": 2.6, "average_line_width": 3.8,
                                               "theme4_depth_opacity": opacity}))
             paths.clear()
             guide_alphas.clear()
+            tdw_alphas.clear()
             panel.grab()
             [(trace_ink, trace_width)] = [(color, width) for path, color, width in paths if path.elementCount() == 4]
             [(avg_ink, avg_width)] = [(color, width) for _, color, width in paths if color.name() == "#ffff00"]
             assert (trace_width, avg_width) == (2.6, 3.8)
             assert [trace_ink.alphaF(), avg_ink.alphaF()] == pytest.approx([opacity] * 2, abs=1 / 255)
             assert guide_alphas == pytest.approx([opacity] * 6, abs=1 / 255)
+            assert tdw_alphas == pytest.approx([alpha * opacity for alpha in base_tdw_alphas], abs=1 / 255)
         QTest.mouseClick(panel, Qt.LeftButton, pos=QPoint(55, panel.height() * 3 // 4))
         assert not panel.expanded
         draw.clear()
