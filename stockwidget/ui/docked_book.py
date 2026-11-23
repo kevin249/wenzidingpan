@@ -361,6 +361,7 @@ class DockedBook(QWidget):
 
         fonts, widths = self._fit_labels(p, [(text, font) for text, font, _, _ in header] + labels, 1, fit_extent)
         stretch = self._draw_header(p, header, fonts[:count], widths[:count], left, margin)
+        drawn = False
         if have_price:
             value = Decimal(str(price))
             radius = value * PRICE_BAND_PERCENT / 100
@@ -378,8 +379,9 @@ class DockedBook(QWidget):
             book_edge = PLOT_EDGE if left else width - PLOT_EDGE
             book_end = book_edge + (book_width if left else -book_width)
             price_start = book_end if left else book_end - price_width
-            if levels:
+            if levels and config.theme4_depth_opacity > 0:
                 self._draw_book(p, levels, y, book_edge, book_end - book_edge, dark)
+                drawn = True
             if visible_chart:
                 chart_start = price_start + price_width if left else PLOT_EDGE
                 chart_rect = QRectF(chart_start, margin, content_width - book_width - price_width,
@@ -402,7 +404,6 @@ class DockedBook(QWidget):
             self._draw_text(p, quote.error or "等待现价", QRectF(4, height / 2 - 20, width - 8, 40),
                             Qt.AlignHCenter, label_ink)
         if depth is not None:
-            drawn = bool(levels and have_price)
             last = self._receipts.get(symbol)
             if last is None or last[0] is not depth or last[1] != drawn:
                 self._receipts[symbol] = (depth, drawn)
@@ -452,6 +453,7 @@ class DockedBook(QWidget):
                 color = QColor(gray, gray, gray)
             else:
                 color = QColor.fromHslF(hue, .82, .2 + .6 * gray / 255)
+            color.setAlphaF(self.config.theme4_depth_opacity)
             p.setPen(QPen(color, line_width, Qt.SolidLine, Qt.FlatCap))
             p.drawLines(shades[gray, hue])
 

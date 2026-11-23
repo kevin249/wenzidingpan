@@ -109,6 +109,7 @@ THEME_SCOPED_FIELDS = (
     "average_line_color",
     "average_line_width",
     "depth_line_width",
+    "theme4_depth_opacity",
     "text_opacities",
     "compact",
     "theme2_side",
@@ -252,6 +253,7 @@ class Config:
     average_line_color: str = "#ffff00"
     average_line_width: float = 1.5
     depth_line_width: float = .8
+    theme4_depth_opacity: float = 1.0
     text_opacities: dict[str, float] = field(default_factory=dict)
     show_dark_trade: bool = True
     compact: bool = False
@@ -453,6 +455,9 @@ def sanitize(raw: Any, *, _include_theme_profiles: bool = True) -> Config:
         value = _as_number(raw.get(key))
         if value is not None:
             setattr(out, key, round(_clamp(value, .3, 6), 1))
+    depth_opacity = _as_number(raw.get("theme4_depth_opacity"))
+    if depth_opacity is not None:
+        out.theme4_depth_opacity = round(_clamp(depth_opacity, 0.0, 1.0), 2)
     opacities = raw.get("text_opacities")
     if isinstance(opacities, dict):
         for region, _ in TEXT_REGIONS:

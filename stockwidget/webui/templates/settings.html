@@ -475,6 +475,10 @@
             <input id="{{ key }}" type="number" min="0.3" max="6" step="0.1" value="{{ config[key] }}" />
           </div>
           {% endfor %}
+          <div class="field" data-themes="theme4" {% if config.display_theme != 'theme4' %}hidden{% endif %}>
+            <label for="theme4_depth_opacity">千档挂单不透明度 <span class="value" id="theme4_depth_opacity-value"></span></label>
+            <input id="theme4_depth_opacity" type="range" min="0" max="1" step="0.01" value="{{ config.theme4_depth_opacity }}" />
+          </div>
         </div>
         <p class="hint" data-stealth-hide>挂单逐价位绘制，不合并相邻价位或累加同屏幕行的量。线宽支持小数像素；价位过密时可以增加窗口高度。</p>
 

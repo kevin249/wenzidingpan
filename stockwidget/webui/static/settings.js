@@ -53,6 +53,7 @@ const FONT_SIZES = [
   'tray_unread_font_size',
 ];
 const LINE_WIDTHS = ['chart_line_width', 'average_line_width', 'depth_line_width'];
+const OPACITY_FIELDS = ['opacity', 'background_alpha', 'theme4_depth_opacity'];
 const NUMBERS = [
   'visible_rows',
   'theme4_width',
@@ -64,8 +65,7 @@ const NUMBERS = [
   ...FONT_SIZES,
   'refresh_seconds',
   'chart_refresh_seconds',
-  'opacity',
-  'background_alpha',
+  ...OPACITY_FIELDS,
   'grayscale_level',
 ];
 const TEXTS = [
@@ -319,6 +319,7 @@ function collect() {
   }
   for (const id of TEXTS) patch[id] = el(id).value;
   for (const id of NUMBERS) {
+    if (id === 'theme4_depth_opacity' && activeTheme !== 'theme4') continue;
     const field = el(id);
     if ((LINE_WIDTHS.includes(id) || FONT_SIZES.includes(id)) && (!field.value || !field.checkValidity())) continue;
     patch[id] = Number(field.value);
@@ -361,8 +362,9 @@ function fill(config) {
     el(`text-opacity-${region}`).value = config.text_opacities?.[region] ?? 1;
     el(`text-opacity-${region}-value`).textContent = `${Math.round(Number(el(`text-opacity-${region}`).value) * 100)}%`;
   }
-  el('opacity-value').textContent = `${Math.round(config.opacity * 100)}%`;
-  el('background_alpha-value').textContent = `${Math.round(config.background_alpha * 100)}%`;
+  for (const id of OPACITY_FIELDS) {
+    el(`${id}-value`).textContent = `${Math.round(config[id] * 100)}%`;
+  }
   el('grayscale_level-value').textContent = config.grayscale_level;
   refreshHints();
   renderWatchlist();
@@ -633,9 +635,10 @@ for (const id of FONT_COLORS) {
     apply('已应用');
   });
 }
-for (const [id, valueId] of [['opacity', 'opacity-value'], ['background_alpha', 'background_alpha-value']]) {
+for (const id of OPACITY_FIELDS) {
   el(id).addEventListener('input', () => {
-    el(valueId).textContent = `${Math.round(Number(el(id).value) * 100)}%`;
+    ++applySequence;
+    el(`${id}-value`).textContent = `${Math.round(Number(el(id).value) * 100)}%`;
   });
   el(id).addEventListener('change', () => apply('已应用'));
 }

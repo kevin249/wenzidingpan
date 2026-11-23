@@ -64,6 +64,24 @@ def test_theme4_snap_setting_defaults_on_and_is_saved_per_theme(server):
     assert config["theme4_snap"] is Store(server.store.path).get().theme4_snap is False
 
 
+def test_theme4_book_opacity_is_saved_per_theme(server):
+    client = _client(server)
+    url = f"/api/config?token={server.token}"
+    config = client.post(url, json={"display_theme": "theme4"}).get_json()["config"]
+    assert config["theme4_depth_opacity"] == 1
+    config = client.post(url, json={"theme4_depth_opacity": .35}).get_json()["config"]
+    assert config["theme4_depth_opacity"] == server.applied[-1].theme4_depth_opacity == .35
+    body = client.get(f"/?token={server.token}").get_data(as_text=True)
+    assert 'id="theme4_depth_opacity" type="range" min="0" max="1" step="0.01" value="0.35"' in body
+    config = client.post(url, json={"display_theme": "theme3"}).get_json()["config"]
+    assert config["theme4_depth_opacity"] == 1
+    config = client.post(url, json={"display_theme": "theme4"}).get_json()["config"]
+    assert config["theme4_depth_opacity"] == Store(server.store.path).get().theme4_depth_opacity == .35
+    for entered, expected in [(-1, 0), (2, 1)]:
+        config = client.post(url, json={"theme4_depth_opacity": entered}).get_json()["config"]
+        assert config["theme4_depth_opacity"] == expected
+
+
 def test_theme4_narrow_width_and_font_styles_are_saved(server):
     client = _client(server)
     url = f"/api/config?token={server.token}"

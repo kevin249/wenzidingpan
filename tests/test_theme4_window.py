@@ -530,18 +530,32 @@ def test_theme4_color_switch_tints_book_and_prices(tmp_path, monkeypatch):
     try:
         panel.grab()
         assert all(color.saturation() == 0 for color in colors + list(labels.values()))
+        assert [color.alpha() for color in colors] == [255] * 3
         assert widths == [config.depth_line_width] * 3
+        window.apply_config(store.update({"theme4_depth_opacity": .35}))
+        colors.clear()
+        widths.clear()
+        panel.grab()
+        assert [color.alphaF() for color in colors] == pytest.approx([.35] * 3, abs=1 / 255)
+        assert labels["100.00"].alpha() == 255
         window.title_bar.grayscale_button.click()
         colors.clear()
         widths.clear()
         panel.grab()
         assert widths == [config.depth_line_width] * 3
+        assert [color.alphaF() for color in colors] == pytest.approx([.35] * 3, abs=1 / 255)
         tinted = [color for color in colors if color.saturation() > 0]
         bids = [color for color in tinted if color.red() > color.green()]
         assert len(bids) == 2 and bids[0].lightness() > bids[1].lightness()
         assert any(color.green() > color.red() for color in tinted)
         assert labels["示例"] == QColor("#3355ff") and labels["100.00"].red() > labels["100.00"].green()
         assert not Store(store.path).get().grayscale
+        window.apply_config(store.update({"theme4_depth_opacity": 0}))
+        colors.clear()
+        labels.clear()
+        panel.grab()
+        assert not colors and labels["100.00"].alpha() == 255
+        assert panel._receipts["600000"][1] is False
     finally:
         window.close()
         app.processEvents()
