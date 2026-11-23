@@ -59,8 +59,10 @@ def test_docked_watchlist_and_theme_roundtrip(tmp_path, monkeypatch):
         QTest.mouseClick(panel, Qt.LeftButton, pos=QPoint(55, panel.height() * 3 // 4))
         assert panel.expanded == {symbols[1]}
         draw, paths, power_draws, candles, axis_labels = [], [], [], [], []
+        guide_alphas = []
         original = panel._draw_chart
         stroke_path = QPainter.strokePath
+        draw_line = QPainter.drawLine
         draw_panel = tdw_overlay.draw_power_panel
         draw_text = panel._draw_text
 
@@ -71,6 +73,12 @@ def test_docked_watchlist_and_theme_roundtrip(tmp_path, monkeypatch):
         def record_path(painter, path, pen):
             paths.append((path, pen.color(), pen.widthF()))
             return stroke_path(painter, path, pen)
+
+        def record_line(painter, *args):
+            pen = painter.pen()
+            if pen.style() == Qt.DashLine:
+                guide_alphas.append(pen.color().alphaF())
+            return draw_line(painter, *args)
 
         def record_tdw(p, power, x, *args, **kwargs):
             power_draws.append((power, [x(i) for i in range(len(power))], p.transform().dy(), kwargs["show_caption"]))
@@ -83,6 +91,7 @@ def test_docked_watchlist_and_theme_roundtrip(tmp_path, monkeypatch):
 
         monkeypatch.setattr(panel, "_draw_chart", record)
         monkeypatch.setattr(QPainter, "strokePath", record_path)
+        monkeypatch.setattr(QPainter, "drawLine", record_line)
         monkeypatch.setattr(tdw_overlay, "draw_power_panel", record_tdw)
         monkeypatch.setattr(panel, "_draw_text", record_text)
         with monkeypatch.context() as chart_paint:
@@ -107,11 +116,18 @@ def test_docked_watchlist_and_theme_roundtrip(tmp_path, monkeypatch):
         assert power_x == [point.x for point in (first, second, afternoon, last)]
         price_top = axis_labels[0][3]
         assert power_top - price_top - first.y == pytest.approx(max(chart_width, average_width) / 2)
-        window.apply_config(store.update({"chart_line_width": 2.6, "average_line_width": 3.8}))
-        paths.clear()
-        panel.grab()
-        assert [width for path, _, width in paths if path.elementCount() == 4] == [2.6]
-        assert [width for _, color, width in paths if color == QColor("#ffff00")] == [3.8]
+        assert guide_alphas == [1] * 6
+        for opacity in (.35, 0):
+            window.apply_config(store.update({"chart_line_width": 2.6, "average_line_width": 3.8,
+                                              "theme4_depth_opacity": opacity}))
+            paths.clear()
+            guide_alphas.clear()
+            panel.grab()
+            [(trace_ink, trace_width)] = [(color, width) for path, color, width in paths if path.elementCount() == 4]
+            [(avg_ink, avg_width)] = [(color, width) for _, color, width in paths if color.name() == "#ffff00"]
+            assert (trace_width, avg_width) == (2.6, 3.8)
+            assert [trace_ink.alphaF(), avg_ink.alphaF()] == pytest.approx([opacity] * 2, abs=1 / 255)
+            assert guide_alphas == pytest.approx([opacity] * 6, abs=1 / 255)
         QTest.mouseClick(panel, Qt.LeftButton, pos=QPoint(55, panel.height() * 3 // 4))
         assert not panel.expanded
         draw.clear()

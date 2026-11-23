@@ -316,7 +316,7 @@ class DockedBook(QWidget):
         left = config.theme4_side == "left"
         dark = config.theme4_tone == "dark"
         ink = QColor("#fafafa" if dark else "#171717")
-        rule = QColor("#777777")
+        rule = with_opacity(QColor("#777777"), config.theme4_depth_opacity)
         label_ink = region_text_color(config, ink, "chart")
         margin = min(max(PLOT_MARGIN, self._label_margin()), height * HEADER_HEIGHT_FRACTION)
         quote = self.quotes.get(symbol) or Quote(symbol, symbol)
@@ -493,7 +493,8 @@ class DockedBook(QWidget):
                 color.setAlpha(alpha)
             return color
 
-        color = chart_ink(config.chart_line_color)
+        opacity = config.theme4_depth_opacity
+        color = with_opacity(chart_ink(config.chart_line_color), opacity)
         pen = QPen(color, line_width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
         path = tdw_overlay.series_path(closes, x, y, spacing=1)
         if path.elementCount() > 1:
@@ -505,7 +506,7 @@ class DockedBook(QWidget):
             average_color = QColor("#808080" if config.grayscale else config.average_line_color)
             average = tdw_overlay.series_path((price for _, price in averages),
                                                lambda i: session_x(averages[i][0]), y)
-            p.strokePath(average, QPen(average_color, config.average_line_width))
+            p.strokePath(average, QPen(with_opacity(average_color, opacity), config.average_line_width))
 
         power, events = tdw.align(trend.tdw_points, (bar.time for bar in bars))
         p.save()
